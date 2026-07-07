@@ -1,0 +1,15 @@
+.env.local
+.env.*.local
+.env.master
+*.env
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+.next/
+.turbo/
+*.pulumi.yaml.bak
+.doppler/
+dist/
+.DS_Store
+.claude/
