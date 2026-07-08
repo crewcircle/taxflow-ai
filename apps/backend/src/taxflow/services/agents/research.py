@@ -4,7 +4,6 @@ import time
 from anthropic import AsyncAnthropic
 
 from taxflow.config import settings
-from taxflow.db import get_supabase_client
 from taxflow.services.knowledge.retrieval import hybrid_search
 
 SYSTEM_PROMPT = """You are TaxFlow AI, an AI assistant for Australian public practice accounting firms.
@@ -34,29 +33,54 @@ class ResearchAgent:
 
     async def _retrieve_context(self, question: str, client_id: str) -> list[dict]:
         global_chunks = await hybrid_search(question, top_k=8)
+        firm_chunks = await self._firm_knowledge_search(question, client_id, top_k=2)
+        return (global_chunks + firm_chunks)[:10]
 
-        sb = get_supabase_client()
-        embedding_result = await hybrid_search(question, top_k=3)  # placeholder shared embed call
-        firm_chunks = (
-            sb.table("firm_knowledge")
-            .select("id, content")
-            .eq("client_id", client_id)
-            .limit(3)
-            .execute()
-        )
+    async def _firm_knowledge_search(self, question: str, client_id: str, top_k: int) -> list[dict]:
+        import asyncio
 
-        merged = list(global_chunks)
-        for row in firm_chunks.data:
-            merged.append(
-                {
-                    "id": row["id"],
-                    "citation": "Firm knowledge",
-                    "content": row["content"],
-                    "source_url": "",
-                    "score": 1.5,
-                }
+        import psycopg2
+        import psycopg2.extras
+
+        from taxflow.services.knowledge.embedder import embed
+
+        query_embedding = await embed(question)
+
+        def _search() -> list[dict]:
+            conn = psycopg2.connect(settings.DATABASE_URL)
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                """
+                SELECT id, file_name, content,
+                       1 - (embedding <=> %s::vector) AS sim
+                FROM firm_knowledge
+                WHERE client_id = %s AND embedding IS NOT NULL
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (query_embedding, client_id, query_embedding, top_k),
             )
-        return merged[:10]
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            return list(rows)
+
+        try:
+            rows = await asyncio.to_thread(_search)
+        except Exception:  # firm knowledge is optional; never fail the query over it
+            return []
+
+        # 1.5x weight: firm documents are more specific to the client than global sources
+        return [
+            {
+                "id": str(r["id"]),
+                "citation": f"Firm knowledge: {r['file_name']}",
+                "content": r["content"],
+                "source_url": "",
+                "score": float(r["sim"]) * 1.5,
+            }
+            for r in rows
+        ]
 
     def _build_context_string(self, chunks: list[dict]) -> str:
         parts = []
@@ -151,9 +175,12 @@ class ResearchAgent:
         }
 
     async def run_stream(self, question: str, client_id: str):
+        """Yields {"type": "token", "text": ...} events, then a final
+        {"type": "final", "citations": [...]} event."""
         chunks = await self._retrieve_context(question, client_id)
         context = self._build_context_string(chunks)
 
+        answer_parts: list[str] = []
         async with self._client.messages.stream(
             model=settings.ANTHROPIC_HAIKU_MODEL,
             max_tokens=1500,
@@ -162,4 +189,8 @@ class ResearchAgent:
             messages=[{"role": "user", "content": f"Question: {question}\n\nSource documents:\n{context}"}],
         ) as stream:
             async for text in stream.text_stream:
-                yield text
+                answer_parts.append(text)
+                yield {"type": "token", "text": text}
+
+        citations = self._parse_citations("".join(answer_parts), chunks)
+        yield {"type": "final", "citations": citations}

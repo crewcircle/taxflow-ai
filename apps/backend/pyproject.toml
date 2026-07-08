@@ -33,6 +33,8 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["accuracy: expensive LLM accuracy suite, excluded from CI"]
+addopts = "-m 'not accuracy'"
 
 [build-system]
 requires = ["hatchling"]

@@ -23,26 +23,45 @@ export default function QueryPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<QueryResult | null>(null);
+  const [streamedAnswer, setStreamedAnswer] = useState("");
   const [copied, setCopied] = useState(false);
 
   async function handleSubmit() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setStreamedAnswer("");
 
     try {
-      const response = await fetch("/api/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question }),
+      const source = new EventSource(`/api/query/stream?question=${encodeURIComponent(question)}`);
+      let answer = "";
+
+      await new Promise<void>((resolve, reject) => {
+        source.onmessage = (event) => {
+          if (event.data === "[DONE]") {
+            source.close();
+            resolve();
+            return;
+          }
+          const parsed: { type: string; text?: string; citations?: Citation[] } = JSON.parse(event.data);
+          if (parsed.type === "token" && parsed.text) {
+            answer += parsed.text;
+            setStreamedAnswer(answer);
+          } else if (parsed.type === "final") {
+            setResult({
+              query_id: "",
+              answer,
+              citations: parsed.citations ?? [],
+              confidence: 1,
+              model_used: "haiku",
+            });
+          }
+        };
+        source.onerror = () => {
+          source.close();
+          reject(new Error("stream failed"));
+        };
       });
-
-      if (!response.ok) {
-        throw new Error("Query failed");
-      }
-
-      const data: QueryResult = await response.json();
-      setResult(data);
     } catch {
       setError("Query failed - please try again");
     } finally {
@@ -82,6 +101,12 @@ export default function QueryPage() {
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
+
+      {loading && streamedAnswer && (
+        <div className="rounded border p-4">
+          <p className="whitespace-pre-wrap text-sm">{streamedAnswer}</p>
+        </div>
+      )}
 
       {result && (
         <div className="space-y-4 rounded border p-4">

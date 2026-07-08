@@ -87,13 +87,13 @@ async def get_query(query_id: str, client=Depends(get_current_client), db=Depend
     return result.data[0]
 
 
-@router.get("/stream/{query_id}")
-async def stream_query(query_id: str, question: str, client=Depends(get_current_client)):
+@router.get("/stream")
+async def stream_query(question: str, client=Depends(get_current_client)):
     """Server-Sent Events stream of Research Agent output."""
 
     async def generate():
-        async for token in agent.run_stream(question=question, client_id=client["id"]):
-            yield f"data: {json.dumps({'token': token})}\n\n"
+        async for event in agent.run_stream(question=question, client_id=client["id"]):
+            yield f"data: {json.dumps(event)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
