@@ -28,7 +28,8 @@ curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/
   | python3 -c "import json,sys; d=json.load(sys.stdin); print('PASS: api.taxflow A record' if d['success'] else f'exists/FAIL: {d[\"errors\"]}')"
 
 echo "=== 2/2 Attaching dashboard domain to Vercel ==="
-(cd "$(dirname "$0")/../apps/dashboard" && vercel domains add taxflow.crewcircle.com.au taxflow-dashboard || true)
+# CLI v50 syntax: single argument, applies to the project linked in this directory
+(cd "$(dirname "$0")/../apps/dashboard" && vercel domains add taxflow.crewcircle.com.au || true)
 
 echo "=== Verification ==="
 echo -n "api.taxflow DNS: " && dig +short A api.taxflow.crewcircle.com.au
