@@ -39,6 +39,11 @@ fi
 docker ps | grep coolify | head -5 && echo "PASS: Coolify running"
 REMOTE
 
+echo "=== 2.5/3 Attaching dashboard domain to Vercel ==="
+# Project is already linked (apps/dashboard/.vercel) and the production deployment
+# is Ready; attaching the domain makes it publicly reachable.
+(cd "$(dirname "$0")/../apps/dashboard" && vercel domains add taxflow.crewcircle.com.au taxflow-dashboard || true)
+
 echo "=== 3/3 Verification ==="
 echo -n "Coolify UI http status: "
 curl -s -o /dev/null -w "%{http_code}\n" "http://$DROPLET_IP:8000" || true
