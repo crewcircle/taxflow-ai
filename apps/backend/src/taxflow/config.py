@@ -1,8 +1,14 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# apps/backend/.env - used for local dev; in production Doppler injects real env vars,
+# which take precedence over the file.
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(case_sensitive=False, extra="ignore")
+    model_config = SettingsConfigDict(case_sensitive=False, extra="ignore", env_file=_ENV_FILE)
 
     # Required - fail fast if missing
     SUPABASE_URL: str
