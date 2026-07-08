@@ -106,27 +106,16 @@ class ResearchAgent:
         answer = "".join(block.text for block in response.content if block.type == "text")
         return answer, response.usage.input_tokens, response.usage.output_tokens
 
-    async def _score_confidence(self, question: str, answer: str, citation_count: int) -> float:
-        response = await self._client.messages.create(
-            model=settings.ANTHROPIC_HAIKU_MODEL,
-            max_tokens=10,
-            temperature=0,
-            system=(
-                "Rate the confidence of this answer 0.0-1.0 based on: source coverage, "
-                "citation count, question specificity, source recency. Return only a float."
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Question: {question}\nAnswer: {answer}\nSources used: {citation_count}",
-                }
-            ],
-        )
-        text = "".join(block.text for block in response.content if block.type == "text").strip()
-        try:
-            return float(text)
-        except ValueError:
-            return 0.5
+    def _estimate_confidence(self, answer: str, chunks: list[dict], citations: list[dict]) -> float:
+        """Deterministic confidence from retrieval/citation signals. Replaces the LLM
+        self-grading call, which was badly miscalibrated (0.05 on correct answers) and
+        escalated 26/30 accuracy questions to Sonnet for no accuracy gain."""
+        if "do not contain sufficient information" in answer.lower():
+            return 0.30
+        confidence = 0.35
+        confidence += min(len(citations), 4) * 0.10  # cited sources, up to +0.40
+        confidence += min(len(chunks), 8) * 0.02  # retrieval depth, up to +0.16
+        return round(min(confidence, 0.95), 2)
 
     def _parse_citations(self, answer: str, chunks: list[dict]) -> list[dict]:
         cited_numbers = {int(n) for n in CITATION_PATTERN.findall(answer)}
@@ -152,16 +141,16 @@ class ResearchAgent:
         answer, input_tokens, output_tokens = await self._generate(
             question, context, settings.ANTHROPIC_HAIKU_MODEL
         )
-        confidence = await self._score_confidence(question, answer, len(chunks))
+        citations = self._parse_citations(answer, chunks)
+        confidence = self._estimate_confidence(answer, chunks, citations)
 
         if confidence < settings.HAIKU_CONFIDENCE_THRESHOLD:
             model_used = "sonnet"
             answer, input_tokens, output_tokens = await self._generate(
                 question, context, settings.ANTHROPIC_SONNET_MODEL
             )
-            confidence = await self._score_confidence(question, answer, len(chunks))
-
-        citations = self._parse_citations(answer, chunks)
+            citations = self._parse_citations(answer, chunks)
+            confidence = self._estimate_confidence(answer, chunks, citations)
 
         return {
             "answer": answer,
