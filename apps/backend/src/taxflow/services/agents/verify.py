@@ -53,7 +53,11 @@ class VerifyAgent:
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user}],
         )
-        text = "".join(block.text for block in response.content if block.type == "text")
+        text = "".join(block.text for block in response.content if block.type == "text").strip()
+        # Models often wrap JSON in ```json fences despite instructions
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text
+            text = text.rsplit("```", 1)[0].strip()
 
         try:
             return json.loads(text)
