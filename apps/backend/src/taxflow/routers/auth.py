@@ -28,6 +28,11 @@ class SignupRequest(BaseModel):
 @router.post("/signup")
 async def signup(body: SignupRequest):
     sb = get_supabase_client()
+
+    existing = sb.table("clients").select("id").eq("email", body.email).execute()
+    if existing.data:
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+
     result = sb.table("clients").insert(body.model_dump()).execute()
     client_id = result.data[0]["id"]
 

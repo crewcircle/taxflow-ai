@@ -10,6 +10,8 @@ def test_signup_requires_valid_fields(client):
 def test_signup_creates_client_and_trial(mock_get_client, client):
     mock_sb = MagicMock()
     mock_get_client.return_value = mock_sb
+    # No existing client with this email
+    mock_sb.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
     mock_sb.table.return_value.insert.return_value.execute.return_value.data = [
         {"id": "client-123"}
     ]

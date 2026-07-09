@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { Logo } from "@/components/Logo";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -20,6 +22,7 @@ export default function LoginPage() {
         email,
         options: {
           emailRedirectTo: `${window.location.origin}/auth/callback`,
+          shouldCreateUser: true,
         },
       });
       if (signInError) throw signInError;
@@ -32,12 +35,14 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex flex-1 items-center justify-center px-4">
-      <div className="w-full max-w-sm space-y-6">
-        <h1 className="text-2xl font-semibold text-center">TaxFlow AI</h1>
+    <main className="flex flex-1 items-center justify-center bg-muted px-4">
+      <div className="w-full max-w-sm space-y-6 rounded-xl border border-border bg-card p-8 shadow-sm animate-fade-in">
+        <div className="flex justify-center">
+          <Logo />
+        </div>
 
         {sent ? (
-          <p className="text-center text-sm text-neutral-600">
+          <p className="text-center text-sm text-muted-foreground">
             Check your email for a sign-in link
           </p>
         ) : (
@@ -48,18 +53,25 @@ export default function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@firm.com.au"
-              className="w-full rounded border px-3 py-2"
+              className="w-full rounded-lg border border-input px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {error && <p className="text-sm text-destructive">{error}</p>}
             <button
               type="submit"
               disabled={loading}
-              className="w-full rounded bg-black py-2 text-white disabled:opacity-50"
+              className="w-full rounded-lg bg-primary py-2 text-sm font-semibold text-primary-foreground transition-all duration-200 hover:bg-accent disabled:opacity-50"
             >
               {loading ? "Sending..." : "Send sign-in link"}
             </button>
           </form>
         )}
+
+        <p className="text-center text-sm text-muted-foreground">
+          New to TaxFlow?{" "}
+          <Link href="/signup" className="font-semibold text-accent hover:underline">
+            Start your free trial
+          </Link>
+        </p>
       </div>
     </main>
   );

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { TrialBanner } from "@/components/TrialBanner";
+import { Logo } from "@/components/Logo";
 
 const NAV_LINKS = [
   { href: "/dashboard", label: "Overview" },
@@ -28,10 +29,17 @@ export default async function DashboardLayout({
     <div className="flex flex-1 flex-col">
       <TrialBanner status="active" daysRemaining={28} />
       <div className="flex flex-1">
-        <aside className="w-56 border-r p-4">
-          <nav className="flex flex-col gap-2">
+        <aside className="w-60 border-r border-border p-4">
+          <div className="mb-6 px-2">
+            <Logo href="/dashboard" />
+          </div>
+          <nav className="flex flex-col gap-1">
             {NAV_LINKS.map((link) => (
-              <Link key={link.href} href={link.href} className="rounded px-2 py-1 text-sm hover:bg-neutral-100">
+              <Link
+                key={link.href}
+                href={link.href}
+                className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-all duration-200 hover:bg-muted hover:text-foreground"
+              >
                 {link.label}
               </Link>
             ))}
