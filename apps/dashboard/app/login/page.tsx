@@ -3,7 +3,11 @@
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import { Logo } from "@/components/Logo";
+import { SiteHeader } from "@/components/SiteHeader";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -35,44 +39,54 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex flex-1 items-center justify-center bg-muted px-4">
-      <div className="w-full max-w-sm space-y-6 rounded-xl border border-border bg-card p-8 shadow-sm animate-fade-in">
-        <div className="flex justify-center">
-          <Logo />
-        </div>
+    <>
+      <SiteHeader cta="login" />
+      <main className="flex flex-1 items-start justify-center bg-background px-4 py-24">
+        <Card className="w-full max-w-sm animate-fade-in">
+          <CardHeader>
+            <h1 className="text-lg font-semibold">Sign in to TaxFlow</h1>
+            <p className="text-sm text-muted-foreground">
+              We&apos;ll email you a secure sign-in link.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {sent ? (
+              <p className="text-sm text-muted-foreground">
+                Check your email for a sign-in link.
+              </p>
+            ) : (
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="email">Work email</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@firm.com.au"
+                  />
+                </div>
+                {error && <p className="text-sm text-destructive">{error}</p>}
+                <Button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full"
+                >
+                  {loading ? "Sending..." : "Send sign-in link"}
+                </Button>
+              </form>
+            )}
 
-        {sent ? (
-          <p className="text-center text-sm text-muted-foreground">
-            Check your email for a sign-in link
-          </p>
-        ) : (
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@firm.com.au"
-              className="w-full rounded-lg border border-input px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-            {error && <p className="text-sm text-destructive">{error}</p>}
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded-lg bg-primary py-2 text-sm font-semibold text-primary-foreground transition-all duration-200 hover:bg-accent disabled:opacity-50"
-            >
-              {loading ? "Sending..." : "Send sign-in link"}
-            </button>
-          </form>
-        )}
-
-        <p className="text-center text-sm text-muted-foreground">
-          New to TaxFlow?{" "}
-          <Link href="/signup" className="font-semibold text-accent hover:underline">
-            Start your free trial
-          </Link>
-        </p>
-      </div>
-    </main>
+            <p className="text-sm text-muted-foreground">
+              New to TaxFlow?{" "}
+              <Link href="/signup" className="font-medium text-accent hover:underline">
+                Start your free trial
+              </Link>
+            </p>
+          </CardContent>
+        </Card>
+      </main>
+    </>
   );
 }

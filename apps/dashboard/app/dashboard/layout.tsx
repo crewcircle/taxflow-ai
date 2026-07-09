@@ -1,16 +1,24 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
+import {
+  BookOpen,
+  FileText,
+  LayoutDashboard,
+  MessageSquare,
+  ScrollText,
+  Settings,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { TrialBanner } from "@/components/TrialBanner";
 import { Logo } from "@/components/Logo";
+import { DashboardNavLink } from "@/components/DashboardNavLink";
 
 const NAV_LINKS = [
-  { href: "/dashboard", label: "Overview" },
-  { href: "/dashboard/query", label: "Ask a question" },
-  { href: "/dashboard/ato-response", label: "ATO correspondence" },
-  { href: "/dashboard/documents", label: "Documents" },
-  { href: "/dashboard/knowledge", label: "Firm knowledge" },
-  { href: "/dashboard/settings", label: "Settings" },
+  { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  { href: "/dashboard/query", label: "Ask a question", icon: MessageSquare },
+  { href: "/dashboard/ato-response", label: "ATO correspondence", icon: ScrollText },
+  { href: "/dashboard/documents", label: "Documents", icon: FileText },
+  { href: "/dashboard/knowledge", label: "Firm knowledge", icon: BookOpen },
+  { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
 export default async function DashboardLayout({
@@ -35,13 +43,9 @@ export default async function DashboardLayout({
           </div>
           <nav className="flex flex-col gap-1">
             {NAV_LINKS.map((link) => (
-              <Link
-                key={link.href}
-                href={link.href}
-                className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-all duration-200 hover:bg-muted hover:text-foreground"
-              >
+              <DashboardNavLink key={link.href} href={link.href} icon={link.icon}>
                 {link.label}
-              </Link>
+              </DashboardNavLink>
             ))}
           </nav>
         </aside>

@@ -1,3 +1,8 @@
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+
 type TrialStatus = "active" | "expiring_soon" | "card_required" | "expired";
 
 interface TrialBannerProps {
@@ -6,10 +11,10 @@ interface TrialBannerProps {
 }
 
 const STYLES: Record<TrialStatus, string> = {
-  active: "bg-green-50 text-green-800 border-green-200",
-  expiring_soon: "bg-amber-50 text-amber-800 border-amber-200",
-  card_required: "bg-red-50 text-red-800 border-red-200",
-  expired: "bg-red-100 text-red-900 border-red-300",
+  active: "border-border bg-background text-muted-foreground",
+  expiring_soon: "border-accent/30 bg-accent/5 text-foreground",
+  card_required: "border-destructive/30 bg-destructive/5 text-foreground",
+  expired: "border-destructive/30 bg-destructive/5 text-foreground",
 };
 
 function message(status: TrialStatus, daysRemaining: number): string {
@@ -29,14 +34,18 @@ function message(status: TrialStatus, daysRemaining: number): string {
 // real trial API in Week 4.
 export function TrialBanner({ status = "active", daysRemaining = 28 }: Partial<TrialBannerProps>) {
   const showCta = status === "card_required" || status === "expired";
+  const Icon = status === "active" ? CheckCircle2 : AlertTriangle;
 
   return (
-    <div className={`flex items-center justify-between border-b px-4 py-2 text-sm ${STYLES[status]}`}>
-      <span>{message(status, daysRemaining)}</span>
+    <div className={cn("flex items-center justify-between border-b px-4 py-2 text-sm", STYLES[status])}>
+      <span className="flex items-center gap-2">
+        <Icon className="size-4" />
+        {message(status, daysRemaining)}
+      </span>
       {showCta && (
-        <a href="/upgrade" className="rounded bg-black px-3 py-1 text-white text-xs">
-          Upgrade now
-        </a>
+        <Button asChild size="sm" variant="outline">
+          <Link href="/upgrade">Upgrade now</Link>
+        </Button>
       )}
     </div>
   );

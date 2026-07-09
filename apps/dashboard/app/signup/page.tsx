@@ -3,7 +3,18 @@
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import { Logo } from "@/components/Logo";
+import { SiteHeader } from "@/components/SiteHeader";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const BUSINESS_TYPES = [
   { value: "accounting", label: "Accounting / public practice" },
@@ -27,8 +38,12 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
 
   function update(field: keyof typeof form) {
-    return (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    return (e: React.ChangeEvent<HTMLInputElement>) =>
       setForm((f) => ({ ...f, [field]: e.target.value }));
+  }
+
+  function updateSelect(field: keyof typeof form) {
+    return (value: string) => setForm((f) => ({ ...f, [field]: value }));
   }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -68,120 +83,111 @@ export default function SignupPage() {
     }
   }
 
-  const inputClass =
-    "w-full rounded-lg border border-input px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
-
   return (
-    <main className="flex flex-1 items-center justify-center bg-muted px-4 py-8">
-      <div className="w-full max-w-md space-y-6 rounded-xl border border-border bg-card p-8 shadow-sm animate-fade-in">
-        <div className="flex justify-center">
-          <Logo />
-        </div>
-
-        {sent ? (
-          <div className="space-y-2 text-center">
-            <p className="text-sm font-semibold">Your 30-day free trial is ready.</p>
+    <>
+      <SiteHeader cta="signup" />
+      <main className="flex flex-1 items-start justify-center bg-background px-4 py-16">
+        <Card className="w-full max-w-md animate-fade-in">
+          <CardHeader>
+            <h1 className="text-lg font-semibold">Start your free trial</h1>
             <p className="text-sm text-muted-foreground">
-              Check your email for a sign-in link to get started - no credit card required.
+              30 days, 100 research queries, 10 documents. No credit card.
             </p>
-          </div>
-        ) : (
-          <>
-            <div className="space-y-1 text-center">
-              <h1 className="text-lg font-bold">Start your free trial</h1>
-              <p className="text-sm text-muted-foreground">
-                30 days, 100 research queries, 10 documents. No credit card.
-              </p>
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  Firm name
-                </label>
-                <input
-                  required
-                  value={form.business_name}
-                  onChange={update("business_name")}
-                  placeholder="Smith & Co Accountants"
-                  className={inputClass}
-                />
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {sent ? (
+              <div className="space-y-1">
+                <p className="text-sm font-semibold">Your 30-day free trial is ready.</p>
+                <p className="text-sm text-muted-foreground">
+                  Check your email for a sign-in link to get started - no credit card required.
+                </p>
               </div>
-
-              <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  Work email
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={form.email}
-                  onChange={update("email")}
-                  placeholder="you@firm.com.au"
-                  className={inputClass}
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  Firm type
-                </label>
-                <select value={form.business_type} onChange={update("business_type")} className={inputClass}>
-                  {BUSINESS_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                    Suburb
-                  </label>
-                  <input
+            ) : (
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="business_name">Firm name</Label>
+                  <Input
+                    id="business_name"
                     required
-                    value={form.suburb}
-                    onChange={update("suburb")}
-                    placeholder="Parramatta"
-                    className={inputClass}
+                    value={form.business_name}
+                    onChange={update("business_name")}
+                    placeholder="Smith & Co Accountants"
                   />
                 </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                    State
-                  </label>
-                  <select value={form.state} onChange={update("state")} className={inputClass}>
-                    {STATES.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="email">Work email</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    required
+                    value={form.email}
+                    onChange={update("email")}
+                    placeholder="you@firm.com.au"
+                  />
                 </div>
-              </div>
 
-              {error && <p className="text-sm text-destructive">{error}</p>}
+                <div className="space-y-1.5">
+                  <Label htmlFor="business_type">Firm type</Label>
+                  <Select value={form.business_type} onValueChange={updateSelect("business_type")}>
+                    <SelectTrigger id="business_type" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {BUSINESS_TYPES.map((t) => (
+                        <SelectItem key={t.value} value={t.value}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full rounded-lg bg-primary py-2 text-sm font-semibold text-primary-foreground transition-all duration-200 hover:bg-accent disabled:opacity-50"
-              >
-                {loading ? "Creating your trial..." : "Start free trial"}
-              </button>
-            </form>
-          </>
-        )}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="suburb">Suburb</Label>
+                    <Input
+                      id="suburb"
+                      required
+                      value={form.suburb}
+                      onChange={update("suburb")}
+                      placeholder="Parramatta"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="state">State</Label>
+                    <Select value={form.state} onValueChange={updateSelect("state")}>
+                      <SelectTrigger id="state" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {STATES.map((s) => (
+                          <SelectItem key={s} value={s}>
+                            {s}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
 
-        <p className="text-center text-sm text-muted-foreground">
-          Already have an account?{" "}
-          <Link href="/login" className="font-semibold text-accent hover:underline">
-            Sign in
-          </Link>
-        </p>
-      </div>
-    </main>
+                {error && <p className="text-sm text-destructive">{error}</p>}
+
+                <Button type="submit" disabled={loading} className="w-full">
+                  {loading ? "Creating your trial..." : "Start free trial"}
+                </Button>
+              </form>
+            )}
+
+            <p className="text-sm text-muted-foreground">
+              Already have an account?{" "}
+              <Link href="/login" className="font-medium text-accent hover:underline">
+                Sign in
+              </Link>
+            </p>
+          </CardContent>
+        </Card>
+      </main>
+    </>
   );
 }

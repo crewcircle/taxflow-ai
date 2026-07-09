@@ -1,7 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Logo } from "@/components/Logo";
+import { Check } from "lucide-react";
+import { SiteHeader } from "@/components/SiteHeader";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 const TIERS = [
   {
@@ -56,56 +61,59 @@ export default function UpgradePage() {
   }
 
   return (
-    <main className="flex flex-1 flex-col items-center bg-muted px-4 py-12">
-      <div className="mb-8">
-        <Logo />
-      </div>
-      <h1 className="mb-2 text-2xl font-bold">Choose your plan</h1>
-      <p className="mb-8 text-sm text-muted-foreground">
-        Annual billing. Cancel anytime. Card or BECS direct debit.
-      </p>
+    <>
+      <SiteHeader cta="login" />
+      <main className="flex flex-1 flex-col items-center bg-background px-4 py-16">
+        <div className="mb-8 text-center">
+          <h1 className="text-2xl font-semibold">Choose your plan</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Annual billing. Cancel anytime. Card or BECS direct debit.
+          </p>
+        </div>
 
-      {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
+        {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
 
-      <div className="grid w-full max-w-2xl gap-6 md:grid-cols-2">
-        {TIERS.map((tier) => (
-          <div
-            key={tier.id}
-            className={`rounded-xl border bg-card p-6 shadow-sm ${
-              tier.highlighted ? "border-accent ring-1 ring-accent" : "border-border"
-            }`}
-          >
-            {tier.highlighted && (
-              <span className="mb-2 inline-block rounded bg-accent px-2 py-0.5 text-xs font-semibold text-accent-foreground">
-                Most popular
-              </span>
-            )}
-            <h2 className="text-lg font-bold">{tier.name}</h2>
-            <p className="mt-1">
-              <span className="text-3xl font-bold">{tier.price}</span>
-              <span className="text-sm text-muted-foreground">{tier.period}</span>
-            </p>
-            <ul className="mt-4 space-y-2 text-sm text-muted-foreground">
-              {tier.features.map((f) => (
-                <li key={f} className="flex items-start gap-2">
-                  <span className="text-accent">✓</span> {f}
-                </li>
-              ))}
-            </ul>
-            <button
-              onClick={() => handleUpgrade(tier.id)}
-              disabled={loading !== null}
-              className={`mt-6 w-full rounded-lg py-2 text-sm font-semibold transition-all duration-200 disabled:opacity-50 ${
-                tier.highlighted
-                  ? "bg-accent text-accent-foreground hover:opacity-90"
-                  : "bg-primary text-primary-foreground hover:bg-accent"
-              }`}
+        <div className="grid w-full max-w-2xl gap-6 md:grid-cols-2">
+          {TIERS.map((tier) => (
+            <Card
+              key={tier.id}
+              className={cn(tier.highlighted && "border-accent ring-1 ring-accent")}
             >
-              {loading === tier.id ? "Redirecting to checkout..." : `Choose ${tier.name}`}
-            </button>
-          </div>
-        ))}
-      </div>
-    </main>
+              <CardHeader>
+                {tier.highlighted && (
+                  <Badge className="mb-1 w-fit bg-accent text-accent-foreground">
+                    Most popular
+                  </Badge>
+                )}
+                <h2 className="text-lg font-semibold">{tier.name}</h2>
+                <p>
+                  <span className="text-3xl font-bold">{tier.price}</span>
+                  <span className="text-sm text-muted-foreground">{tier.period}</span>
+                </p>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <ul className="space-y-2 text-sm text-muted-foreground">
+                  {tier.features.map((f) => (
+                    <li key={f} className="flex items-start gap-2">
+                      <Check className="mt-0.5 size-4 shrink-0 text-accent" /> {f}
+                    </li>
+                  ))}
+                </ul>
+                <Button
+                  onClick={() => handleUpgrade(tier.id)}
+                  disabled={loading !== null}
+                  className={cn(
+                    "w-full",
+                    tier.highlighted && "bg-accent text-accent-foreground hover:opacity-90"
+                  )}
+                >
+                  {loading === tier.id ? "Redirecting to checkout..." : `Choose ${tier.name}`}
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </main>
+    </>
   );
 }

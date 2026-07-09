@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Upload } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
 
 interface UploadResult {
   document_id: string;
@@ -70,59 +74,59 @@ export default function AtoResponsePage() {
         </p>
       </div>
 
-      <div className="rounded-lg border border-dashed border-border p-6 text-center">
-        <input ref={fileInput} type="file" accept="application/pdf" className="mx-auto block text-sm" />
-        <button
-          onClick={handleUpload}
-          disabled={uploading}
-          className="mt-4 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-all duration-200 hover:bg-accent disabled:opacity-50"
-        >
-          {uploading ? "Analysing letter..." : "Upload and analyse"}
-        </button>
-      </div>
+      <Card className="border-dashed">
+        <CardContent className="flex flex-col items-center gap-4 py-4 text-center">
+          <Upload className="size-6 text-muted-foreground" />
+          <input ref={fileInput} type="file" accept="application/pdf" className="text-sm" />
+          <Button onClick={handleUpload} disabled={uploading}>
+            {uploading ? "Analysing letter..." : "Upload and analyse"}
+          </Button>
+        </CardContent>
+      </Card>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       {result && (
-        <div className="space-y-4 rounded-lg border border-border p-4">
-          <div className="flex items-center justify-between">
-            <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium">
-              {result.classification.letter_type.replace(/_/g, " ")}
-            </span>
-            {result.classification.deadline_days !== null && (
-              <span className="text-xs text-destructive">
-                Deadline: {result.classification.deadline_days} days
-              </span>
-            )}
-          </div>
-          <p className="text-sm">{result.classification.key_issue}</p>
+        <Card>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <Badge variant="outline">{result.classification.letter_type.replace(/_/g, " ")}</Badge>
+              {result.classification.deadline_days !== null && (
+                <span className="text-xs text-destructive">
+                  Deadline: {result.classification.deadline_days} days
+                </span>
+              )}
+            </div>
+            <p className="text-sm">{result.classification.key_issue}</p>
 
-          <div>
-            <p className="mb-1 text-xs font-semibold text-muted-foreground">RESPONSE STRATEGY</p>
-            <p className="text-sm">{result.handler_result.response_strategy}</p>
-          </div>
+            <div>
+              <p className="mb-1 text-xs font-semibold text-muted-foreground">RESPONSE STRATEGY</p>
+              <p className="text-sm">{result.handler_result.response_strategy}</p>
+            </div>
 
-          <div>
-            <p className="mb-1 text-xs font-semibold text-muted-foreground">EVIDENCE CHECKLIST</p>
-            <ul className="list-disc space-y-1 pl-5 text-sm">
-              {result.handler_result.evidence_checklist.map((item, i) => (
-                <li key={i}>{item}</li>
-              ))}
-            </ul>
-          </div>
+            <div>
+              <p className="mb-1 text-xs font-semibold text-muted-foreground">EVIDENCE CHECKLIST</p>
+              <ul className="list-disc space-y-1 pl-5 text-sm">
+                {result.handler_result.evidence_checklist.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
 
-          <div>
-            <p className="mb-1 text-xs font-semibold text-muted-foreground">DRAFT RESPONSE</p>
-            <p className="whitespace-pre-wrap rounded bg-muted p-3 text-sm">{result.draft_response}</p>
-          </div>
+            <div>
+              <p className="mb-1 text-xs font-semibold text-muted-foreground">DRAFT RESPONSE</p>
+              <p className="whitespace-pre-wrap rounded-lg bg-muted p-3 text-sm">
+                {result.draft_response}
+              </p>
+            </div>
 
-          <a
-            href={`/api/documents/${result.document_id}/download?fmt=docx`}
-            className="inline-block rounded border border-border px-3 py-1 text-xs hover:bg-muted"
-          >
-            Download as .docx
-          </a>
-        </div>
+            <Button asChild variant="outline" size="sm">
+              <a href={`/api/documents/${result.document_id}/download?fmt=docx`}>
+                Download as .docx
+              </a>
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {history.length > 0 && (

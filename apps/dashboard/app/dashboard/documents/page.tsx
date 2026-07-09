@@ -1,6 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 
 interface DocumentRow {
   id: string;
@@ -10,11 +19,11 @@ interface DocumentRow {
   created_at: string;
 }
 
-const STATUS_STYLE: Record<string, string> = {
-  draft: "bg-muted text-muted-foreground",
-  approved: "bg-green-50 text-green-800",
-  sent: "bg-blue-50 text-blue-800",
-  archived: "bg-neutral-100 text-neutral-500",
+const STATUS_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
+  draft: "outline",
+  approved: "secondary",
+  sent: "default",
+  archived: "outline",
 };
 
 export default function DocumentsPage() {
@@ -42,41 +51,39 @@ export default function DocumentsPage() {
 
       {documents && documents.length > 0 && (
         <div className="overflow-hidden rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted text-left text-xs font-medium text-muted-foreground">
-              <tr>
-                <th className="px-4 py-2">Title</th>
-                <th className="px-4 py-2">Type</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2">Created</th>
-                <th className="px-4 py-2"></th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Title</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {documents.map((doc) => (
-                <tr key={doc.id} className="border-t border-border">
-                  <td className="px-4 py-2 font-medium">{doc.title}</td>
-                  <td className="px-4 py-2 text-muted-foreground">{doc.document_type}</td>
-                  <td className="px-4 py-2">
-                    <span className={`rounded px-2 py-0.5 text-xs ${STATUS_STYLE[doc.status] ?? ""}`}>
-                      {doc.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2 text-muted-foreground">
+                <TableRow key={doc.id}>
+                  <TableCell className="font-medium">{doc.title}</TableCell>
+                  <TableCell className="text-muted-foreground">{doc.document_type}</TableCell>
+                  <TableCell>
+                    <Badge variant={STATUS_VARIANT[doc.status] ?? "outline"}>{doc.status}</Badge>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
                     {new Date(doc.created_at).toLocaleDateString("en-AU")}
-                  </td>
-                  <td className="px-4 py-2 text-right">
+                  </TableCell>
+                  <TableCell className="text-right">
                     <a
                       href={`/api/documents/${doc.id}/download?fmt=docx`}
                       className="text-accent hover:underline"
                     >
                       Download
                     </a>
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
     </div>

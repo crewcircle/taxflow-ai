@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Upload } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 
 interface KnowledgeRow {
   id: string;
@@ -60,17 +63,16 @@ export default function KnowledgePage() {
         </p>
       </div>
 
-      <div className="rounded-lg border border-dashed border-border p-6 text-center">
-        <input ref={fileInput} type="file" accept=".pdf,.docx,.txt" className="mx-auto block text-sm" />
-        <button
-          onClick={handleUpload}
-          disabled={uploading}
-          className="mt-4 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-all duration-200 hover:bg-accent disabled:opacity-50"
-        >
-          {uploading ? "Uploading..." : "Upload document"}
-        </button>
-        {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
-      </div>
+      <Card className="border-dashed">
+        <CardContent className="flex flex-col items-center gap-4 py-4 text-center">
+          <Upload className="size-6 text-muted-foreground" />
+          <input ref={fileInput} type="file" accept=".pdf,.docx,.txt" className="text-sm" />
+          <Button onClick={handleUpload} disabled={uploading}>
+            {uploading ? "Uploading..." : "Upload document"}
+          </Button>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </CardContent>
+      </Card>
 
       {items.length === 0 ? (
         <p className="text-sm text-muted-foreground">No documents uploaded yet.</p>
@@ -84,12 +86,9 @@ export default function KnowledgePage() {
                   {item.file_type.toUpperCase()} · used in {item.usage_count} answers
                 </p>
               </div>
-              <button
-                onClick={() => handleDelete(item.id)}
-                className="text-xs text-destructive hover:underline"
-              >
+              <Button variant="link" size="sm" className="text-destructive" onClick={() => handleDelete(item.id)}>
                 Remove
-              </button>
+              </Button>
             </li>
           ))}
         </ul>

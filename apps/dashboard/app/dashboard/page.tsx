@@ -1,8 +1,21 @@
 import Link from "next/link";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
 function DemoBadge() {
-  return <span className="ml-2 rounded bg-neutral-200 px-1.5 py-0.5 text-xs">DEMO</span>;
+  return (
+    <Badge variant="outline" className="ml-2 text-[10px] text-muted-foreground">
+      DEMO
+    </Badge>
+  );
 }
+
+const STATS = [
+  { label: "Queries today", value: "7" },
+  { label: "Documents this week", value: "3" },
+  { label: "Trial days remaining", value: "28" },
+];
 
 export default function DashboardOverviewPage() {
   return (
@@ -10,35 +23,24 @@ export default function DashboardOverviewPage() {
       <h1 className="text-xl font-semibold">Overview</h1>
 
       <div className="grid grid-cols-3 gap-4">
-        <div className="rounded border p-4">
-          <p className="text-sm text-neutral-500">
-            Queries today
-            <DemoBadge />
-          </p>
-          <p className="text-2xl font-semibold">7</p>
-        </div>
-        <div className="rounded border p-4">
-          <p className="text-sm text-neutral-500">
-            Documents this week
-            <DemoBadge />
-          </p>
-          <p className="text-2xl font-semibold">3</p>
-        </div>
-        <div className="rounded border p-4">
-          <p className="text-sm text-neutral-500">
-            Trial days remaining
-            <DemoBadge />
-          </p>
-          <p className="text-2xl font-semibold">28</p>
-        </div>
+        {STATS.map((stat) => (
+          <Card key={stat.label}>
+            <CardHeader className="pb-0">
+              <p className="flex items-center text-sm text-muted-foreground">
+                {stat.label}
+                <DemoBadge />
+              </p>
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl font-semibold">{stat.value}</p>
+            </CardContent>
+          </Card>
+        ))}
       </div>
 
-      <Link
-        href="/dashboard/query"
-        className="inline-block rounded bg-black px-4 py-2 text-sm text-white"
-      >
-        Quick question →
-      </Link>
+      <Button asChild>
+        <Link href="/dashboard/query">Quick question →</Link>
+      </Button>
     </div>
   );
 }
