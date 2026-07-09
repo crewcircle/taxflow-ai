@@ -7,6 +7,18 @@ from taxflow.services.knowledge.embedder import embed
 router = APIRouter(prefix="/firm-knowledge", tags=["firm-knowledge"])
 
 
+@router.get("")
+async def list_firm_knowledge(client=Depends(get_current_client), db=Depends(get_db)):
+    result = (
+        db.table("firm_knowledge")
+        .select("id, file_name, file_type, usage_count, created_at")
+        .eq("client_id", client["id"])
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data
+
+
 @router.post("/upload")
 async def upload_firm_knowledge(file: UploadFile, client=Depends(get_current_client), db=Depends(get_db)):
     file_bytes = await file.read()

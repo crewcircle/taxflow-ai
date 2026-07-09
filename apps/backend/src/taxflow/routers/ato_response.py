@@ -20,6 +20,19 @@ def _extract_text(file_bytes: bytes) -> str:
         return "\n".join(page.extract_text() or "" for page in pdf.pages)
 
 
+@router.get("")
+async def list_ato_responses(client=Depends(get_current_client), db=Depends(get_db)):
+    result = (
+        db.table("documents")
+        .select("id, title, status, created_at")
+        .eq("client_id", client["id"])
+        .eq("document_type", "ato_response")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data
+
+
 @router.post("/upload")
 async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client), db=Depends(get_db)):
     file_bytes = await file.read()

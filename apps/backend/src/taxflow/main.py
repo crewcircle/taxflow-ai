@@ -10,6 +10,7 @@ from taxflow.routers import (
     ato_response,
     firm_knowledge,
     webhooks,
+    settings as settings_router,
 )
 from taxflow.scheduler import start_scheduler, stop_scheduler
 
@@ -30,3 +31,4 @@ app.include_router(documents.router)
 app.include_router(ato_response.router)
 app.include_router(firm_knowledge.router)
 app.include_router(webhooks.router)
+app.include_router(settings_router.router)

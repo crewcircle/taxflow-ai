@@ -32,6 +32,18 @@ async def list_templates():
     return [{"type": k, "label": v} for k, v in TEMPLATE_REGISTRY.items()]
 
 
+@router.get("")
+async def list_documents(client=Depends(get_current_client), db=Depends(get_db)):
+    result = (
+        db.table("documents")
+        .select("id, document_type, title, status, created_at")
+        .eq("client_id", client["id"])
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data
+
+
 @router.post("/generate")
 async def generate_document(
     body: GenerateDocumentRequest, client=Depends(get_current_client), db=Depends(get_db)
