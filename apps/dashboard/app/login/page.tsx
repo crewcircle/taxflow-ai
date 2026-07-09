@@ -1,19 +1,36 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { startDemoLogin } from "@/lib/demo-login";
 import { SiteHeader } from "@/components/SiteHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 
 export default function LoginPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [demoLoading, setDemoLoading] = useState(false);
+
+  async function handleDemoLogin() {
+    setDemoLoading(true);
+    setError(null);
+    const result = await startDemoLogin();
+    if (result.ok) {
+      router.push("/dashboard");
+    } else {
+      setError(result.error);
+      setDemoLoading(false);
+    }
+  }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -84,6 +101,18 @@ export default function LoginPage() {
                 Start your free trial
               </Link>
             </p>
+
+            <Separator />
+
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              disabled={demoLoading}
+              onClick={handleDemoLogin}
+            >
+              {demoLoading ? "Loading demo..." : "Try the live demo - no signup"}
+            </Button>
           </CardContent>
         </Card>
       </main>
