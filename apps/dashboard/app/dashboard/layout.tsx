@@ -43,7 +43,11 @@ export default async function DashboardLayout({
           </div>
           <nav className="flex flex-col gap-1">
             {NAV_LINKS.map((link) => (
-              <DashboardNavLink key={link.href} href={link.href} icon={link.icon}>
+              <DashboardNavLink
+                key={link.href}
+                href={link.href}
+                icon={<link.icon className="size-4" />}
+              >
                 {link.label}
               </DashboardNavLink>
             ))}
