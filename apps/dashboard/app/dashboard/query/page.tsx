@@ -33,6 +33,14 @@ export default function QueryPage() {
     setStreamedAnswer("");
 
     try {
+      // Trial gate check runs on the non-stream endpoint; EventSource cannot
+      // surface response bodies, so probe caps first and route 402 to /upgrade.
+      const gate = await fetch("/api/query/stream?question=", { method: "HEAD" }).catch(() => null);
+      if (gate && gate.status === 402) {
+        window.location.href = "/upgrade";
+        return;
+      }
+
       const source = new EventSource(`/api/query/stream?question=${encodeURIComponent(question)}`);
       let answer = "";
 

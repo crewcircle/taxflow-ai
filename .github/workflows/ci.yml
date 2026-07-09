@@ -77,6 +77,8 @@ jobs:
           node-version: 22
       - name: Install Vercel CLI
         run: pnpm add -g vercel
+      - name: Install workspace dependencies
+        run: pnpm install
       - name: Pull Vercel environment
         run: vercel pull --yes --environment=production --token=$VERCEL_TOKEN
         working-directory: apps/dashboard
