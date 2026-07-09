@@ -1,7 +1,8 @@
 import os
+import time
 
 import stripe
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 
 from taxflow.config import settings
@@ -15,6 +16,11 @@ TIER_PRICE_ENV = {
     "professional": "STRIPE_PROFESSIONAL_PRICE_ID",
     "practice": "STRIPE_PRACTICE_PRICE_ID",
 }
+
+DEMO_EMAIL = "demo@taxflow.crewcircle.com.au"
+_demo_login_hits: dict[str, list[float]] = {}
+DEMO_LOGIN_WINDOW_SECONDS = 60
+DEMO_LOGIN_MAX_PER_WINDOW = 5
 
 
 class SignupRequest(BaseModel):
@@ -54,6 +60,9 @@ class CheckoutRequest(BaseModel):
 async def create_checkout_session(body: CheckoutRequest, client=Depends(get_current_client)):
     """Create a Stripe Checkout session for trial-to-paid conversion.
     The checkout.session.completed webhook flips subscription_status to active."""
+    if client.get("is_demo"):
+        raise HTTPException(status_code=403, detail="Billing is disabled for the demo account")
+
     env_name = TIER_PRICE_ENV.get(body.tier)
     price_id = os.environ.get(env_name, "") if env_name else ""
     if not price_id:
@@ -71,3 +80,40 @@ async def create_checkout_session(body: CheckoutRequest, client=Depends(get_curr
         tax_id_collection={"enabled": True},
     )
     return {"checkout_url": session["url"], "session_id": session["id"]}
+
+
+@router.post("/demo-login")
+async def demo_login(request: Request):
+    """Log a visitor straight into the shared demo account - no email, no signup.
+    Server-side generates and immediately verifies a Supabase magic link and
+    hands back the resulting session tokens directly."""
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    hits = [t for t in _demo_login_hits.get(ip, []) if now - t < DEMO_LOGIN_WINDOW_SECONDS]
+    if len(hits) >= DEMO_LOGIN_MAX_PER_WINDOW:
+        raise HTTPException(status_code=429, detail="Too many demo login attempts - try again shortly")
+    hits.append(now)
+    _demo_login_hits[ip] = hits
+
+    sb = get_supabase_client()
+    client_row = sb.table("clients").select("id").eq("email", DEMO_EMAIL).eq("is_demo", True).execute()
+    if not client_row.data:
+        raise HTTPException(status_code=503, detail="Demo account not configured")
+
+    try:
+        link = sb.auth.admin.generate_link(params={"type": "magiclink", "email": DEMO_EMAIL})
+        anon = create_supabase_anon_client()
+        session = anon.auth.verify_otp({"type": "magiclink", "token_hash": link.properties.hashed_token})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Demo login failed: {e}") from e
+
+    return {
+        "access_token": session.session.access_token,
+        "refresh_token": session.session.refresh_token,
+    }
+
+
+def create_supabase_anon_client():
+    from supabase import create_client
+
+    return create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)

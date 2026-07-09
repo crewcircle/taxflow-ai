@@ -21,6 +21,9 @@ async def list_firm_knowledge(client=Depends(get_current_client), db=Depends(get
 
 @router.post("/upload")
 async def upload_firm_knowledge(file: UploadFile, client=Depends(get_current_client), db=Depends(get_db)):
+    if client.get("is_demo"):
+        raise HTTPException(status_code=403, detail="File uploads are disabled for the demo account")
+
     file_bytes = await file.read()
     file_type = (file.filename or "").rsplit(".", 1)[-1].lower()
 
