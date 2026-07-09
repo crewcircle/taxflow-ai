@@ -31,11 +31,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh && echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        uses: astral-sh/setup-uv@v5
 
       - name: Install backend dependencies
         working-directory: apps/backend
-        run: uv sync
+        run: uv sync --extra dev
 
       - name: Run backend tests
         working-directory: apps/backend
@@ -49,11 +49,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: "pnpm"
       - run: pnpm install
       - name: Typecheck dashboard
@@ -62,3 +60,52 @@ jobs:
       - name: Lint dashboard
         working-directory: apps/dashboard
         run: pnpm lint
+
+  deploy-dashboard:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [test-dashboard]
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Vercel CLI
+        run: pnpm add -g vercel
+      - name: Pull Vercel environment
+        run: vercel pull --yes --environment=production --token=$VERCEL_TOKEN
+        working-directory: apps/dashboard
+      - name: Build
+        run: vercel build --prod --token=$VERCEL_TOKEN
+        working-directory: apps/dashboard
+      - name: Deploy to production
+        run: vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
+        working-directory: apps/dashboard
+
+  deploy-backend:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [test-backend, test-dashboard]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH key
+        env:
+          DROPLET_SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DROPLET_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install Doppler CLI
+        run: (curl -Ls --tlsv1.2 --proto "=https" --retry 3 https://cli.doppler.com/install.sh) | sudo sh
+
+      - name: Deploy backend to droplet
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: doppler run --project taxflow --config prd -- bash scripts/deploy_backend.sh
