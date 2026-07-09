@@ -77,16 +77,11 @@ jobs:
           node-version: 22
       - name: Install Vercel CLI
         run: pnpm add -g vercel
-      - name: Install workspace dependencies
-        run: pnpm install
-      - name: Pull Vercel environment
-        run: vercel pull --yes --environment=production --token=$VERCEL_TOKEN
-        working-directory: apps/dashboard
-      - name: Build
-        run: vercel build --prod --token=$VERCEL_TOKEN
-        working-directory: apps/dashboard
+      # Remote build on Vercel: the dashboard's package.json is self-contained
+      # (no workspace: refs), so deploying the app directory alone works and
+      # avoids pnpm-workspace path issues with --prebuilt.
       - name: Deploy to production
-        run: vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
+        run: vercel deploy --prod --yes --token=$VERCEL_TOKEN
         working-directory: apps/dashboard
 
   deploy-backend:
