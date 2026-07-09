@@ -37,7 +37,7 @@ export default function QueryPage() {
       // surface response bodies, so probe caps first and route 402 to /upgrade.
       const gate = await fetch("/api/query/stream?question=", { method: "HEAD" }).catch(() => null);
       if (gate && gate.status === 402) {
-        window.location.href = "/upgrade";
+        window.location.assign("/upgrade");
         return;
       }
 

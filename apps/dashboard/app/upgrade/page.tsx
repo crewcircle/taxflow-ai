@@ -48,7 +48,7 @@ export default function UpgradePage() {
       });
       if (!response.ok) throw new Error("Checkout failed");
       const data: { checkout_url: string } = await response.json();
-      window.location.href = data.checkout_url;
+      window.location.assign(data.checkout_url);
     } catch {
       setError("Could not start checkout - please try again or contact support");
       setLoading(null);
