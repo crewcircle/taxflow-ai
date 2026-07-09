@@ -9,13 +9,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from taxflow.db import get_db
+from taxflow.db import get_db, get_supabase_client
 from taxflow.middleware.auth import get_current_client
 from taxflow.middleware.trial_gate import check_trial_gate, increment_usage
 from taxflow.services.agents.research import ResearchAgent
+from taxflow.services.agents.verify import VerifyAgent
 
 router = APIRouter(prefix="/query", tags=["query"])
 agent = ResearchAgent()
+verifier = VerifyAgent()
 
 
 class QueryRequest(BaseModel):
@@ -79,21 +81,78 @@ async def submit_query(
         raise HTTPException(status_code=500, detail=f"Query failed: {e}") from e
 
 
+@router.get("/stream")
+async def stream_query(
+    question: str,
+    client=Depends(get_current_client),
+    _trial=Depends(check_trial_gate),
+):
+    """Server-Sent Events stream of Research Agent output.
+
+    Emits: {"type": "token", ...} while the answer streams, then
+    {"type": "final", "citations": [...]}, then - once the answer is fully
+    formed - an async {"type": "verification", "status": ..., "issues": [...]}
+    event. Verification runs after the stream so it never delays the first
+    token; the client shows the answer immediately and the verified/needs-review
+    badge lands a few seconds later.
+    """
+    db = get_supabase_client()
+    query_row = (
+        db.table("queries")
+        .insert(
+            {
+                "client_id": client["id"],
+                "user_email": client["email"],
+                "question": question,
+                "module": "research",
+                "status": "processing",
+            }
+        )
+        .execute()
+    )
+    query_id = query_row.data[0]["id"]
+
+    async def generate():
+        answer_parts: list[str] = []
+        citations: list[dict] = []
+
+        async for event in agent.run_stream(question=question, client_id=client["id"]):
+            if event["type"] == "token":
+                answer_parts.append(event["text"])
+            elif event["type"] == "final":
+                citations = event["citations"]
+            yield f"data: {json.dumps(event)}\n\n"
+
+        answer = "".join(answer_parts)
+
+        db.table("queries").update(
+            {
+                "status": "completed",
+                "final_answer": answer,
+                "citations": citations,
+                "completed_at": "now()",
+            }
+        ).eq("id", query_id).execute()
+        await increment_usage(client["id"], "queries")
+
+        try:
+            verification = await verifier.run(draft=answer, citations=citations, question=question)
+        except Exception as e:  # noqa: BLE001 - verification failure must not break the response
+            verification = {"overall_status": "parse_error", "issues": [], "error": str(e)}
+
+        db.table("queries").update({"verification_result": verification}).eq("id", query_id).execute()
+
+        yield f"data: {json.dumps({'type': 'verification', **verification})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# Must stay below /stream - FastAPI matches routes in declaration order, and this
+# wildcard path param would otherwise swallow /query/stream as query_id="stream".
 @router.get("/{query_id}")
 async def get_query(query_id: str, client=Depends(get_current_client), db=Depends(get_db)):
     result = db.table("queries").select("*").eq("id", query_id).eq("client_id", client["id"]).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Query not found")
     return result.data[0]
-
-
-@router.get("/stream")
-async def stream_query(question: str, client=Depends(get_current_client)):
-    """Server-Sent Events stream of Research Agent output."""
-
-    async def generate():
-        async for event in agent.run_stream(question=question, client_id=client["id"]):
-            yield f"data: {json.dumps(event)}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
