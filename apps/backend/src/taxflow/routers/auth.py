@@ -1,4 +1,5 @@
 import os
+import random
 import time
 
 import stripe
@@ -17,7 +18,6 @@ TIER_PRICE_ENV = {
     "practice": "STRIPE_PRACTICE_PRICE_ID",
 }
 
-DEMO_EMAIL = "demo@taxflow.crewcircle.com.au"
 _demo_login_hits: dict[str, list[float]] = {}
 DEMO_LOGIN_WINDOW_SECONDS = 60
 DEMO_LOGIN_MAX_PER_WINDOW = 5
@@ -84,7 +84,7 @@ async def create_checkout_session(body: CheckoutRequest, client=Depends(get_curr
 
 @router.post("/demo-login")
 async def demo_login(request: Request):
-    """Log a visitor straight into the shared demo account - no email, no signup.
+    """Log a visitor into a randomly chosen demo persona - no email, no signup.
     Server-side generates and immediately verifies a Supabase magic link and
     hands back the resulting session tokens directly."""
     ip = request.client.host if request.client else "unknown"
@@ -96,12 +96,13 @@ async def demo_login(request: Request):
     _demo_login_hits[ip] = hits
 
     sb = get_supabase_client()
-    client_row = sb.table("clients").select("id").eq("email", DEMO_EMAIL).eq("is_demo", True).execute()
-    if not client_row.data:
+    demo_clients = sb.table("clients").select("email").eq("is_demo", True).execute()
+    if not demo_clients.data:
         raise HTTPException(status_code=503, detail="Demo account not configured")
+    demo_email = random.choice(demo_clients.data)["email"]
 
     try:
-        link = sb.auth.admin.generate_link(params={"type": "magiclink", "email": DEMO_EMAIL})
+        link = sb.auth.admin.generate_link(params={"type": "magiclink", "email": demo_email})
         anon = create_supabase_anon_client()
         session = anon.auth.verify_otp({"type": "magiclink", "token_hash": link.properties.hashed_token})
     except Exception as e:

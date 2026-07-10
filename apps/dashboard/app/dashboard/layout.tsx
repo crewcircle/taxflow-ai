@@ -33,9 +33,27 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  let isDemo = false;
+  if (session) {
+    try {
+      const meResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/settings/me`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (meResponse.ok) {
+        const me = await meResponse.json();
+        isDemo = Boolean(me.client?.is_demo);
+      }
+    } catch {
+      // Non-fatal - fall back to showing the trial banner as normal.
+    }
+  }
+
   return (
     <div className="flex flex-1 flex-col">
-      <TrialBanner status="active" daysRemaining={28} />
+      {!isDemo && <TrialBanner status="active" daysRemaining={28} />}
       <div className="flex flex-1">
         <aside className="w-60 border-r border-border p-4">
           <div className="mb-6 px-2">
