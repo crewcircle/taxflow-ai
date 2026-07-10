@@ -7,36 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-
-const TIERS = [
-  {
-    id: "starter",
-    name: "Starter",
-    price: "$2,400",
-    period: "/year + GST",
-    features: [
-      "300 research queries / month",
-      "50 documents / month",
-      "ATO correspondence module",
-      "Email support",
-    ],
-  },
-  {
-    id: "professional",
-    name: "Professional",
-    price: "$6,000",
-    period: "/year + GST",
-    highlighted: true,
-    features: [
-      "Unlimited research queries",
-      "Unlimited documents",
-      "ATO correspondence module",
-      "Firm knowledge base",
-      "Regulatory alerts",
-      "Priority support",
-    ],
-  },
-];
+import { TIERS } from "@/lib/pricing";
 
 export default function UpgradePage() {
   const [loading, setLoading] = useState<string | null>(null);
