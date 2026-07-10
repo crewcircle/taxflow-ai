@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import {
+  Bell,
   BookOpen,
   FileText,
   LayoutDashboard,
@@ -16,6 +17,7 @@ const NAV_LINKS = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/query", label: "Ask a question", icon: MessageSquare },
   { href: "/dashboard/ato-response", label: "ATO correspondence", icon: ScrollText },
+  { href: "/dashboard/regulatory", label: "Regulatory updates", icon: Bell },
   { href: "/dashboard/documents", label: "Documents", icon: FileText },
   { href: "/dashboard/knowledge", label: "Firm knowledge", icon: BookOpen },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },

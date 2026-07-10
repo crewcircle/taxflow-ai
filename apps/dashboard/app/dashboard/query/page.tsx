@@ -6,8 +6,14 @@ import { AlertTriangle, CheckCircle2, PanelRightClose, PanelRightOpen, Sparkles 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHistorySidebar";
 import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
+
+interface DocumentTemplate {
+  type: string;
+  label: string;
+}
 
 interface VerificationIssue {
   claim: string;
@@ -76,6 +82,7 @@ export default function QueryPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [streamedAnswer, setStreamedAnswer] = useState("");
+  const [drafting, setDrafting] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [verification, setVerification] = useState<Verification | null>(null);
   const [copied, setCopied] = useState(false);
@@ -83,6 +90,8 @@ export default function QueryPage() {
 
   const [history, setHistory] = useState<QueryListItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
+  const [docType, setDocType] = useState("advice_memo");
   const [savingDoc, setSavingDoc] = useState(false);
   const [savedDocId, setSavedDocId] = useState<string | null>(null);
 
@@ -95,12 +104,21 @@ export default function QueryPage() {
 
   useEffect(loadHistory, [loadHistory]);
 
+  useEffect(() => {
+    fetch("/api/documents/templates")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setTemplates)
+      .catch(() => {});
+  }, []);
+
   function resetPane() {
     setResult(null);
     setStreamedAnswer("");
+    setDrafting(false);
     setVerification(null);
     setVerifying(false);
     setSavedDocId(null);
+    setDocType("advice_memo");
     setError(null);
   }
 
@@ -171,6 +189,10 @@ export default function QueryPage() {
           } else if (parsed.type === "final") {
             citations = parsed.citations ?? [];
             setResult({ answer, citations, model_used: "haiku" });
+            setDrafting(true);
+          } else if (parsed.type === "draft" && parsed.text) {
+            setDrafting(false);
+            setResult({ answer: parsed.text, citations, model_used: "haiku" });
             setVerifying(true);
           } else if (parsed.type === "verification") {
             setVerifying(false);
@@ -209,7 +231,7 @@ export default function QueryPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query_id: activeId,
-          document_type: "advice_memo",
+          document_type: docType,
           title: question.slice(0, 80),
           content_md: result.answer,
         }),
@@ -243,6 +265,11 @@ export default function QueryPage() {
               <Badge variant="outline" className="gap-1 border-accent/30 text-accent">
                 <Sparkles className="size-3" />
                 Enhanced model
+              </Badge>
+            )}
+            {drafting && (
+              <Badge variant="outline" className="text-muted-foreground">
+                Drafting advice memo...
               </Badge>
             )}
             {verifying && (
@@ -282,9 +309,23 @@ export default function QueryPage() {
                     <Link href="/dashboard/documents">View saved document →</Link>
                   </Button>
                 ) : (
-                  <Button variant="outline" size="sm" disabled={savingDoc} onClick={handleSaveAsDocument}>
-                    {savingDoc ? "Saving..." : "Save as document"}
-                  </Button>
+                  <>
+                    <Select value={docType} onValueChange={setDocType}>
+                      <SelectTrigger size="sm" className="w-[220px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {templates.map((t) => (
+                          <SelectItem key={t.type} value={t.type}>
+                            {t.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button variant="outline" size="sm" disabled={savingDoc} onClick={handleSaveAsDocument}>
+                      {savingDoc ? "Saving..." : "Save as document"}
+                    </Button>
+                  </>
                 )}
               </div>
             </div>

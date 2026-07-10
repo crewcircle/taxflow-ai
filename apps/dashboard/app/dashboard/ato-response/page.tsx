@@ -30,19 +30,68 @@ interface HistoryRow {
   created_at: string;
 }
 
+interface HistoryDetail {
+  id: string;
+  title: string;
+  status: string;
+  content_md: string;
+  created_at: string;
+}
+
+function humanizeTitle(title: string): string {
+  return title.replace(/_/g, " ");
+}
+
 export default function AtoResponsePage() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<UploadResult | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<HistoryDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [approving, setApproving] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
+  function loadHistory() {
     fetch("/api/ato-response")
       .then((r) => (r.ok ? r.json() : []))
       .then(setHistory)
       .catch(() => {});
-  }, [result]);
+  }
+
+  useEffect(loadHistory, [result]);
+
+  async function handleSelectHistory(id: string) {
+    setActiveId(id);
+    setResult(null);
+    setDetail(null);
+    setDetailLoading(true);
+    try {
+      const response = await fetch(`/api/ato-response/${id}`);
+      if (!response.ok) throw new Error("Could not load this response");
+      setDetail(await response.json());
+    } catch {
+      setError("Could not load this response");
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  async function handleApprove() {
+    if (!detail) return;
+    setApproving(true);
+    try {
+      const response = await fetch(`/api/ato-response/${detail.id}/approve`, { method: "POST" });
+      if (!response.ok) throw new Error("Failed");
+      setDetail({ ...detail, status: "approved" });
+      loadHistory();
+    } catch {
+      setError("Could not approve this response - please try again");
+    } finally {
+      setApproving(false);
+    }
+  }
 
   async function handleUpload() {
     const file = fileInput.current?.files?.[0];
@@ -51,6 +100,8 @@ export default function AtoResponsePage() {
     setUploading(true);
     setError(null);
     setResult(null);
+    setDetail(null);
+    setActiveId(null);
 
     try {
       const formData = new FormData();
@@ -129,16 +180,61 @@ export default function AtoResponsePage() {
         </Card>
       )}
 
+      {detailLoading && <p className="text-sm text-muted-foreground">Loading...</p>}
+
+      {detail && (
+        <Card>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium">{humanizeTitle(detail.title)}</p>
+              <Badge variant={detail.status === "approved" ? "secondary" : "outline"}>
+                {detail.status}
+              </Badge>
+            </div>
+
+            <div>
+              <p className="mb-1 text-xs font-semibold text-muted-foreground">DRAFT RESPONSE</p>
+              <p className="whitespace-pre-wrap rounded-lg bg-muted p-3 text-sm">
+                {detail.content_md}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {detail.status !== "approved" && (
+                <Button size="sm" disabled={approving} onClick={handleApprove}>
+                  {approving ? "Approving..." : "Approve"}
+                </Button>
+              )}
+              <Button asChild variant="outline" size="sm">
+                <a href={`/api/documents/${detail.id}/download?fmt=docx`}>Download as .docx</a>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {history.length > 0 && (
         <div>
           <p className="mb-2 text-xs font-semibold text-muted-foreground">HISTORY</p>
           <ul className="divide-y divide-border rounded-lg border border-border text-sm">
             {history.map((h) => (
-              <li key={h.id} className="flex items-center justify-between px-4 py-2">
-                <span>{h.title}</span>
-                <span className="text-xs text-muted-foreground">
-                  {new Date(h.created_at).toLocaleDateString("en-AU")}
-                </span>
+              <li key={h.id}>
+                <button
+                  onClick={() => handleSelectHistory(h.id)}
+                  className={`flex w-full items-center justify-between px-4 py-2 text-left transition-colors hover:bg-muted ${
+                    h.id === activeId ? "bg-muted" : ""
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    {humanizeTitle(h.title)}
+                    <Badge variant={h.status === "approved" ? "secondary" : "outline"} className="text-[10px]">
+                      {h.status}
+                    </Badge>
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(h.created_at).toLocaleDateString("en-AU")}
+                  </span>
+                </button>
               </li>
             ))}
           </ul>

@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from supabase import create_client  # noqa: E402
 
+from taxflow.services.agents.draft import DraftAgent  # noqa: E402
 from taxflow.services.agents.research import ResearchAgent  # noqa: E402
 from taxflow.services.agents.verify import VerifyAgent  # noqa: E402
 from taxflow.services.knowledge.embedder import embed  # noqa: E402
@@ -193,6 +194,7 @@ def ensure_demo_client(sb, persona: dict) -> str:
 
 async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
     research = ResearchAgent()
+    drafter = DraftAgent()
     verifier = VerifyAgent()
     email = persona["email"]
 
@@ -200,8 +202,14 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
     for question in persona["questions"]:
         print(f"    researching: {question[:60]}...")
         result = await research.run(question=question, client_id=client_id)
+        draft_result = await drafter.run(
+            research_result={"answer": result["answer"], "citations": result["citations"]},
+            original_question=question,
+            client_id=client_id,
+        )
+        final_answer = draft_result["draft"]
         verification = await verifier.run(
-            draft=result["answer"], citations=result["citations"], question=question
+            draft=final_answer, citations=result["citations"], question=question
         )
 
         row = (
@@ -213,7 +221,7 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
                     "question": question,
                     "module": "research",
                     "status": "completed",
-                    "final_answer": result["answer"],
+                    "final_answer": final_answer,
                     "citations": result["citations"],
                     "confidence_score": result["confidence"],
                     "model_used": result["model_used"],
