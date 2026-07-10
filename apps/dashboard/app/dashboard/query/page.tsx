@@ -1,42 +1,33 @@
 "use client";
 
-import { useState } from "react";
-import { AlertTriangle, CheckCircle2, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { AlertTriangle, CheckCircle2, PanelRightClose, PanelRightOpen, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-
-interface Citation {
-  citation: string;
-  url: string;
-  excerpt: string;
-}
+import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHistorySidebar";
+import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
 
 interface VerificationIssue {
   claim: string;
   issue: string;
   severity: "critical" | "warning" | "note";
-  source_says: string;
-  suggested_correction: string;
 }
 
 interface Verification {
   overall_status: "verified" | "needs_correction" | "unreliable" | "parse_error";
   issues: VerificationIssue[];
-  overall_confidence?: number;
 }
 
 interface QueryResult {
   answer: string;
-  citations: Citation[];
-  model_used: "haiku" | "sonnet";
+  citations: SourceCitation[];
+  model_used: string | null;
 }
 
 const MAX_CHARS = 2000;
 
-// Renders the answer with [N] markers turned into clickable anchors that
-// jump to the matching entry in the Sources list below.
 function AnswerWithCitationLinks({ text }: { text: string }) {
   const parts = text.split(/(\[\d+\])/g);
   return (
@@ -45,11 +36,7 @@ function AnswerWithCitationLinks({ text }: { text: string }) {
         const match = part.match(/^\[(\d+)\]$/);
         if (!match) return <span key={i}>{part}</span>;
         return (
-          <a
-            key={i}
-            href={`#source-${match[1]}`}
-            className="font-medium text-accent hover:underline"
-          >
+          <a key={i} href={`#source-${match[1]}`} className="font-medium text-accent hover:underline">
             {part}
           </a>
         );
@@ -67,38 +54,19 @@ function VerificationBadge({ verification }: { verification: Verification }) {
       </Badge>
     );
   }
-
-  if (verification.overall_status === "parse_error") {
-    return null;
-  }
+  if (verification.overall_status === "parse_error") return null;
 
   const critical = verification.issues.filter((i) => i.severity === "critical");
   const label =
     critical.length > 0
       ? `${critical.length} claim${critical.length > 1 ? "s" : ""} need review`
-      : `${verification.issues.length} note${verification.issues.length === 1 ? "" : "s"} on this answer`;
+      : `${verification.issues.length} note${verification.issues.length === 1 ? "" : "s"}`;
 
   return (
-    <details className="group">
-      <summary className="flex w-fit cursor-pointer list-none items-center gap-1 rounded-full border border-amber-600/30 bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800">
-        <AlertTriangle className="size-3" />
-        {label}
-      </summary>
-      <ul className="mt-2 space-y-2 border-l-2 border-amber-200 pl-3 text-xs text-muted-foreground">
-        {verification.issues.map((issue, i) => (
-          <li key={i}>
-            <span
-              className={
-                issue.severity === "critical" ? "font-semibold text-destructive" : "font-medium text-foreground"
-              }
-            >
-              {issue.severity === "critical" ? "Critical: " : issue.severity === "warning" ? "Check: " : "Note: "}
-            </span>
-            {issue.issue}
-          </li>
-        ))}
-      </ul>
-    </details>
+    <Badge variant="outline" className="gap-1 border-amber-600/30 bg-amber-50 text-amber-800">
+      <AlertTriangle className="size-3" />
+      {label}
+    </Badge>
   );
 }
 
@@ -111,18 +79,67 @@ export default function QueryPage() {
   const [verifying, setVerifying] = useState(false);
   const [verification, setVerification] = useState<Verification | null>(null);
   const [copied, setCopied] = useState(false);
+  const [sourcesOpen, setSourcesOpen] = useState(true);
 
-  async function handleSubmit() {
-    setLoading(true);
-    setError(null);
+  const [history, setHistory] = useState<QueryListItem[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [savingDoc, setSavingDoc] = useState(false);
+  const [savedDocId, setSavedDocId] = useState<string | null>(null);
+
+  const loadHistory = useCallback(() => {
+    fetch("/api/query")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setHistory)
+      .catch(() => {});
+  }, []);
+
+  useEffect(loadHistory, [loadHistory]);
+
+  function resetPane() {
     setResult(null);
     setStreamedAnswer("");
     setVerification(null);
     setVerifying(false);
+    setSavedDocId(null);
+    setError(null);
+  }
+
+  function handleNewQuestion() {
+    setActiveId(null);
+    setQuestion("");
+    resetPane();
+  }
+
+  async function handleSelectHistory(id: string) {
+    setActiveId(id);
+    resetPane();
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/query/${id}`);
+      if (!response.ok) throw new Error("Could not load this question");
+      const data = await response.json();
+      setQuestion(data.question);
+      setResult({
+        answer: data.final_answer ?? "",
+        citations: data.citations ?? [],
+        model_used: data.model_used,
+      });
+      if (data.verification_result?.overall_status) {
+        setVerification(data.verification_result);
+      }
+    } catch {
+      setError("Could not load this question");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSubmit() {
+    setActiveId(null);
+    setLoading(true);
+    resetPane();
 
     try {
-      // Trial gate check runs on the stream endpoint itself; EventSource cannot
-      // surface response bodies, so probe with HEAD first and route 402 to /upgrade.
       const gate = await fetch("/api/query/stream?question=", { method: "HEAD" }).catch(() => null);
       if (gate && gate.status === 402) {
         window.location.assign("/upgrade");
@@ -131,7 +148,7 @@ export default function QueryPage() {
 
       const source = new EventSource(`/api/query/stream?question=${encodeURIComponent(question)}`);
       let answer = "";
-      let citations: Citation[] = [];
+      let citations: SourceCitation[] = [];
 
       await new Promise<void>((resolve, reject) => {
         source.onmessage = (event) => {
@@ -143,10 +160,9 @@ export default function QueryPage() {
           const parsed: {
             type: string;
             text?: string;
-            citations?: Citation[];
+            citations?: SourceCitation[];
             overall_status?: Verification["overall_status"];
             issues?: VerificationIssue[];
-            overall_confidence?: number;
           } = JSON.parse(event.data);
 
           if (parsed.type === "token" && parsed.text) {
@@ -161,8 +177,8 @@ export default function QueryPage() {
             setVerification({
               overall_status: parsed.overall_status ?? "parse_error",
               issues: parsed.issues ?? [],
-              overall_confidence: parsed.overall_confidence,
             });
+            loadHistory();
           }
         };
         source.onerror = () => {
@@ -184,95 +200,118 @@ export default function QueryPage() {
     setTimeout(() => setCopied(false), 2000);
   }
 
-  return (
-    <div className="max-w-2xl space-y-4">
-      <h1 className="text-xl font-semibold">Ask TaxFlow</h1>
+  async function handleSaveAsDocument() {
+    if (!result) return;
+    setSavingDoc(true);
+    try {
+      const response = await fetch("/api/documents/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query_id: activeId,
+          document_type: "advice_memo",
+          title: question.slice(0, 80),
+          content_md: result.answer,
+        }),
+      });
+      if (!response.ok) throw new Error("Failed");
+      const doc = await response.json();
+      setSavedDocId(doc.id);
+    } catch {
+      setError("Could not save as a document - please try again");
+    } finally {
+      setSavingDoc(false);
+    }
+  }
 
-      <Textarea
-        value={question}
-        onChange={(e) => setQuestion(e.target.value.slice(0, MAX_CHARS))}
-        rows={5}
-        placeholder="Ask an Australian tax question..."
+  const displayedCitations = result?.citations ?? [];
+
+  return (
+    <div className="flex h-[75vh] min-h-[520px] overflow-hidden rounded-xl border border-border">
+      <QueryHistorySidebar
+        history={history}
+        activeId={activeId}
+        onSelect={handleSelectHistory}
+        onNewQuestion={handleNewQuestion}
       />
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">
-          {question.length}/{MAX_CHARS} characters
-        </span>
-        <Button onClick={handleSubmit} disabled={loading || !question.trim()}>
-          {loading ? "Thinking..." : "Ask TaxFlow"}
-        </Button>
+
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex items-center justify-between border-b border-border px-6 py-3">
+          <h1 className="text-sm font-semibold text-foreground">Ask TaxFlow</h1>
+          <div className="flex items-center gap-2">
+            {result?.model_used === "sonnet" && (
+              <Badge variant="outline" className="gap-1 border-accent/30 text-accent">
+                <Sparkles className="size-3" />
+                Enhanced model
+              </Badge>
+            )}
+            {verifying && (
+              <Badge variant="outline" className="text-muted-foreground">
+                Verifying...
+              </Badge>
+            )}
+            {verification && <VerificationBadge verification={verification} />}
+            <Button variant="ghost" size="sm" onClick={() => setSourcesOpen((v) => !v)}>
+              {sourcesOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
+              {sourcesOpen ? "Hide sources" : "Show sources"}
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex-1 space-y-4 overflow-y-auto p-6">
+          {!result && !loading && (
+            <p className="text-sm text-muted-foreground">
+              Ask a question below, or pick a past question from the sidebar.
+            </p>
+          )}
+
+          {loading && streamedAnswer && !result && (
+            <p className="whitespace-pre-wrap text-sm">{streamedAnswer}</p>
+          )}
+
+          {result && (
+            <div className="space-y-4">
+              <AnswerWithCitationLinks text={result.answer} />
+
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={handleCopy}>
+                  {copied ? "Copied!" : "Copy"}
+                </Button>
+                {savedDocId ? (
+                  <Button asChild variant="outline" size="sm">
+                    <Link href="/dashboard/documents">View saved document →</Link>
+                  </Button>
+                ) : (
+                  <Button variant="outline" size="sm" disabled={savingDoc} onClick={handleSaveAsDocument}>
+                    {savingDoc ? "Saving..." : "Save as document"}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </div>
+
+        <div className="border-t border-border p-4">
+          <Textarea
+            value={question}
+            onChange={(e) => setQuestion(e.target.value.slice(0, MAX_CHARS))}
+            rows={3}
+            placeholder="Ask an Australian tax question..."
+          />
+          <div className="mt-2 flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">
+              {question.length}/{MAX_CHARS} characters
+            </span>
+            <Button onClick={handleSubmit} disabled={loading || !question.trim()}>
+              {loading ? "Thinking..." : "Ask TaxFlow"}
+            </Button>
+          </div>
+        </div>
       </div>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
-
-      {loading && streamedAnswer && !result && (
-        <Card>
-          <CardContent>
-            <p className="whitespace-pre-wrap text-sm">{streamedAnswer}</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {result && (
-        <Card>
-          <CardContent className="space-y-4">
-            <div className="flex flex-wrap items-center gap-2">
-              {result.model_used === "sonnet" && (
-                <Badge variant="outline" className="gap-1 border-accent/30 text-accent">
-                  <Sparkles className="size-3" />
-                  Complex query - used enhanced model
-                </Badge>
-              )}
-              {verifying && (
-                <Badge variant="outline" className="gap-1 text-muted-foreground">
-                  Verifying against sources...
-                </Badge>
-              )}
-              {verification && <VerificationBadge verification={verification} />}
-            </div>
-
-            <AnswerWithCitationLinks text={result.answer} />
-
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={handleCopy}>
-                {copied ? "Copied!" : "Copy"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => alert("Document generation coming in Week 3")}
-              >
-                Save as document
-                <span className="ml-1 text-muted-foreground">DEMO</span>
-              </Button>
-            </div>
-
-            {result.citations.length > 0 && (
-              <div className="space-y-2 border-t border-border pt-3 text-xs text-muted-foreground">
-                <p className="font-medium text-foreground">Sources</p>
-                <ol className="list-decimal space-y-2 pl-4">
-                  {result.citations.map((c, i) => (
-                    <li key={i} id={`source-${i + 1}`} className="scroll-mt-4 target:rounded target:bg-accent/10">
-                      <p className="text-foreground">{c.citation}</p>
-                      <p>{c.excerpt}</p>
-                      {c.url && (
-                        <a
-                          href={c.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-accent hover:underline"
-                        >
-                          View source
-                        </a>
-                      )}
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      {sourcesOpen && <SourcesPanel citations={displayedCitations} />}
     </div>
   );
 }

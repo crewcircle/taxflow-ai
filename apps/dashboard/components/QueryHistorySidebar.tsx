@@ -1,0 +1,100 @@
+"use client";
+
+import { Plus, MessageSquare } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+
+export interface QueryListItem {
+  id: string;
+  question: string;
+  status: string;
+  model_used: string | null;
+  confidence_score: number | null;
+  verification_result: { overall_status?: string } | null;
+  created_at: string;
+}
+
+interface QueryHistorySidebarProps {
+  history: QueryListItem[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  onNewQuestion: () => void;
+}
+
+function groupByRecency(history: QueryListItem[]) {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfYesterday = new Date(startOfToday);
+  startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+  const startOfWeek = new Date(startOfToday);
+  startOfWeek.setDate(startOfWeek.getDate() - 7);
+
+  const groups: { label: string; items: QueryListItem[] }[] = [
+    { label: "Today", items: [] },
+    { label: "Yesterday", items: [] },
+    { label: "This week", items: [] },
+    { label: "Older", items: [] },
+  ];
+
+  for (const item of history) {
+    const created = new Date(item.created_at);
+    if (created >= startOfToday) groups[0].items.push(item);
+    else if (created >= startOfYesterday) groups[1].items.push(item);
+    else if (created >= startOfWeek) groups[2].items.push(item);
+    else groups[3].items.push(item);
+  }
+
+  return groups.filter((g) => g.items.length > 0);
+}
+
+export function QueryHistorySidebar({
+  history,
+  activeId,
+  onSelect,
+  onNewQuestion,
+}: QueryHistorySidebarProps) {
+  const groups = groupByRecency(history);
+
+  return (
+    <div className="flex h-full w-64 shrink-0 flex-col border-r border-border">
+      <div className="border-b border-border p-3">
+        <Button size="sm" className="w-full gap-1.5" onClick={onNewQuestion}>
+          <Plus className="size-4" />
+          New question
+        </Button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-2">
+        {groups.length === 0 && (
+          <p className="p-3 text-xs text-muted-foreground">
+            Your past questions will appear here.
+          </p>
+        )}
+        {groups.map((group) => (
+          <div key={group.label} className="mb-4">
+            <p className="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {group.label}
+            </p>
+            <div className="space-y-0.5">
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => onSelect(item.id)}
+                  className={cn(
+                    "flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left text-sm transition-colors",
+                    item.id === activeId
+                      ? "bg-primary text-primary-foreground"
+                      : "text-foreground hover:bg-muted"
+                  )}
+                >
+                  <MessageSquare className="mt-0.5 size-3.5 shrink-0 opacity-60" />
+                  <span className="line-clamp-2 leading-snug">{item.question}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

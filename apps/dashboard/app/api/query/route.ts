@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { proxyToBackend } from "@/lib/api";
+
+export async function GET() {
+  const response = await proxyToBackend("/query");
+  return new Response(response.body, { status: response.status, headers: response.headers });
+}
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();

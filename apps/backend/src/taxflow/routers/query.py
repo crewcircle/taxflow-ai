@@ -25,6 +25,20 @@ class QueryRequest(BaseModel):
     module: str = "research"
 
 
+@router.get("")
+async def list_queries(client=Depends(get_current_client), db=Depends(get_db)):
+    """Recent query history for the sidebar - newest first."""
+    result = (
+        db.table("queries")
+        .select("id, question, status, model_used, confidence_score, verification_result, created_at")
+        .eq("client_id", client["id"])
+        .order("created_at", desc=True)
+        .limit(50)
+        .execute()
+    )
+    return result.data
+
+
 @router.post("")
 async def submit_query(
     body: QueryRequest,
