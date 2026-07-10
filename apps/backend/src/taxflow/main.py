@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from taxflow.routers import (
     health,
     auth,
+    contact,
     query,
     documents,
     ato_response,
@@ -26,6 +27,7 @@ app = FastAPI(title="TaxFlow AI API", version="0.1.0", lifespan=lifespan)
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(contact.router)
 app.include_router(query.router)
 app.include_router(documents.router)
 app.include_router(ato_response.router)
