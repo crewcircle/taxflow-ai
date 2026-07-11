@@ -2,9 +2,20 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, PanelRightClose, PanelRightOpen, Sparkles } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  FileText,
+  MessageSquare,
+  PanelRightClose,
+  PanelRightOpen,
+  ScrollText,
+  Sparkles,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHistorySidebar";
@@ -14,6 +25,38 @@ interface DocumentTemplate {
   type: string;
   label: string;
 }
+
+interface DocumentRow {
+  id: string;
+  title: string;
+  created_at: string;
+}
+
+interface FirmKnowledgeRow {
+  id: string;
+  file_name: string;
+  created_at: string;
+}
+
+interface AtoResponseRow {
+  id: string;
+  title: string;
+  created_at: string;
+}
+
+interface ClientSettings {
+  business_name: string;
+  is_demo: boolean;
+  demo_tagline: string | null;
+}
+
+type ActivityItem = {
+  id: string;
+  label: string;
+  href: string;
+  created_at: string;
+  kind: "query" | "document";
+};
 
 interface VerificationIssue {
   claim: string;
@@ -95,6 +138,11 @@ export default function QueryPage() {
   const [savingDoc, setSavingDoc] = useState(false);
   const [savedDocId, setSavedDocId] = useState<string | null>(null);
 
+  const [client, setClient] = useState<ClientSettings | null>(null);
+  const [documents, setDocuments] = useState<DocumentRow[]>([]);
+  const [firmKnowledge, setFirmKnowledge] = useState<FirmKnowledgeRow[]>([]);
+  const [atoResponses, setAtoResponses] = useState<AtoResponseRow[]>([]);
+
   const loadHistory = useCallback(() => {
     fetch("/api/query")
       .then((r) => (r.ok ? r.json() : []))
@@ -111,6 +159,44 @@ export default function QueryPage() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setClient(d.client))
+      .catch(() => {});
+    fetch("/api/documents")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setDocuments)
+      .catch(() => {});
+    fetch("/api/firm-knowledge")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setFirmKnowledge)
+      .catch(() => {});
+    fetch("/api/ato-response")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setAtoResponses)
+      .catch(() => {});
+  }, []);
+
+  const activity: ActivityItem[] = [
+    ...history.map((q) => ({
+      id: q.id,
+      label: q.question,
+      href: "/dashboard/query",
+      created_at: q.created_at,
+      kind: "query" as const,
+    })),
+    ...documents.map((d) => ({
+      id: d.id,
+      label: d.title,
+      href: "/dashboard/documents",
+      created_at: d.created_at,
+      kind: "document" as const,
+    })),
+  ]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 6);
+
   function resetPane() {
     setResult(null);
     setStreamedAnswer("");
@@ -126,6 +212,10 @@ export default function QueryPage() {
     setActiveId(null);
     setQuestion("");
     resetPane();
+  }
+
+  function handleUseSuggestion(suggestion: string) {
+    setQuestion(suggestion);
   }
 
   async function handleSelectHistory(id: string) {
@@ -285,11 +375,130 @@ export default function QueryPage() {
           </div>
         </div>
 
-        <div className="flex-1 space-y-4 overflow-y-auto p-6">
+        <div className="flex-1 space-y-6 overflow-y-auto p-6">
           {!result && !loading && (
-            <p className="text-sm text-muted-foreground">
-              Ask a question below, or pick a past question from the sidebar.
-            </p>
+            <div className="space-y-6">
+              <div className="grid grid-cols-3 gap-3">
+                <Card>
+                  <CardHeader className="pb-0">
+                    <p className="text-xs text-muted-foreground">Questions asked</p>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-xl font-semibold">{history.length}</p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="pb-0">
+                    <p className="text-xs text-muted-foreground">Documents generated</p>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-xl font-semibold">{documents.length}</p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="pb-0">
+                    <p className="text-xs text-muted-foreground">Firm knowledge on file</p>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-xl font-semibold">{firmKnowledge.length}</p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {client?.is_demo && (
+                <Card className="border-accent/30 bg-accent/5">
+                  <CardContent className="space-y-3 pt-6">
+                    <p className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                      <Sparkles className="size-4 text-accent" />
+                      Your scenario: {client.business_name}
+                    </p>
+                    {client.demo_tagline && (
+                      <p className="text-sm text-muted-foreground">{client.demo_tagline}</p>
+                    )}
+
+                    {history.length > 0 && (
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-semibold text-muted-foreground">
+                          TRY ONE OF THIS FIRM&apos;S QUESTIONS
+                        </p>
+                        <div className="flex flex-col gap-1.5">
+                          {history.slice(0, 3).map((q) => (
+                            <button
+                              key={q.id}
+                              onClick={() => handleUseSuggestion(q.question)}
+                              className="rounded-lg border border-border bg-background p-2.5 text-left text-sm hover:border-accent"
+                            >
+                              {q.question}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Link
+                        href="/dashboard/ato-response"
+                        className="flex items-center justify-between rounded-lg border border-border bg-background p-3 text-sm hover:border-accent"
+                      >
+                        <span className="flex items-center gap-2">
+                          <ScrollText className="size-4 text-muted-foreground" />
+                          {atoResponses.length > 0
+                            ? atoResponses[0].title.replace(/_/g, " ")
+                            : "ATO correspondence"}
+                        </span>
+                        <ArrowRight className="size-3.5 text-muted-foreground" />
+                      </Link>
+                      <Link
+                        href="/dashboard/knowledge"
+                        className="flex items-center justify-between rounded-lg border border-border bg-background p-3 text-sm hover:border-accent"
+                      >
+                        <span className="flex items-center gap-2">
+                          <FileText className="size-4 text-muted-foreground" />
+                          {firmKnowledge.length > 0 ? firmKnowledge[0].file_name : "Firm knowledge"}
+                        </span>
+                        <ArrowRight className="size-3.5 text-muted-foreground" />
+                      </Link>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {activity.length > 0 && (
+                <div>
+                  <p className="mb-2 text-xs font-semibold text-muted-foreground">RECENT ACTIVITY</p>
+                  <ul className="divide-y divide-border rounded-lg border border-border text-sm">
+                    {activity.map((item) => (
+                      <li key={`${item.kind}-${item.id}`}>
+                        <Link
+                          href={item.href}
+                          className="flex items-center justify-between gap-4 px-4 py-2 hover:bg-muted"
+                        >
+                          <span className="flex items-center gap-2 truncate">
+                            <Badge variant="outline" className="shrink-0 text-[10px]">
+                              {item.kind === "query" ? (
+                                <MessageSquare className="size-3" />
+                              ) : (
+                                <FileText className="size-3" />
+                              )}
+                            </Badge>
+                            <span className="truncate">{item.label}</span>
+                          </span>
+                          <span className="shrink-0 text-xs text-muted-foreground">
+                            {new Date(item.created_at).toLocaleDateString("en-AU")}
+                          </span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {activity.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  Ask a question below to get started.
+                </p>
+              )}
+            </div>
           )}
 
           {loading && streamedAnswer && !result && (

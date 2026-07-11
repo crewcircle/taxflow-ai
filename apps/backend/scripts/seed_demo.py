@@ -33,6 +33,10 @@ PERSONAS = [
         "email": "demo-dental@taxflow.crewcircle.com.au",
         "business_name": "Bayside Dental Group",
         "business_type": "dental",
+        "tagline": (
+            "Equipment finance, FBT car benefits, and Division 7A for a "
+            "growing dental practice."
+        ),
         "questions": [
             "Can Bayside Dental Group claim the instant asset write-off for a new "
             "$180,000 CBCT scanner purchased this financial year?",
@@ -73,6 +77,10 @@ PERSONAS = [
         "email": "demo-property@taxflow.crewcircle.com.au",
         "business_name": "Riverside Property Partners",
         "business_type": "property",
+        "tagline": (
+            "GST margin scheme, thin capitalisation, and CGT concessions "
+            "for a commercial development."
+        ),
         "questions": [
             "We're selling a commercial development site for $4.2M under the "
             "GST margin scheme - how do we calculate the margin and what "
@@ -115,6 +123,10 @@ PERSONAS = [
         "email": "demo-accounting@taxflow.crewcircle.com.au",
         "business_name": "Chen & Associates",
         "business_type": "accounting",
+        "tagline": (
+            "Everyday SME advisory: work-from-home deductions, trust "
+            "distributions, and the R&D tax incentive."
+        ),
         "questions": [
             "Does the work from home shortcut method still apply and what is "
             "the current rate per hour?",
@@ -159,7 +171,9 @@ def ensure_demo_client(sb, persona: dict) -> str:
     existing = sb.table("clients").select("id").eq("email", email).execute()
     if existing.data:
         client_id = existing.data[0]["id"]
-        sb.table("clients").update({"is_demo": True}).eq("id", client_id).execute()
+        sb.table("clients").update(
+            {"is_demo": True, "demo_tagline": persona["tagline"]}
+        ).eq("id", client_id).execute()
         print(f"  {persona['business_name']}: client already exists ({client_id})")
         return client_id
 
@@ -173,6 +187,7 @@ def ensure_demo_client(sb, persona: dict) -> str:
                 "suburb": "Sydney",
                 "state": "NSW",
                 "is_demo": True,
+                "demo_tagline": persona["tagline"],
                 "subscription_status": "active",  # never trial-gated
                 "tier": "professional",
             }

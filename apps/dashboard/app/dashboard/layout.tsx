@@ -3,18 +3,16 @@ import {
   Bell,
   BookOpen,
   FileText,
-  LayoutDashboard,
   MessageSquare,
   ScrollText,
   Settings,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import { TrialBanner } from "@/components/TrialBanner";
+import { DashboardIdentityStrip } from "@/components/DashboardIdentityStrip";
 import { Logo } from "@/components/Logo";
 import { DashboardNavLink } from "@/components/DashboardNavLink";
 
 const NAV_LINKS = [
-  { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/query", label: "Ask a question", icon: MessageSquare },
   { href: "/dashboard/ato-response", label: "ATO correspondence", icon: ScrollText },
   { href: "/dashboard/regulatory", label: "Regulatory updates", icon: Bell },
@@ -39,6 +37,9 @@ export default async function DashboardLayout({
     data: { session },
   } = await supabase.auth.getSession();
   let isDemo = false;
+  let businessName = "";
+  let businessType = "";
+  let demoTagline: string | null = null;
   if (session) {
     try {
       const meResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/settings/me`, {
@@ -47,15 +48,25 @@ export default async function DashboardLayout({
       if (meResponse.ok) {
         const me = await meResponse.json();
         isDemo = Boolean(me.client?.is_demo);
+        businessName = me.client?.business_name ?? "";
+        businessType = me.client?.business_type ?? "";
+        demoTagline = me.client?.demo_tagline ?? null;
       }
     } catch {
-      // Non-fatal - fall back to showing the trial banner as normal.
+      // Non-fatal - identity strip just won't render without client data.
     }
   }
 
   return (
     <div className="flex flex-1 flex-col">
-      {!isDemo && <TrialBanner status="active" daysRemaining={28} />}
+      {businessName && (
+        <DashboardIdentityStrip
+          businessName={businessName}
+          businessType={businessType}
+          isDemo={isDemo}
+          demoTagline={demoTagline}
+        />
+      )}
       <div className="flex flex-1">
         <aside className="w-60 border-r border-border p-4">
           <div className="mb-6 px-2">
