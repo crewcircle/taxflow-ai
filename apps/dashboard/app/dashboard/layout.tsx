@@ -40,6 +40,7 @@ export default async function DashboardLayout({
   let businessName = "";
   let businessType = "";
   let demoTagline: string | null = null;
+  let demoDescription: string | null = null;
   if (session) {
     try {
       const meResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/settings/me`, {
@@ -51,6 +52,7 @@ export default async function DashboardLayout({
         businessName = me.client?.business_name ?? "";
         businessType = me.client?.business_type ?? "";
         demoTagline = me.client?.demo_tagline ?? null;
+        demoDescription = me.client?.demo_description ?? null;
       }
     } catch {
       // Non-fatal - identity strip just won't render without client data.
@@ -65,6 +67,7 @@ export default async function DashboardLayout({
           businessType={businessType}
           isDemo={isDemo}
           demoTagline={demoTagline}
+          demoDescription={demoDescription}
         />
       )}
       <div className="flex flex-1">

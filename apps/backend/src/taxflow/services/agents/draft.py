@@ -29,12 +29,12 @@ class DraftAgent:
     def __init__(self) -> None:
         self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-    def _load_firm_style(self, client_id: str) -> dict:
+    def _load_voice_sample(self, client_id: str) -> str:
         sb = get_supabase_client()
-        result = sb.table("clients").select("firm_style").eq("id", client_id).execute()
-        if result.data and result.data[0].get("firm_style"):
-            return result.data[0]["firm_style"]
-        return {}
+        result = sb.table("clients").select("voice_sample").eq("id", client_id).execute()
+        if result.data and result.data[0].get("voice_sample"):
+            return result.data[0]["voice_sample"]
+        return ""
 
     def _americanism_fix(self, text: str) -> str:
         for us, au in AMERICANISMS.items():
@@ -55,12 +55,16 @@ class DraftAgent:
         return "".join(block.text for block in response.content if block.type == "text")
 
     async def run(self, research_result: dict, original_question: str, client_id: str) -> dict:
-        firm_style = self._load_firm_style(client_id)
+        voice_sample = self._load_voice_sample(client_id)
+        voice_instruction = (
+            f"The firm describes its own voice like this - match this tone:\n\"{voice_sample}\"\n\n"
+            if voice_sample
+            else ""
+        )
 
         system = (
             "You are drafting a tax advice memo for an Australian accounting firm.\n"
-            "Write in the firm's established voice and style.\n"
-            f"Firm style profile: {json.dumps(firm_style)}\n\n"
+            f"{voice_instruction}"
             "Structure requirements (all sections mandatory):\n"
             "1. SUMMARY (2-3 sentences): Direct answer to the question asked.\n"
             "2. LEGISLATIVE FRAMEWORK: Key legislation and ATO positions that apply.\n"

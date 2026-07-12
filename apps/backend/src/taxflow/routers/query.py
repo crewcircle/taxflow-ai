@@ -32,7 +32,7 @@ async def list_queries(client=Depends(get_current_client), db=Depends(get_db)):
     """Recent query history for the sidebar - newest first."""
     result = (
         db.table("queries")
-        .select("id, question, status, model_used, confidence_score, verification_result, created_at")
+        .select("id, question, status, model_used, confidence_score, verification_result, client_ref, created_at")
         .eq("client_id", client["id"])
         .order("created_at", desc=True)
         .limit(50)
@@ -100,6 +100,7 @@ async def submit_query(
 @router.get("/stream")
 async def stream_query(
     question: str,
+    client_ref: str | None = None,
     client=Depends(get_current_client),
     _trial=Depends(check_trial_gate),
 ):
@@ -124,6 +125,7 @@ async def stream_query(
                 "question": question,
                 "module": "research",
                 "status": "processing",
+                "client_ref": client_ref,
             }
         )
         .execute()

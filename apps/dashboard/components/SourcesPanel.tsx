@@ -6,21 +6,49 @@ export interface SourceCitation {
   citation: string;
   url: string;
   excerpt: string;
+  source_object_key?: string | null;
 }
 
 interface SourcesPanelProps {
   citations: SourceCitation[];
 }
 
+interface CitationGroup {
+  citation: string;
+  url: string;
+  sourceObjectKey: string | null;
+  occurrences: { index: number; excerpt: string }[];
+}
+
+function groupByCitation(citations: SourceCitation[]): CitationGroup[] {
+  const groups = new Map<string, CitationGroup>();
+  citations.forEach((c, i) => {
+    const existing = groups.get(c.citation);
+    if (existing) {
+      existing.occurrences.push({ index: i, excerpt: c.excerpt });
+    } else {
+      groups.set(c.citation, {
+        citation: c.citation,
+        url: c.url,
+        sourceObjectKey: c.source_object_key ?? null,
+        occurrences: [{ index: i, excerpt: c.excerpt }],
+      });
+    }
+  });
+  return Array.from(groups.values());
+}
+
 export function SourcesPanel({ citations }: SourcesPanelProps) {
+  const groups = groupByCitation(citations);
+
   return (
     <div className="flex h-full w-72 shrink-0 flex-col border-l border-border">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
         <FileText className="size-4 text-muted-foreground" />
         <span className="text-sm font-semibold text-foreground">Sources</span>
-        {citations.length > 0 && (
+        {groups.length > 0 && (
           <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            {citations.length}
+            {groups.length}
           </span>
         )}
       </div>
@@ -32,28 +60,51 @@ export function SourcesPanel({ citations }: SourcesPanelProps) {
           </p>
         ) : (
           <ol className="space-y-3">
-            {citations.map((c, i) => (
+            {groups.map((group) => (
               <li
-                key={i}
-                id={`source-${i + 1}`}
+                key={group.citation}
+                id={`source-${group.occurrences[0].index + 1}`}
                 className="scroll-mt-4 rounded-lg border border-border p-3 text-xs target:border-accent target:bg-accent/5"
               >
-                <div className="mb-1 flex items-start gap-1.5">
-                  <span className="mt-0.5 shrink-0 font-semibold text-accent">{i + 1}</span>
-                  <p className="font-medium text-foreground">{c.citation}</p>
+                <div className="mb-1 flex items-start justify-between gap-1.5">
+                  <p className="font-medium text-foreground">{group.citation}</p>
+                  {group.occurrences.length > 1 && (
+                    <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      cited {group.occurrences.length}×
+                    </span>
+                  )}
                 </div>
-                <p className="mb-2 text-muted-foreground">{c.excerpt}</p>
-                {c.url && (
-                  <a
-                    href={c.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-accent hover:underline"
-                  >
-                    View source
-                    <ExternalLink className="size-3" />
-                  </a>
-                )}
+                <div className="mb-2 space-y-1.5">
+                  {group.occurrences.map((occ) => (
+                    <p key={occ.index} id={`source-${occ.index + 1}`} className="scroll-mt-4 text-muted-foreground">
+                      {occ.excerpt}
+                    </p>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  {group.url && (
+                    <a
+                      href={group.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-accent hover:underline"
+                    >
+                      View source
+                      <ExternalLink className="size-3" />
+                    </a>
+                  )}
+                  {group.sourceObjectKey && (
+                    <a
+                      href={`/api/knowledge/source/${group.sourceObjectKey}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-accent hover:underline"
+                    >
+                      View original PDF
+                      <ExternalLink className="size-3" />
+                    </a>
+                  )}
+                </div>
               </li>
             ))}
           </ol>

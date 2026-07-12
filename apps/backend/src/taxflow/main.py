@@ -10,6 +10,7 @@ from taxflow.routers import (
     documents,
     ato_response,
     firm_knowledge,
+    knowledge,
     regulatory_alerts,
     webhooks,
     settings as settings_router,
@@ -33,6 +34,7 @@ app.include_router(query.router)
 app.include_router(documents.router)
 app.include_router(ato_response.router)
 app.include_router(firm_knowledge.router)
+app.include_router(knowledge.router)
 app.include_router(regulatory_alerts.router)
 app.include_router(webhooks.router)
 app.include_router(settings_router.router)

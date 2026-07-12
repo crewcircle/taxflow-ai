@@ -12,7 +12,7 @@ def _semantic_search(embedding: list[float], source_types: list[str] | None) -> 
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         """
-        SELECT id, citation, content, source_url,
+        SELECT id, citation, content, source_url, source_object_key,
                1 - (embedding <=> %s::vector) AS cosine_sim
         FROM knowledge_chunks
         WHERE is_current = true
@@ -33,7 +33,7 @@ def _text_search(query: str, source_types: list[str] | None) -> list[dict]:
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         """
-        SELECT id, citation, content, source_url,
+        SELECT id, citation, content, source_url, source_object_key,
                ts_rank(to_tsvector('english', content), plainto_tsquery('english', %s)) AS text_rank
         FROM knowledge_chunks
         WHERE is_current = true
@@ -74,6 +74,7 @@ async def hybrid_search(query: str, top_k: int = 10, source_types: list[str] | N
             "citation": docs[doc_id]["citation"],
             "content": docs[doc_id]["content"],
             "source_url": docs[doc_id]["source_url"],
+            "source_object_key": docs[doc_id]["source_object_key"],
             "score": score,
         }
         for doc_id, score in ranked

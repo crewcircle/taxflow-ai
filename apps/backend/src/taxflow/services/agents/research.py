@@ -128,6 +128,7 @@ class ResearchAgent:
                         "citation": chunk["citation"],
                         "url": chunk["source_url"],
                         "excerpt": chunk["content"][:200],
+                        "source_object_key": chunk.get("source_object_key"),
                     }
                 )
         return citations

@@ -37,6 +37,19 @@ PERSONAS = [
             "Equipment finance, FBT car benefits, and Division 7A for a "
             "growing dental practice."
         ),
+        "description": (
+            "A 2-person boutique accounting and bookkeeping practice in "
+            "Bayside, Melbourne, exclusively serving 12 dental practices "
+            "across Victoria. A principal accountant plus a bookkeeper "
+            "handle day-to-day compliance and equipment/FBT/structuring "
+            "advice for dental practice owners."
+        ),
+        "voice_sample": (
+            "We talk to our dental clients like colleagues, not case "
+            "numbers. Straight answers, the dollar impact up front, and "
+            "we flag anything that needs their accountant's sign-off "
+            "before they act on it."
+        ),
         "questions": [
             "Can Bayside Dental Group claim the instant asset write-off for a new "
             "$180,000 CBCT scanner purchased this financial year?",
@@ -80,6 +93,19 @@ PERSONAS = [
         "tagline": (
             "GST margin scheme, thin capitalisation, and CGT concessions "
             "for a commercial development."
+        ),
+        "description": (
+            "A 4-person advisory practice in Sydney specialising in "
+            "property developers and construction groups: 2 partners and "
+            "2 accountants across roughly 8 active development clients, "
+            "focused on GST margin scheme, thin capitalisation, and CGT "
+            "concession work."
+        ),
+        "voice_sample": (
+            "Our clients are developers under deadline pressure, so we "
+            "lead with the answer and the risk, not a legislative essay. "
+            "We're direct about what's settled law versus what needs a "
+            "private ruling before they sign anything."
         ),
         "questions": [
             "We're selling a commercial development site for $4.2M under the "
@@ -127,6 +153,19 @@ PERSONAS = [
             "Everyday SME advisory: work-from-home deductions, trust "
             "distributions, and the R&D tax incentive."
         ),
+        "description": (
+            "A 3-person general-practice suburban accounting firm in "
+            "Sydney: principal Michael Chen plus 2 accountants, serving "
+            "around 40 small business and individual clients on everyday "
+            "matters - deductions, trust distributions, and R&D incentive "
+            "claims for their small tech/software clients."
+        ),
+        "voice_sample": (
+            "We keep things plain and practical for our clients - most of "
+            "them run a business, not a law firm. No jargon we can avoid, "
+            "and we always tell them what to actually do, not just what "
+            "the law says."
+        ),
         "questions": [
             "Does the work from home shortcut method still apply and what is "
             "the current rate per hour?",
@@ -172,7 +211,12 @@ def ensure_demo_client(sb, persona: dict) -> str:
     if existing.data:
         client_id = existing.data[0]["id"]
         sb.table("clients").update(
-            {"is_demo": True, "demo_tagline": persona["tagline"]}
+            {
+                "is_demo": True,
+                "demo_tagline": persona["tagline"],
+                "demo_description": persona["description"],
+                "voice_sample": persona["voice_sample"],
+            }
         ).eq("id", client_id).execute()
         print(f"  {persona['business_name']}: client already exists ({client_id})")
         return client_id
@@ -188,6 +232,8 @@ def ensure_demo_client(sb, persona: dict) -> str:
                 "state": "NSW",
                 "is_demo": True,
                 "demo_tagline": persona["tagline"],
+                "demo_description": persona["description"],
+                "voice_sample": persona["voice_sample"],
                 "subscription_status": "active",  # never trial-gated
                 "tier": "professional",
             }

@@ -22,6 +22,7 @@ interface DocumentRow {
   document_type: string;
   title: string;
   status: string;
+  client_ref: string | null;
   created_at: string;
 }
 
@@ -43,7 +44,13 @@ export default function DocumentsPage() {
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ title: "", document_type: "advice_memo", content_md: "" });
+  const [clientFilter, setClientFilter] = useState("");
+  const [form, setForm] = useState({
+    title: "",
+    document_type: "advice_memo",
+    content_md: "",
+    client_ref: "",
+  });
 
   function loadDocuments() {
     fetch("/api/documents")
@@ -69,10 +76,10 @@ export default function DocumentsPage() {
       const response = await fetch("/api/documents/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, client_ref: form.client_ref.trim() || null }),
       });
       if (!response.ok) throw new Error("Failed");
-      setForm({ title: "", document_type: "advice_memo", content_md: "" });
+      setForm({ title: "", document_type: "advice_memo", content_md: "", client_ref: "" });
       setCreating(false);
       loadDocuments();
     } catch {
@@ -84,11 +91,21 @@ export default function DocumentsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Documents</h1>
-        <Button size="sm" variant={creating ? "outline" : "default"} onClick={() => setCreating((v) => !v)}>
-          {creating ? "Cancel" : "New document"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {documents && documents.some((d) => d.client_ref) && (
+            <Input
+              value={clientFilter}
+              onChange={(e) => setClientFilter(e.target.value)}
+              placeholder="Filter by client..."
+              className="h-8 w-48 text-xs"
+            />
+          )}
+          <Button size="sm" variant={creating ? "outline" : "default"} onClick={() => setCreating((v) => !v)}>
+            {creating ? "Cancel" : "New document"}
+          </Button>
+        </div>
       </div>
 
       {creating && (
@@ -122,6 +139,15 @@ export default function DocumentsPage() {
               </Select>
             </div>
             <div className="space-y-1.5">
+              <Label htmlFor="doc-client-ref">Client (optional)</Label>
+              <Input
+                id="doc-client-ref"
+                value={form.client_ref}
+                onChange={(e) => setForm({ ...form, client_ref: e.target.value })}
+                placeholder="e.g. Smith Dental Practice"
+              />
+            </div>
+            <div className="space-y-1.5">
               <Label htmlFor="doc-content">Content</Label>
               <Textarea
                 id="doc-content"
@@ -146,43 +172,55 @@ export default function DocumentsPage() {
         </p>
       )}
 
-      {documents && documents.length > 0 && (
-        <div className="overflow-hidden rounded-lg border border-border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Title</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {documents.map((doc) => (
-                <TableRow key={doc.id}>
-                  <TableCell className="font-medium">{doc.title}</TableCell>
-                  <TableCell className="text-muted-foreground">{doc.document_type}</TableCell>
-                  <TableCell>
-                    <Badge variant={STATUS_VARIANT[doc.status] ?? "outline"}>{doc.status}</Badge>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {new Date(doc.created_at).toLocaleDateString("en-AU")}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <a
-                      href={`/api/documents/${doc.id}/download?fmt=docx`}
-                      className="text-accent hover:underline"
-                    >
-                      Download
-                    </a>
-                  </TableCell>
+      {documents && documents.length > 0 && (() => {
+        const filtered = clientFilter.trim()
+          ? documents.filter((d) => d.client_ref?.toLowerCase().includes(clientFilter.trim().toLowerCase()))
+          : documents;
+        if (filtered.length === 0) {
+          return <p className="text-sm text-muted-foreground">No documents for this client.</p>;
+        }
+        return (
+          <div className="overflow-hidden rounded-lg border border-border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Title</TableHead>
+                  <TableHead>Client</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead />
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      )}
+              </TableHeader>
+              <TableBody>
+                {filtered.map((doc) => (
+                  <TableRow key={doc.id}>
+                    <TableCell className="font-medium">{doc.title}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {doc.client_ref ? <Badge variant="outline">{doc.client_ref}</Badge> : "—"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">{doc.document_type}</TableCell>
+                    <TableCell>
+                      <Badge variant={STATUS_VARIANT[doc.status] ?? "outline"}>{doc.status}</Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {new Date(doc.created_at).toLocaleDateString("en-AU")}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <a
+                        href={`/api/documents/${doc.id}/download?fmt=docx`}
+                        className="text-accent hover:underline"
+                      >
+                        Download
+                      </a>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        );
+      })()}
     </div>
   );
 }

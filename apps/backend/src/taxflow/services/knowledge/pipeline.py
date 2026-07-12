@@ -53,12 +53,13 @@ def _upsert_chunks(rows: list[tuple]) -> int:
             """
             INSERT INTO knowledge_chunks
                 (source_type, source_url, source_title, citation, content, embedding,
-                 chunk_index, token_count, effective_date, last_scraped_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                 chunk_index, token_count, effective_date, source_object_key, last_scraped_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
             ON CONFLICT (source_url, chunk_index) DO UPDATE SET
                 content = EXCLUDED.content,
                 embedding = EXCLUDED.embedding,
                 token_count = EXCLUDED.token_count,
+                source_object_key = EXCLUDED.source_object_key,
                 last_scraped_at = now()
             """,
             row,
@@ -70,7 +71,7 @@ def _upsert_chunks(rows: list[tuple]) -> int:
     return count
 
 
-async def process_document(text: str, metadata: dict) -> int:
+async def process_document(text: str, metadata: dict, source_object_key: str | None = None) -> int:
     """Chunk, embed, and upsert one document. Returns chunk count."""
     chunks = chunk_text(text)
     if not chunks:
@@ -89,6 +90,7 @@ async def process_document(text: str, metadata: dict) -> int:
             index,
             len(_encoder.encode(chunk)),
             metadata.get("effective_date"),
+            source_object_key,
         )
         for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))
     ]

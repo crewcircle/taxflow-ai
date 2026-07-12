@@ -3,6 +3,7 @@ import io
 import pdfplumber
 
 from taxflow.services.knowledge.scraper_base import ScraperBase
+from taxflow.services.storage.r2 import upload_source_pdf
 
 # The ATO Legal Database serves ruling PDFs at predictable URLs. The HTML index
 # pages sit behind Akamai bot filtering, but the PDF documents themselves are
@@ -31,6 +32,9 @@ class ATORulingsScraper(ScraperBase):
         super().__init__()
         self._client.headers["User-Agent"] = BROWSER_UA
         self._client.headers["X-Contact"] = "crewcircle@zohomail.com.au"
+        # Set by fetch_document_content as a side channel - run_delta (scraper_base.py)
+        # reads it after each fetch to attach the R2 object key to the chunk rows.
+        self._last_object_key: str | None = None
 
     async def fetch_document_list(self) -> list[dict]:
         documents = []
@@ -49,8 +53,10 @@ class ATORulingsScraper(ScraperBase):
         return documents
 
     async def fetch_document_content(self, url: str) -> str:
+        self._last_object_key = None
         response = await self._get(url)
         if response.status_code != 200 or "pdf" not in response.headers.get("content-type", ""):
             return ""  # ruling number doesn't exist - run_delta skips empty content
+        self._last_object_key = upload_source_pdf(url, response.content)
         with pdfplumber.open(io.BytesIO(response.content)) as pdf:
             return "\n".join(page.extract_text() or "" for page in pdf.pages)

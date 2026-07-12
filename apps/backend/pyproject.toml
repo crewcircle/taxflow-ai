@@ -22,6 +22,7 @@ dependencies = [
     "stripe>=11.1.0",
     "markdown>=3.7",
     "email-validator>=2.2.0",
+    "boto3>=1.35.0",
 ]
 
 [project.optional-dependencies]

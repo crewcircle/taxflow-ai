@@ -10,8 +10,10 @@ def _register_jobs() -> None:
 
     # Daily knowledge base delta scrape, 2am Sydney time (UTC+10/11 -> use 16:00 UTC)
     scheduler.add_job(run_all, "cron", hour=16, minute=0, id="kb_ingestion", replace_existing=True)
-    # Regulatory monitor every 2 hours
-    scheduler.add_job(check_feeds, "interval", hours=2, id="regulatory_monitor", replace_existing=True)
+    # Regulatory monitor weekly, Monday 6am Sydney time (UTC+10/11 -> 20:00 UTC Sunday)
+    scheduler.add_job(
+        check_feeds, "cron", day_of_week="sun", hour=20, minute=0, id="regulatory_monitor", replace_existing=True
+    )
     # Demo account cleanup, 3am Sydney time (17:00 UTC)
     scheduler.add_job(reset_demo_data, "cron", hour=17, minute=0, id="demo_reset", replace_existing=True)
 

@@ -78,7 +78,8 @@ class ScraperBase(ABC):
                 text = await self.fetch_document_content(doc["url"])
                 if not text or len(text) < 200:
                     continue
-                await process_document(text, doc)
+                object_key = getattr(self, "_last_object_key", None)
+                await process_document(text, doc, source_object_key=object_key)
                 processed += 1
             except Exception as e:  # noqa: BLE001 - one bad document must not kill the run
                 print(f"  skip {doc['url']}: {e}")

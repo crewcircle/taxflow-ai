@@ -1,7 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import { Plus, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 export interface QueryListItem {
@@ -11,6 +14,7 @@ export interface QueryListItem {
   model_used: string | null;
   confidence_score: number | null;
   verification_result: { overall_status?: string } | null;
+  client_ref: string | null;
   created_at: string;
 }
 
@@ -53,21 +57,34 @@ export function QueryHistorySidebar({
   onSelect,
   onNewQuestion,
 }: QueryHistorySidebarProps) {
-  const groups = groupByRecency(history);
+  const [clientFilter, setClientFilter] = useState("");
+  const filtered = clientFilter.trim()
+    ? history.filter((h) => h.client_ref?.toLowerCase().includes(clientFilter.trim().toLowerCase()))
+    : history;
+  const groups = groupByRecency(filtered);
+  const hasAnyClientRef = history.some((h) => h.client_ref);
 
   return (
     <div className="flex h-full w-64 shrink-0 flex-col border-r border-border">
-      <div className="border-b border-border p-3">
+      <div className="space-y-2 border-b border-border p-3">
         <Button size="sm" className="w-full gap-1.5" onClick={onNewQuestion}>
           <Plus className="size-4" />
           New question
         </Button>
+        {hasAnyClientRef && (
+          <Input
+            value={clientFilter}
+            onChange={(e) => setClientFilter(e.target.value)}
+            placeholder="Filter by client..."
+            className="h-8 text-xs"
+          />
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
         {groups.length === 0 && (
           <p className="p-3 text-xs text-muted-foreground">
-            Your past questions will appear here.
+            {clientFilter.trim() ? "No questions for this client." : "Your past questions will appear here."}
           </p>
         )}
         {groups.map((group) => (
@@ -88,7 +105,14 @@ export function QueryHistorySidebar({
                   )}
                 >
                   <MessageSquare className="mt-0.5 size-3.5 shrink-0 opacity-60" />
-                  <span className="line-clamp-2 leading-snug">{item.question}</span>
+                  <span className="flex-1 space-y-1">
+                    <span className="line-clamp-2 block leading-snug">{item.question}</span>
+                    {item.client_ref && (
+                      <Badge variant="outline" className="text-[9px]">
+                        {item.client_ref}
+                      </Badge>
+                    )}
+                  </span>
                 </button>
               ))}
             </div>

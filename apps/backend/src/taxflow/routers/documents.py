@@ -25,6 +25,7 @@ class GenerateDocumentRequest(BaseModel):
     document_type: str
     title: str
     content_md: str
+    client_ref: str | None = None
 
 
 @router.get("/templates")
@@ -36,7 +37,7 @@ async def list_templates():
 async def list_documents(client=Depends(get_current_client), db=Depends(get_db)):
     result = (
         db.table("documents")
-        .select("id, document_type, title, status, created_at")
+        .select("id, document_type, title, status, client_ref, created_at")
         .eq("client_id", client["id"])
         .order("created_at", desc=True)
         .execute()
@@ -60,6 +61,7 @@ async def generate_document(
                 "document_type": body.document_type,
                 "title": body.title,
                 "content_md": body.content_md,
+                "client_ref": body.client_ref,
             }
         )
         .execute()

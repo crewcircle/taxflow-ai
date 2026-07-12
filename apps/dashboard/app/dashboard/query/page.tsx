@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHistorySidebar";
 import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
@@ -77,6 +78,19 @@ interface QueryResult {
 
 const MAX_CHARS = 2000;
 
+function relativeTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dayDiff = Math.round((startOfToday.getTime() - startOfDate.getTime()) / 86400000);
+
+  if (dayDiff <= 0) return "Today";
+  if (dayDiff === 1) return "Yesterday";
+  if (dayDiff < 7) return `${dayDiff} days ago`;
+  return date.toLocaleDateString("en-AU");
+}
+
 function AnswerWithCitationLinks({ text }: { text: string }) {
   const parts = text.split(/(\[\d+\])/g);
   return (
@@ -121,6 +135,7 @@ function VerificationBadge({ verification }: { verification: Verification }) {
 
 export default function QueryPage() {
   const [question, setQuestion] = useState("");
+  const [clientRef, setClientRef] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<QueryResult | null>(null);
@@ -211,6 +226,7 @@ export default function QueryPage() {
   function handleNewQuestion() {
     setActiveId(null);
     setQuestion("");
+    setClientRef("");
     resetPane();
   }
 
@@ -227,6 +243,7 @@ export default function QueryPage() {
       if (!response.ok) throw new Error("Could not load this question");
       const data = await response.json();
       setQuestion(data.question);
+      setClientRef(data.client_ref ?? "");
       setResult({
         answer: data.final_answer ?? "",
         citations: data.citations ?? [],
@@ -254,7 +271,10 @@ export default function QueryPage() {
         return;
       }
 
-      const source = new EventSource(`/api/query/stream?question=${encodeURIComponent(question)}`);
+      const streamUrl = `/api/query/stream?question=${encodeURIComponent(question)}${
+        clientRef.trim() ? `&client_ref=${encodeURIComponent(clientRef.trim())}` : ""
+      }`;
+      const source = new EventSource(streamUrl);
       let answer = "";
       let citations: SourceCitation[] = [];
 
@@ -324,6 +344,7 @@ export default function QueryPage() {
           document_type: docType,
           title: question.slice(0, 80),
           content_md: result.answer,
+          client_ref: clientRef.trim() || null,
         }),
       });
       if (!response.ok) throw new Error("Failed");
@@ -484,7 +505,7 @@ export default function QueryPage() {
                             <span className="truncate">{item.label}</span>
                           </span>
                           <span className="shrink-0 text-xs text-muted-foreground">
-                            {new Date(item.created_at).toLocaleDateString("en-AU")}
+                            {relativeTime(item.created_at)}
                           </span>
                         </Link>
                       </li>
@@ -544,6 +565,12 @@ export default function QueryPage() {
         </div>
 
         <div className="border-t border-border p-4">
+          <Input
+            value={clientRef}
+            onChange={(e) => setClientRef(e.target.value)}
+            placeholder="Client (optional)"
+            className="mb-2 h-8 max-w-xs text-xs"
+          />
           <Textarea
             value={question}
             onChange={(e) => setQuestion(e.target.value.slice(0, MAX_CHARS))}

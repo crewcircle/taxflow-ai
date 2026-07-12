@@ -15,13 +15,15 @@ export async function GET(request: NextRequest) {
   if (!question) {
     return NextResponse.json({ error: "question required" }, { status: 400 });
   }
+  const clientRef = request.nextUrl.searchParams.get("client_ref");
 
-  const backendResponse = await fetch(
-    `${process.env.NEXT_PUBLIC_API_URL}/query/stream?question=${encodeURIComponent(question)}`,
-    {
-      headers: { Authorization: `Bearer ${session.access_token}` },
-    }
-  );
+  const backendUrl = new URL(`${process.env.NEXT_PUBLIC_API_URL}/query/stream`);
+  backendUrl.searchParams.set("question", question);
+  if (clientRef) backendUrl.searchParams.set("client_ref", clientRef);
+
+  const backendResponse = await fetch(backendUrl, {
+    headers: { Authorization: `Bearer ${session.access_token}` },
+  });
 
   return new NextResponse(backendResponse.body, {
     status: backendResponse.status,
