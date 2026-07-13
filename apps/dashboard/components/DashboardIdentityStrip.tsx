@@ -50,7 +50,10 @@ export function DashboardIdentityStrip({
   }
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-4 py-2 text-sm">
+    <div
+      className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-4 py-2 text-sm"
+      data-tour="identity-strip"
+    >
       <span className="flex flex-wrap items-center gap-2">
         <Sparkles className="size-4 text-accent" />
         <span>

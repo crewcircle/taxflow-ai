@@ -75,7 +75,7 @@ export default async function DashboardLayout({
           <div className="mb-6 px-2">
             <Logo href="/dashboard" />
           </div>
-          <nav className="flex flex-col gap-1">
+          <nav className="flex flex-col gap-1" data-tour="nav-sidebar">
             {NAV_LINKS.map((link) => (
               <DashboardNavLink
                 key={link.href}

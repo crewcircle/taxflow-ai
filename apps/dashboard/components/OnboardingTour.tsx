@@ -1,10 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, Sparkles } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { usePathname, useRouter } from "next/navigation";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { relativeTime, useLastQueryWalkthrough } from "@/lib/useLastQueryWalkthrough";
 
 interface OnboardingTourProps {
@@ -15,21 +14,50 @@ interface OnboardingTourProps {
   isDemo: boolean;
 }
 
-const MODULES = [
-  { label: "ATO correspondence", detail: "Upload an ATO letter, get a classification and a drafted response." },
-  {
-    label: "Documents",
-    detail: "Save any answer as a client-ready document - advice memo, engagement letter, and more.",
-  },
-  {
-    label: "Firm knowledge",
-    detail: "Upload the firm's own precedents so answers reflect internal guidance too.",
-  },
-  { label: "Regulatory updates", detail: "New rulings and decisions detected from public regulator feeds." },
-];
+interface Rect {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
+const QUERY_PATH = "/dashboard/query";
+const PAD = 8;
 
 function humanizeType(type: string): string {
   return type.replace(/_/g, " ");
+}
+
+function useTargetRect(selector: string | null, active: boolean): Rect | null {
+  const [rect, setRect] = useState<Rect | null>(null);
+
+  useEffect(() => {
+    if (!active || !selector) {
+      const clearId = setTimeout(() => setRect(null), 0);
+      return () => clearTimeout(clearId);
+    }
+    const el = document.querySelector<HTMLElement>(selector);
+    if (!el) {
+      const clearId = setTimeout(() => setRect(null), 0);
+      return () => clearTimeout(clearId);
+    }
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+
+    function measure() {
+      const r = el!.getBoundingClientRect();
+      setRect({ top: r.top, left: r.left, width: r.width, height: r.height });
+    }
+    const t = setTimeout(measure, 350);
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [selector, active]);
+
+  return rect;
 }
 
 export function OnboardingTour({
@@ -39,31 +67,171 @@ export function OnboardingTour({
   demoDescription,
   isDemo,
 }: OnboardingTourProps) {
+  const router = useRouter();
+  const pathname = usePathname();
   const storageKey = `taxflow_tour_seen:${businessName}`;
-  const stepCount = 6;
 
-  // A full page reload happens on persona switch ("Try a different scenario"),
-  // so this component always remounts fresh for a new persona - a lazy
-  // initializer is enough to decide the first render's open state. It only
-  // reads sessionStorage (stays pure/safe under Strict Mode's dev-mode
-  // double-invocation) - marking the key "seen" is a side effect, done
-  // separately in the mount effect below.
-  const [open, setOpen] = useState(
-    () => typeof window !== "undefined" && isDemo && !!businessName && !window.sessionStorage.getItem(storageKey)
-  );
+  const [open, setOpen] = useState(false);
+  const [forceOpenRequested, setForceOpenRequested] = useState(false);
   const [step, setStep] = useState(0);
   const { load, loading, lastQuery, noQueries, firstIssue, distinctCitations } = useLastQueryWalkthrough();
 
+  // Auto-open once per persona per session. This reacts to `pathname` rather
+  // than only checking it at mount, because the demo-login flow does a
+  // client-side router.push("/dashboard") that then server-redirects to
+  // /dashboard/query - pathname isn't settled to its final value until after
+  // this component has already mounted, so a mount-only check (e.g. a
+  // useState lazy initializer) misses the redirect and never opens.
   useEffect(() => {
-    if (open) {
+    if (!(isDemo && businessName && pathname === QUERY_PATH && !window.sessionStorage.getItem(storageKey))) return;
+    const t = setTimeout(() => {
       window.sessionStorage.setItem(storageKey, "1");
+      setStep(0);
+      setOpen(true);
       load();
-    }
-    // Only on mount - load() is idempotent (guards on its own "fetched" flag).
+    }, 0);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isDemo, businessName, pathname, storageKey]);
+
+  // "Take the tour" clicked from a page other than the query page: navigate
+  // there first, then open once we've actually landed (same reasoning as above).
+  useEffect(() => {
+    if (!(forceOpenRequested && pathname === QUERY_PATH)) return;
+    const t = setTimeout(() => {
+      setForceOpenRequested(false);
+      setStep(0);
+      setOpen(true);
+      load();
+    }, 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forceOpenRequested, pathname]);
+
+  const steps = [
+    {
+      selector: '[data-tour="identity-strip"]',
+      title: "Who you're looking at",
+      body: (
+        <>
+          <p>
+            You&apos;re viewing a live demo as <strong>{businessName}</strong> ({humanizeType(businessType)}).
+          </p>
+          {demoDescription && <p className="text-muted-foreground">{demoDescription}</p>}
+          {demoTagline && <p className="font-medium text-foreground">{demoTagline}</p>}
+        </>
+      ),
+    },
+    {
+      selector: '[data-tour="suggested-question"]',
+      title: "A real question they asked",
+      body: (
+        <>
+          {loading && <p className="text-muted-foreground">Loading...</p>}
+          {!loading && noQueries && <p className="text-muted-foreground">This firm hasn&apos;t asked a question yet.</p>}
+          {!loading && lastQuery && (
+            <p className="text-muted-foreground">
+              These are real questions {businessName} has already asked TaxFlow - like this one, asked{" "}
+              {relativeTime(lastQuery.created_at)}. Click any of them to try it yourself.
+            </p>
+          )}
+        </>
+      ),
+    },
+    {
+      selector: '[data-tour="sources-panel"]',
+      title: "Where sources appear",
+      body:
+        distinctCitations.length > 0 ? (
+          <p className="text-muted-foreground">
+            When TaxFlow answers, every source it actually used shows up here. For{" "}
+            {businessName}&apos;s last question, that was: {distinctCitations.join(", ")}.
+          </p>
+        ) : (
+          <p className="text-muted-foreground">
+            This panel is empty right now because no question has been asked yet this session - but for{" "}
+            {businessName}&apos;s last question, TaxFlow actually found no matching sources at all. That
+            honesty is exactly what the next step is about.
+          </p>
+        ),
+    },
+    {
+      selector: null,
+      title: "The safety net",
+      body: firstIssue ? (
+        <>
+          <p className="text-muted-foreground">
+            Before an answer is marked ready, a second AI pass (Verify Agent) checks every claim against
+            the sources actually retrieved - and caught something in {businessName}&apos;s last question:
+          </p>
+          <div className="space-y-1.5 rounded bg-amber-50 p-3 text-xs">
+            <p>
+              <span className="font-semibold">What the draft said: </span>
+              {firstIssue.claim}
+            </p>
+            <p>
+              <span className="font-semibold">Verify Agent&apos;s correction note: </span>
+              {firstIssue.suggested_correction}
+            </p>
+          </div>
+          <p className="text-muted-foreground">
+            A generic AI chatbot has no way to catch this - there&apos;s no source corpus to check the
+            claim against in the first place.
+          </p>
+        </>
+      ) : (
+        <p className="text-muted-foreground">
+          For this question, Verify Agent checked every claim against the retrieved sources and found
+          nothing to flag - the answer came back fully verified.
+        </p>
+      ),
+    },
+    {
+      selector: '[data-tour="nav-sidebar"]',
+      title: "Everything else TaxFlow does",
+      body: (
+        <ul className="space-y-1.5">
+          <li>
+            <span className="font-medium text-foreground">ATO correspondence</span>
+            <span className="text-muted-foreground"> - upload a letter, get a classification and a drafted reply.</span>
+          </li>
+          <li>
+            <span className="font-medium text-foreground">Documents</span>
+            <span className="text-muted-foreground"> - save any answer as a client-ready document.</span>
+          </li>
+          <li>
+            <span className="font-medium text-foreground">Firm knowledge</span>
+            <span className="text-muted-foreground"> - upload the firm&apos;s own precedents.</span>
+          </li>
+          <li>
+            <span className="font-medium text-foreground">Regulatory updates</span>
+            <span className="text-muted-foreground"> - new rulings detected from public feeds.</span>
+          </li>
+        </ul>
+      ),
+    },
+    {
+      selector: '[data-tour="question-textarea"]',
+      title: "Try it yourself",
+      body: (
+        <p className="text-muted-foreground">
+          Ask your own Australian tax question here and watch the same research, draft, and verification
+          steps happen live.
+        </p>
+      ),
+    },
+  ];
+
+  const stepCount = steps.length;
+  const current = steps[step];
+  const rect = useTargetRect(current.selector, open);
 
   function openManually() {
+    if (pathname !== QUERY_PATH) {
+      setForceOpenRequested(true);
+      router.push(QUERY_PATH);
+      return;
+    }
     setStep(0);
     setOpen(true);
     load();
@@ -71,175 +239,114 @@ export function OnboardingTour({
 
   function handleFinish() {
     setOpen(false);
-    document.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+    document.querySelector<HTMLTextAreaElement>('[data-tour="question-textarea"]')?.focus();
   }
 
   if (!isDemo) return null;
+
+  // Card position: below the target if it fits, else above; clamped horizontally.
+  const CARD_WIDTH = 340;
+  let cardStyle: React.CSSProperties = {
+    top: "50%",
+    left: "50%",
+    transform: "translate(-50%, -50%)",
+  };
+  if (rect) {
+    const estHeight = 220;
+    const spaceBelow = window.innerHeight - (rect.top + rect.height);
+    const top = spaceBelow > estHeight + 24 ? rect.top + rect.height + PAD + 8 : Math.max(16, rect.top - estHeight - PAD - 8);
+    const left = Math.min(Math.max(16, rect.left), window.innerWidth - CARD_WIDTH - 16);
+    cardStyle = { top, left };
+  }
 
   return (
     <>
       <Button variant="outline" size="sm" onClick={openManually}>
         Take the tour
       </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Sparkles className="size-4 text-accent" />
-              {businessName}
-            </DialogTitle>
-          </DialogHeader>
 
-          <div className="min-h-[220px] space-y-3 text-sm">
-            {step === 0 && (
-              <>
-                <p className="text-xs font-semibold text-muted-foreground">WELCOME</p>
-                <p className="flex items-center gap-2">
-                  You&apos;re viewing a live demo as <strong>{businessName}</strong>
-                  <Badge variant="outline" className="text-[10px]">
-                    {humanizeType(businessType)}
-                  </Badge>
-                </p>
-                {demoDescription && <p className="text-muted-foreground">{demoDescription}</p>}
-                {demoTagline && <p className="font-medium text-foreground">{demoTagline}</p>}
-              </>
-            )}
+      {open && (
+        <div className="fixed inset-0 z-[100]">
+          {rect ? (
+            <>
+              <div
+                className="absolute inset-x-0 top-0 bg-black/60"
+                style={{ height: Math.max(0, rect.top - PAD) }}
+              />
+              <div
+                className="absolute inset-x-0 bottom-0 bg-black/60"
+                style={{ top: rect.top + rect.height + PAD }}
+              />
+              <div
+                className="absolute bg-black/60"
+                style={{ top: rect.top - PAD, height: rect.height + PAD * 2, left: 0, width: Math.max(0, rect.left - PAD) }}
+              />
+              <div
+                className="absolute bg-black/60"
+                style={{
+                  top: rect.top - PAD,
+                  height: rect.height + PAD * 2,
+                  left: rect.left + rect.width + PAD,
+                  right: 0,
+                }}
+              />
+              <div
+                className="pointer-events-none absolute rounded-lg ring-2 ring-accent"
+                style={{
+                  top: rect.top - PAD,
+                  left: rect.left - PAD,
+                  width: rect.width + PAD * 2,
+                  height: rect.height + PAD * 2,
+                }}
+              />
+            </>
+          ) : (
+            <div className="absolute inset-0 bg-black/60" />
+          )}
 
-            {step === 1 && (
-              <>
-                <p className="text-xs font-semibold text-muted-foreground">A REAL QUESTION THEY ASKED</p>
-                {loading && <p className="text-xs text-muted-foreground">Loading...</p>}
-                {!loading && noQueries && (
-                  <p className="text-xs text-muted-foreground">
-                    This firm hasn&apos;t asked a question yet.
-                  </p>
+          <div
+            className="absolute w-[340px] space-y-3 rounded-xl border border-border bg-background p-4 text-sm shadow-xl"
+            style={cardStyle}
+          >
+            <p className="text-xs font-semibold text-muted-foreground">{current.title.toUpperCase()}</p>
+            <div className="min-h-[80px] space-y-2">{current.body}</div>
+
+            <div className="flex items-center justify-between border-t border-border pt-3">
+              <div className="flex gap-1">
+                {Array.from({ length: stepCount }).map((_, i) => (
+                  <span key={i} className={`size-1.5 rounded-full ${i === step ? "bg-accent" : "bg-muted"}`} />
+                ))}
+              </div>
+              <div className="flex gap-2">
+                {step > 0 && (
+                  <Button variant="ghost" size="sm" onClick={() => setStep((s) => s - 1)}>
+                    <ArrowLeft className="size-3.5" />
+                    Back
+                  </Button>
                 )}
-                {!loading && lastQuery && (
-                  <div className="space-y-1.5 rounded-lg border border-border p-3">
-                    <p className="text-sm font-medium text-foreground">{lastQuery.question}</p>
-                    <p className="text-xs text-muted-foreground">Asked {relativeTime(lastQuery.created_at)}</p>
-                  </div>
-                )}
-                <p className="text-xs text-muted-foreground">
-                  Real questions, asked in plain English - not a scripted demo script.
-                </p>
-              </>
-            )}
-
-            {step === 2 && (
-              <>
-                <p className="text-xs font-semibold text-muted-foreground">WHAT TAXFLOW FOUND</p>
-                {distinctCitations.length > 0 ? (
-                  <>
-                    <p className="text-muted-foreground">
-                      TaxFlow searched its knowledge base of real ATO rulings and legislation and found:
-                    </p>
-                    <ul className="list-disc space-y-1 pl-5">
-                      {distinctCitations.map((c) => (
-                        <li key={c} className="text-foreground">
-                          {c}
-                        </li>
-                      ))}
-                    </ul>
-                  </>
+                {step < stepCount - 1 ? (
+                  <Button size="sm" onClick={() => setStep((s) => s + 1)}>
+                    Next
+                    <ArrowRight className="size-3.5" />
+                  </Button>
                 ) : (
-                  <p className="text-muted-foreground">
-                    For this particular question, TaxFlow found no matching sources in the knowledge
-                    base - the drafted answer relied on general knowledge instead of a grounded
-                    source. That gap is exactly what the next step catches.
-                  </p>
+                  <Button size="sm" onClick={handleFinish}>
+                    Try it yourself
+                  </Button>
                 )}
-              </>
-            )}
-
-            {step === 3 && (
-              <>
-                <p className="text-xs font-semibold text-muted-foreground">THE SAFETY NET</p>
-                {firstIssue ? (
-                  <>
-                    <p className="text-muted-foreground">
-                      Before the answer was marked ready, a second AI pass (Verify Agent) checked
-                      every claim against the sources actually retrieved - and caught something:
-                    </p>
-                    <div className="space-y-1.5 rounded bg-amber-50 p-3 text-xs">
-                      <p>
-                        <span className="font-semibold">What the draft said: </span>
-                        {firstIssue.claim}
-                      </p>
-                      <p>
-                        <span className="font-semibold">Verify Agent&apos;s correction note: </span>
-                        {firstIssue.suggested_correction}
-                      </p>
-                    </div>
-                    <p className="text-muted-foreground">
-                      A generic AI chatbot would have no way to catch this - there&apos;s no source
-                      corpus to check the claim against in the first place.
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-muted-foreground">
-                    For this question, Verify Agent checked every claim against the retrieved
-                    sources and found nothing to flag - the answer came back fully verified.
-                  </p>
-                )}
-              </>
-            )}
-
-            {step === 4 && (
-              <>
-                <p className="text-xs font-semibold text-muted-foreground">EVERYTHING ELSE TAXFLOW DOES</p>
-                <ul className="space-y-2">
-                  {MODULES.map((m) => (
-                    <li key={m.label} className="text-xs">
-                      <span className="font-medium text-foreground">{m.label}</span>
-                      <span className="text-muted-foreground"> - {m.detail}</span>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-
-            {step === 5 && (
-              <>
-                <p className="text-xs font-semibold text-muted-foreground">TRY IT YOURSELF</p>
-                <p className="text-muted-foreground">
-                  Ask your own Australian tax question below and watch the same research, draft,
-                  and verification steps happen live.
-                </p>
-              </>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between border-t border-border pt-4">
-            <div className="flex gap-1">
-              {Array.from({ length: stepCount }).map((_, i) => (
-                <span
-                  key={i}
-                  className={`size-1.5 rounded-full ${i === step ? "bg-accent" : "bg-muted"}`}
-                />
-              ))}
+              </div>
             </div>
-            <div className="flex gap-2">
-              {step > 0 && (
-                <Button variant="ghost" size="sm" onClick={() => setStep((s) => s - 1)}>
-                  <ArrowLeft className="size-3.5" />
-                  Back
-                </Button>
-              )}
-              {step < stepCount - 1 ? (
-                <Button size="sm" onClick={() => setStep((s) => s + 1)}>
-                  Next
-                  <ArrowRight className="size-3.5" />
-                </Button>
-              ) : (
-                <Button size="sm" onClick={handleFinish}>
-                  Try it yourself
-                </Button>
-              )}
-            </div>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="absolute -right-2 -top-2 flex size-6 items-center justify-center rounded-full border border-border bg-background text-xs text-muted-foreground hover:text-foreground"
+              aria-label="Close tour"
+            >
+              ×
+            </button>
           </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      )}
     </>
   );
 }

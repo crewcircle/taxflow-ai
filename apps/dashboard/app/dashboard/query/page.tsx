@@ -438,7 +438,7 @@ export default function QueryPage() {
                     )}
 
                     {history.length > 0 && (
-                      <div className="space-y-1.5">
+                      <div className="space-y-1.5" data-tour="suggested-question">
                         <p className="text-xs font-semibold text-muted-foreground">
                           TRY ONE OF THIS FIRM&apos;S QUESTIONS
                         </p>
@@ -572,6 +572,7 @@ export default function QueryPage() {
             className="mb-2 h-8 max-w-xs text-xs"
           />
           <Textarea
+            data-tour="question-textarea"
             value={question}
             onChange={(e) => setQuestion(e.target.value.slice(0, MAX_CHARS))}
             rows={3}

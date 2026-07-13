@@ -42,7 +42,7 @@ export function SourcesPanel({ citations }: SourcesPanelProps) {
   const groups = groupByCitation(citations);
 
   return (
-    <div className="flex h-full w-72 shrink-0 flex-col border-l border-border">
+    <div className="flex h-full w-72 shrink-0 flex-col border-l border-border" data-tour="sources-panel">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
         <FileText className="size-4 text-muted-foreground" />
         <span className="text-sm font-semibold text-foreground">Sources</span>
