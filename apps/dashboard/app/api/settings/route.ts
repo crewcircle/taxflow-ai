@@ -1,8 +1,8 @@
-import { proxyToBackend } from "@/lib/api";
+import { forwardResponse, proxyToBackend } from "@/lib/api";
 
 export async function GET() {
   const response = await proxyToBackend("/settings/me");
-  return new Response(response.body, { status: response.status, headers: response.headers });
+  return forwardResponse(response);
 }
 
 export async function PATCH(request: Request) {
@@ -12,5 +12,5 @@ export async function PATCH(request: Request) {
     headers: { "Content-Type": "application/json" },
     body,
   });
-  return new Response(response.body, { status: response.status, headers: response.headers });
+  return forwardResponse(response);
 }

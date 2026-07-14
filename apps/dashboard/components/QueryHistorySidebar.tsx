@@ -15,6 +15,7 @@ export interface QueryListItem {
   confidence_score: number | null;
   verification_result: { overall_status?: string } | null;
   client_ref: string | null;
+  context_note: string | null;
   created_at: string;
 }
 

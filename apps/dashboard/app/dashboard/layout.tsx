@@ -3,7 +3,6 @@ import {
   Bell,
   BookOpen,
   FileText,
-  MessageSquare,
   ScrollText,
   Settings,
 } from "lucide-react";
@@ -13,7 +12,6 @@ import { Logo } from "@/components/Logo";
 import { DashboardNavLink } from "@/components/DashboardNavLink";
 
 const NAV_LINKS = [
-  { href: "/dashboard/query", label: "Ask a question", icon: MessageSquare },
   { href: "/dashboard/ato-response", label: "ATO correspondence", icon: ScrollText },
   { href: "/dashboard/regulatory", label: "Regulatory updates", icon: Bell },
   { href: "/dashboard/documents", label: "Documents", icon: FileText },

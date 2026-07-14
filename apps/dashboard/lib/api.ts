@@ -31,3 +31,16 @@ export async function proxyToBackend(
     );
   }
 }
+
+// fetch() on the Node runtime transparently decompresses gzip/br response
+// bodies but leaves content-encoding/content-length on the Headers object
+// untouched. Forwarding those headers verbatim tells the browser it's
+// receiving a compressed body when it isn't, which fails with
+// ERR_CONTENT_DECODING_FAILED. Strip them before mirroring a backend
+// response back to the client.
+export function forwardResponse(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  return new Response(response.body, { status: response.status, headers });
+}

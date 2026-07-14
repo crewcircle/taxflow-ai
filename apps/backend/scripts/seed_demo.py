@@ -18,6 +18,7 @@ Run: doppler run --project taxflow --config prd -- \
 import asyncio
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -51,17 +52,49 @@ PERSONAS = [
             "before they act on it."
         ),
         "questions": [
-            "Can Bayside Dental Group claim the instant asset write-off for a new "
-            "$180,000 CBCT scanner purchased this financial year?",
-            "Is a car provided to our practice manager for mixed personal and "
-            "clinical use subject to FBT, and how do we calculate the taxable "
-            "value under the statutory formula method?",
-            "The practice's holding entity loaned $95,000 to cover fit-out costs "
-            "for a new chair-side unit - does this trigger a deemed dividend "
-            "under Division 7A, and how do we structure a complying loan "
-            "agreement to avoid it?",
+            {
+                "question": (
+                    "Can Bayside Dental Group claim the instant asset write-off for a new "
+                    "$180,000 CBCT scanner purchased this financial year?"
+                ),
+                "days_ago": 18,
+                "context_note": (
+                    "Client bought a $180k scanner before EOFY - write-off confirmed and "
+                    "included in this year's return."
+                ),
+            },
+            {
+                "question": (
+                    "Is a car provided to our practice manager for mixed personal and "
+                    "clinical use subject to FBT, and how do we calculate the taxable "
+                    "value under the statutory formula method?"
+                ),
+                "days_ago": 11,
+                "context_note": (
+                    "FBT return due this quarter - taxable value confirmed and included "
+                    "in the lodged return."
+                ),
+            },
+            {
+                "question": (
+                    "The practice's holding entity loaned $95,000 to cover fit-out costs "
+                    "for a new chair-side unit - does this trigger a deemed dividend "
+                    "under Division 7A, and how do we structure a complying loan "
+                    "agreement to avoid it?"
+                ),
+                "days_ago": 3,
+                "context_note": (
+                    "Holding-entity loan flagged in the compliance review - drafting a "
+                    "complying Div 7A agreement before lodgment day."
+                ),
+            },
         ],
         "document_title": "Instant Asset Write-Off - CBCT Scanner Purchase",
+        "document_context_note": "Client-ready memo on the scanner write-off - sent for sign-off.",
+        "ato_context_note": (
+            "ATO flagged the FBT car benefit for review - response drafted, awaiting "
+            "partner sign-off before sending."
+        ),
         "firm_knowledge_title": "equipment-finance-policy.txt",
         "firm_knowledge_content": (
             "Bayside Dental Group - Internal Equipment Finance Policy\n\n"
@@ -108,18 +141,52 @@ PERSONAS = [
             "private ruling before they sign anything."
         ),
         "questions": [
-            "We're selling a commercial development site for $4.2M under the "
-            "GST margin scheme - how do we calculate the margin and what "
-            "documentation does the ATO require to support it?",
-            "Riverside's development is 70% funded by a related offshore "
-            "lender - do the thin capitalisation rules under Division 820 "
-            "limit our interest deductions this year?",
-            "One of our partner entities is a small business entity with "
-            "turnover under $2M - does it qualify for the 50% CGT discount "
-            "plus the small business 50% reduction on the sale of its "
-            "interest in the development?",
+            {
+                "question": (
+                    "We're selling a commercial development site for $4.2M under the "
+                    "GST margin scheme - how do we calculate the margin and what "
+                    "documentation does the ATO require to support it?"
+                ),
+                "days_ago": 18,
+                "context_note": (
+                    "Site sale settling this quarter - margin confirmed and included "
+                    "in the BAS."
+                ),
+            },
+            {
+                "question": (
+                    "Riverside's development is 70% funded by a related offshore "
+                    "lender - do the thin capitalisation rules under Division 820 "
+                    "limit our interest deductions this year?"
+                ),
+                "days_ago": 11,
+                "context_note": (
+                    "Year-end review of the offshore-funded loan - confirmed within "
+                    "safe harbour, no action needed."
+                ),
+            },
+            {
+                "question": (
+                    "One of our partner entities is a small business entity with "
+                    "turnover under $2M - does it qualify for the 50% CGT discount "
+                    "plus the small business 50% reduction on the sale of its "
+                    "interest in the development?"
+                ),
+                "days_ago": 3,
+                "context_note": (
+                    "Partner considering selling their interest - confirming discount "
+                    "eligibility before the sale contract is signed."
+                ),
+            },
         ],
         "document_title": "GST Margin Scheme - Riverside Development Site Sale",
+        "document_context_note": (
+            "Client-ready memo on the site sale margin - sent to the partner for review."
+        ),
+        "ato_context_note": (
+            "ATO queried the margin calculation on the site sale - response drafted, "
+            "awaiting partner sign-off before sending."
+        ),
         "firm_knowledge_title": "development-engagement-checklist.txt",
         "firm_knowledge_content": (
             "Riverside Property Partners - Development Project Engagement "
@@ -167,18 +234,48 @@ PERSONAS = [
             "the law says."
         ),
         "questions": [
-            "Does the work from home shortcut method still apply and what is "
-            "the current rate per hour?",
-            "Our client's family trust wants to make a $150,000 distribution "
-            "to an adult beneficiary who then gifts it back to the trust for "
-            "the trustee's benefit - does section 100A reimbursement "
-            "agreement apply?",
-            "A client software company spent $220,000 on eligible R&D "
-            "activities this year - what's the R&D tax incentive offset rate "
-            "for a company with turnover under $20M, and what records does "
-            "the ATO expect to support the claim?",
+            {
+                "question": (
+                    "Does the work from home shortcut method still apply and what is "
+                    "the current rate per hour?"
+                ),
+                "days_ago": 18,
+                "context_note": "Client lodging their return this month - rate confirmed and applied.",
+            },
+            {
+                "question": (
+                    "Our client's family trust wants to make a $150,000 distribution "
+                    "to an adult beneficiary who then gifts it back to the trust for "
+                    "the trustee's benefit - does section 100A reimbursement "
+                    "agreement apply?"
+                ),
+                "days_ago": 11,
+                "context_note": (
+                    "Trustee flagged an unusual distribution before resolutions were "
+                    "finalised - confirmed no reimbursement agreement, resolution can "
+                    "proceed."
+                ),
+            },
+            {
+                "question": (
+                    "A client software company spent $220,000 on eligible R&D "
+                    "activities this year - what's the R&D tax incentive offset rate "
+                    "for a company with turnover under $20M, and what records does "
+                    "the ATO expect to support the claim?"
+                ),
+                "days_ago": 3,
+                "context_note": (
+                    "Software client's R&D claim due before the AusIndustry deadline - "
+                    "confirming offset rate and required records before lodging."
+                ),
+            },
         ],
         "document_title": "Working From Home Deductions - Fixed Rate Method",
+        "document_context_note": "Client-ready memo on the WFH deduction rate - sent to the client.",
+        "ato_context_note": (
+            "ATO reviewing the trust distribution under s100A - response drafted, "
+            "awaiting partner sign-off before sending."
+        ),
         "firm_knowledge_title": "client-onboarding-checklist.txt",
         "firm_knowledge_content": (
             "Chen & Associates - Client Onboarding & Engagement Checklist\n\n"
@@ -253,6 +350,10 @@ def ensure_demo_client(sb, persona: dict) -> str:
     return client_id
 
 
+def _days_ago(n: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=n)).isoformat()
+
+
 async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
     research = ResearchAgent()
     drafter = DraftAgent()
@@ -260,7 +361,9 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
     email = persona["email"]
 
     first_query_id = None
-    for question in persona["questions"]:
+    first_days_ago = None
+    for item in persona["questions"]:
+        question = item["question"]
         print(f"    researching: {question[:60]}...")
         result = await research.run(question=question, client_id=client_id)
         draft_result = await drafter.run(
@@ -273,6 +376,7 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
             draft=final_answer, citations=result["citations"], question=question
         )
 
+        timestamp = _days_ago(item["days_ago"])
         row = (
             sb.table("queries")
             .insert(
@@ -287,18 +391,22 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
                     "confidence_score": result["confidence"],
                     "model_used": result["model_used"],
                     "verification_result": verification,
-                    "completed_at": "now()",
+                    "context_note": item["context_note"],
+                    "created_at": timestamp,
+                    "completed_at": timestamp,
                 }
             )
             .execute()
         )
         if first_query_id is None:
             first_query_id = row.data[0]["id"]
+            first_days_ago = item["days_ago"]
         print(f"      -> {verification.get('overall_status')}, {len(result['citations'])} citations")
 
-    # One generated document, from the first seeded question's answer.
-    # content_docx is intentionally left unset - download_document() regenerates
-    # the file on demand from content_md, so storing bytes here is dead weight.
+    # One generated document, from the first seeded question's answer - dated
+    # a day after its source question, as if drafted shortly after the
+    # research came back. content_docx is intentionally left unset -
+    # download_document() regenerates the file on demand from content_md.
     first_result = sb.table("queries").select("*").eq("id", first_query_id).execute().data[0]
     sb.table("documents").insert(
         {
@@ -307,7 +415,9 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
             "document_type": "advice_memo",
             "title": persona["document_title"],
             "content_md": first_result["final_answer"],
+            "context_note": persona["document_context_note"],
             "status": "draft",
+            "created_at": _days_ago(max(first_days_ago - 1, 0)),
         }
     ).execute()
     print("    seeded 1 document")
@@ -335,7 +445,9 @@ def seed_ato_response(sb, client_id: str, persona: dict) -> None:
             "document_type": "ato_response",
             "title": f"ATO Response - {persona['ato_letter_type']}",
             "content_md": persona["ato_response_md"],
+            "context_note": persona["ato_context_note"],
             "status": "draft",
+            "created_at": _days_ago(6),
         }
     ).execute()
     print("    seeded 1 ATO correspondence document")

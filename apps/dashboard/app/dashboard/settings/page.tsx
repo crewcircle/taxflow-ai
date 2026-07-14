@@ -61,7 +61,12 @@ export default function SettingsPage() {
 
   return (
     <div className="max-w-lg space-y-6">
-      <h1 className="text-xl font-semibold">Firm Settings</h1>
+      <div>
+        <h1 className="text-xl font-semibold">Firm Settings</h1>
+        <p className="text-sm text-muted-foreground">
+          Firm name, contact phone, and the writing style used to draft memos and letters in your voice.
+        </p>
+      </div>
 
       <Card>
         <CardContent className="space-y-4">

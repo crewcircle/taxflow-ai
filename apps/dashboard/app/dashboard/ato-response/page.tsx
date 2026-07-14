@@ -27,6 +27,7 @@ interface HistoryRow {
   id: string;
   title: string;
   status: string;
+  context_note: string | null;
   created_at: string;
 }
 
@@ -122,6 +123,7 @@ export default function AtoResponsePage() {
         <h1 className="text-xl font-semibold">ATO Correspondence</h1>
         <p className="text-sm text-muted-foreground">
           Upload an ATO letter (PDF) to get a classification, response strategy, and drafted reply.
+          Approved responses also appear in Documents.
         </p>
       </div>
 
@@ -221,17 +223,22 @@ export default function AtoResponsePage() {
               <li key={h.id}>
                 <button
                   onClick={() => handleSelectHistory(h.id)}
-                  className={`flex w-full items-center justify-between px-4 py-2 text-left transition-colors hover:bg-muted ${
+                  className={`flex w-full items-start justify-between gap-4 px-4 py-2 text-left transition-colors hover:bg-muted ${
                     h.id === activeId ? "bg-muted" : ""
                   }`}
                 >
-                  <span className="flex items-center gap-2">
-                    {humanizeTitle(h.title)}
-                    <Badge variant={h.status === "approved" ? "secondary" : "outline"} className="text-[10px]">
-                      {h.status}
-                    </Badge>
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-2">
+                      {humanizeTitle(h.title)}
+                      <Badge variant={h.status === "approved" ? "secondary" : "outline"} className="text-[10px]">
+                        {h.status}
+                      </Badge>
+                    </span>
+                    {h.context_note && (
+                      <span className="block truncate text-xs text-muted-foreground">{h.context_note}</span>
+                    )}
                   </span>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="shrink-0 text-xs text-muted-foreground">
                     {new Date(h.created_at).toLocaleDateString("en-AU")}
                   </span>
                 </button>

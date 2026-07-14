@@ -30,6 +30,7 @@ interface DocumentTemplate {
 interface DocumentRow {
   id: string;
   title: string;
+  context_note: string | null;
   created_at: string;
 }
 
@@ -55,6 +56,7 @@ type ActivityItem = {
   id: string;
   label: string;
   href: string;
+  context_note: string | null;
   created_at: string;
   kind: "query" | "document";
 };
@@ -198,6 +200,7 @@ export default function QueryPage() {
       id: q.id,
       label: q.question,
       href: "/dashboard/query",
+      context_note: q.context_note,
       created_at: q.created_at,
       kind: "query" as const,
     })),
@@ -205,6 +208,7 @@ export default function QueryPage() {
       id: d.id,
       label: d.title,
       href: "/dashboard/documents",
+      context_note: d.context_note,
       created_at: d.created_at,
       kind: "document" as const,
     })),
@@ -494,15 +498,22 @@ export default function QueryPage() {
                           href={item.href}
                           className="flex items-center justify-between gap-4 px-4 py-2 hover:bg-muted"
                         >
-                          <span className="flex items-center gap-2 truncate">
-                            <Badge variant="outline" className="shrink-0 text-[10px]">
+                          <span className="flex min-w-0 items-start gap-2">
+                            <Badge variant="outline" className="mt-0.5 shrink-0 text-[10px]">
                               {item.kind === "query" ? (
                                 <MessageSquare className="size-3" />
                               ) : (
                                 <FileText className="size-3" />
                               )}
                             </Badge>
-                            <span className="truncate">{item.label}</span>
+                            <span className="min-w-0">
+                              <span className="block truncate">{item.label}</span>
+                              {item.context_note && (
+                                <span className="block truncate text-xs text-muted-foreground">
+                                  {item.context_note}
+                                </span>
+                              )}
+                            </span>
                           </span>
                           <span className="shrink-0 text-xs text-muted-foreground">
                             {relativeTime(item.created_at)}

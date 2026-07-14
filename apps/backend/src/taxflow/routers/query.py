@@ -32,7 +32,10 @@ async def list_queries(client=Depends(get_current_client), db=Depends(get_db)):
     """Recent query history for the sidebar - newest first."""
     result = (
         db.table("queries")
-        .select("id, question, status, model_used, confidence_score, verification_result, client_ref, created_at")
+        .select(
+            "id, question, status, model_used, confidence_score, verification_result, client_ref, "
+            "context_note, created_at"
+        )
         .eq("client_id", client["id"])
         .order("created_at", desc=True)
         .limit(50)

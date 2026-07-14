@@ -24,7 +24,7 @@ def _extract_text(file_bytes: bytes) -> str:
 async def list_ato_responses(client=Depends(get_current_client), db=Depends(get_db)):
     result = (
         db.table("documents")
-        .select("id, title, status, created_at")
+        .select("id, title, status, context_note, created_at")
         .eq("client_id", client["id"])
         .eq("document_type", "ato_response")
         .order("created_at", desc=True)

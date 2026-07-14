@@ -74,7 +74,8 @@ export function OnboardingTour({
   const [open, setOpen] = useState(false);
   const [forceOpenRequested, setForceOpenRequested] = useState(false);
   const [step, setStep] = useState(0);
-  const { load, loading, lastQuery, noQueries, firstIssue, distinctCitations } = useLastQueryWalkthrough();
+  const { load, loading, lastQuery, issueExample, noQueries, firstIssue, distinctCitations } =
+    useLastQueryWalkthrough();
 
   // Auto-open once per persona per session. This reacts to `pathname` rather
   // than only checking it at mount, because the demo-login flow does a
@@ -158,31 +159,30 @@ export function OnboardingTour({
     {
       selector: null,
       title: "The safety net",
-      body: firstIssue ? (
+      body: firstIssue && issueExample ? (
         <>
-          <p className="text-muted-foreground">
-            Before an answer is marked ready, a second AI pass (Verify Agent) checks every claim against
-            the sources actually retrieved - and caught something in {businessName}&apos;s last question:
+          <p className="text-xs text-muted-foreground">
+            On: &ldquo;{issueExample.question}&rdquo;
           </p>
           <div className="space-y-1.5 rounded bg-amber-50 p-3 text-xs">
             <p>
-              <span className="font-semibold">What the draft said: </span>
+              <span className="font-semibold">Draft said: </span>
               {firstIssue.claim}
             </p>
             <p>
-              <span className="font-semibold">Verify Agent&apos;s correction note: </span>
+              <span className="font-semibold">Verify Agent caught: </span>
               {firstIssue.suggested_correction}
             </p>
           </div>
           <p className="text-muted-foreground">
-            A generic AI chatbot has no way to catch this - there&apos;s no source corpus to check the
-            claim against in the first place.
+            Every claim is checked against the actual sources before an answer ships. A generic
+            chatbot can&apos;t do this - it has no source corpus to check against.
           </p>
         </>
       ) : (
         <p className="text-muted-foreground">
-          For this question, Verify Agent checked every claim against the retrieved sources and found
-          nothing to flag - the answer came back fully verified.
+          Every claim in a drafted answer is checked against the actual sources retrieved before it
+          ships - {businessName}&apos;s questions have all come back fully verified so far.
         </p>
       ),
     },

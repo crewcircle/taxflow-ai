@@ -23,6 +23,7 @@ interface DocumentRow {
   title: string;
   status: string;
   client_ref: string | null;
+  context_note: string | null;
   created_at: string;
 }
 
@@ -91,9 +92,15 @@ export default function DocumentsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Documents</h1>
-        <div className="flex items-center gap-2">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">Documents</h1>
+          <p className="text-sm text-muted-foreground">
+            Every generated document - advice memos, letters, and approved ATO responses. Draft a new
+            ATO reply from ATO Correspondence; anything else, create it here.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
           {documents && documents.some((d) => d.client_ref) && (
             <Input
               value={clientFilter}
@@ -195,7 +202,14 @@ export default function DocumentsPage() {
               <TableBody>
                 {filtered.map((doc) => (
                   <TableRow key={doc.id}>
-                    <TableCell className="font-medium">{doc.title}</TableCell>
+                    <TableCell className="max-w-xs font-medium">
+                      <span className="block truncate">{doc.title}</span>
+                      {doc.context_note && (
+                        <span className="block truncate text-xs font-normal text-muted-foreground">
+                          {doc.context_note}
+                        </span>
+                      )}
+                    </TableCell>
                     <TableCell className="text-muted-foreground">
                       {doc.client_ref ? <Badge variant="outline">{doc.client_ref}</Badge> : "—"}
                     </TableCell>
