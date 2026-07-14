@@ -83,10 +83,12 @@ async def create_checkout_session(body: CheckoutRequest, client=Depends(get_curr
 
 
 @router.post("/demo-login")
-async def demo_login(request: Request):
-    """Log a visitor into a randomly chosen demo persona - no email, no signup.
-    Server-side generates and immediately verifies a Supabase magic link and
-    hands back the resulting session tokens directly."""
+async def demo_login(request: Request, persona: str | None = None):
+    """Log a visitor into a demo persona - no email, no signup. `persona`
+    (a business_type, e.g. "dental") targets a specific one for the persona
+    switcher; omitted, one is chosen at random. Server-side generates and
+    immediately verifies a Supabase magic link and hands back the resulting
+    session tokens directly."""
     ip = request.client.host if request.client else "unknown"
     now = time.time()
     hits = [t for t in _demo_login_hits.get(ip, []) if now - t < DEMO_LOGIN_WINDOW_SECONDS]
@@ -96,7 +98,10 @@ async def demo_login(request: Request):
     _demo_login_hits[ip] = hits
 
     sb = get_supabase_client()
-    demo_clients = sb.table("clients").select("email").eq("is_demo", True).execute()
+    query = sb.table("clients").select("email").eq("is_demo", True)
+    if persona:
+        query = query.eq("business_type", persona)
+    demo_clients = query.execute()
     if not demo_clients.data:
         raise HTTPException(status_code=503, detail="Demo account not configured")
     demo_email = random.choice(demo_clients.data)["email"]

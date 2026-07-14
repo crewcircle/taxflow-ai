@@ -364,7 +364,7 @@ export default function QueryPage() {
   const displayedCitations = result?.citations ?? [];
 
   return (
-    <div className="flex h-[75vh] min-h-[520px] overflow-hidden rounded-xl border border-border">
+    <div className="flex h-[calc(100vh-8rem)] min-h-[420px] w-full min-w-0 overflow-hidden rounded-xl border border-border">
       <QueryHistorySidebar
         history={history}
         activeId={activeId}
@@ -372,10 +372,10 @@ export default function QueryPage() {
         onNewQuestion={handleNewQuestion}
       />
 
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <div className="flex items-center justify-between border-b border-border px-6 py-3">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-6 py-3">
           <h1 className="text-sm font-semibold text-foreground">Ask TaxFlow</h1>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {result?.model_used === "sonnet" && (
               <Badge variant="outline" className="gap-1 border-accent/30 text-accent">
                 <Sparkles className="size-3" />

@@ -7,9 +7,8 @@ import {
   Settings,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import { DashboardIdentityStrip } from "@/components/DashboardIdentityStrip";
-import { Logo } from "@/components/Logo";
-import { DashboardNavLink } from "@/components/DashboardNavLink";
+import { DashboardHeader } from "@/components/DashboardHeader";
+import { DashboardSidebar } from "@/components/DashboardSidebar";
 
 const NAV_LINKS = [
   { href: "/dashboard/ato-response", label: "ATO correspondence", icon: ScrollText },
@@ -53,39 +52,28 @@ export default async function DashboardLayout({
         demoDescription = me.client?.demo_description ?? null;
       }
     } catch {
-      // Non-fatal - identity strip just won't render without client data.
+      // Non-fatal - header just won't show client data.
     }
   }
 
+  const navLinks = NAV_LINKS.map((link) => ({
+    href: link.href,
+    label: link.label,
+    icon: <link.icon className="size-4" />,
+  }));
+
   return (
-    <div className="flex flex-1 flex-col">
-      {businessName && (
-        <DashboardIdentityStrip
-          businessName={businessName}
-          businessType={businessType}
-          isDemo={isDemo}
-          demoTagline={demoTagline}
-          demoDescription={demoDescription}
-        />
-      )}
-      <div className="flex flex-1">
-        <aside className="w-60 border-r border-border p-4">
-          <div className="mb-6 px-2">
-            <Logo href="/dashboard" />
-          </div>
-          <nav className="flex flex-col gap-1" data-tour="nav-sidebar">
-            {NAV_LINKS.map((link) => (
-              <DashboardNavLink
-                key={link.href}
-                href={link.href}
-                icon={<link.icon className="size-4" />}
-              >
-                {link.label}
-              </DashboardNavLink>
-            ))}
-          </nav>
-        </aside>
-        <main className="flex-1 p-6">{children}</main>
+    <div className="flex h-screen flex-col">
+      <DashboardHeader
+        businessName={businessName}
+        businessType={businessType}
+        isDemo={isDemo}
+        demoTagline={demoTagline}
+        demoDescription={demoDescription}
+      />
+      <div className="flex flex-1 overflow-hidden">
+        <DashboardSidebar navLinks={navLinks} />
+        <main className="min-w-0 flex-1 overflow-y-auto p-6">{children}</main>
       </div>
     </div>
   );

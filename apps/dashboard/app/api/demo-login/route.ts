@@ -1,10 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   try {
-    const backendResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/demo-login`, {
-      method: "POST",
-    });
+    const persona = request.nextUrl.searchParams.get("persona");
+    const url = `${process.env.NEXT_PUBLIC_API_URL}/auth/demo-login${
+      persona ? `?persona=${encodeURIComponent(persona)}` : ""
+    }`;
+    const backendResponse = await fetch(url, { method: "POST" });
     const data = await backendResponse.text();
     return new NextResponse(data, {
       status: backendResponse.status,

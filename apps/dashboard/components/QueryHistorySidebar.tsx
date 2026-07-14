@@ -66,7 +66,7 @@ export function QueryHistorySidebar({
   const hasAnyClientRef = history.some((h) => h.client_ref);
 
   return (
-    <div className="flex h-full w-64 shrink-0 flex-col border-r border-border">
+    <div className="flex h-full w-56 shrink-0 flex-col border-r border-border">
       <div className="space-y-2 border-b border-border p-3">
         <Button size="sm" className="w-full gap-1.5" onClick={onNewQuestion}>
           <Plus className="size-4" />
