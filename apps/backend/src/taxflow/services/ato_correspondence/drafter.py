@@ -3,6 +3,7 @@ from datetime import date
 from anthropic import AsyncAnthropic
 
 from taxflow.config import settings
+from taxflow.services.prompt_cache import cacheable_system
 
 SYSTEM_PROMPT = """You are drafting a formal letter to the Australian Taxation Office on behalf of
 an Australian taxpayer. This is a professional correspondence.
@@ -48,11 +49,7 @@ class ATOResponseDrafter:
         )
         # The system prompt is large and fully static; cache it as a stable prefix
         # (Task B1). The per-letter details stay in the user message.
-        system_param = (
-            [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
-            if settings.PROMPT_CACHE_ENABLED
-            else SYSTEM_PROMPT
-        )
+        system_param = cacheable_system(SYSTEM_PROMPT)
         response = await self._client.messages.create(
             model=settings.ANTHROPIC_HAIKU_MODEL,
             max_tokens=1200,

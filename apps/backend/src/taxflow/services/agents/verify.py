@@ -4,6 +4,7 @@ import re
 from anthropic import AsyncAnthropic
 
 from taxflow.config import settings
+from taxflow.services.prompt_cache import cacheable_system
 
 SYSTEM_PROMPT = """You are a senior Australian tax lawyer reviewing an AI-drafted advice memo.
 Check each factual claim in the draft against the provided source documents.
@@ -175,18 +176,9 @@ def _format_citations(citations: list[dict]) -> str:
 
 
 def _system_blocks() -> list[dict] | str:
-    """System prompt as a cacheable content block (Task B1).
+    """The verify system prompt as a cacheable content block (Task B1).
 
-    The verify system prompt is large and fully static, so it forms a stable
-    cacheable prefix; marking it ephemeral lets repeat verify calls read it from
-    cache at ~10% of the input price. Falls back to the plain string when caching
-    is disabled."""
-    if not settings.PROMPT_CACHE_ENABLED:
-        return SYSTEM_PROMPT
-    return [
-        {
-            "type": "text",
-            "text": SYSTEM_PROMPT,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
+    The prompt is large and fully static, so it forms a stable cacheable prefix;
+    marking it ephemeral lets repeat verify calls read it from cache at ~10% of
+    the input price."""
+    return cacheable_system(SYSTEM_PROMPT)

@@ -5,6 +5,7 @@ import time
 from anthropic import AsyncAnthropic
 
 from taxflow.config import settings
+from taxflow.services.prompt_cache import cacheable_system
 from taxflow.services.knowledge.retrieval import (
     apply_source_type_boost,
     generate_candidates,
@@ -35,23 +36,13 @@ CITATION_PATTERN = re.compile(r"\[(\d+)\]")
 
 
 def _system_blocks() -> list[dict] | str:
-    """Return the system prompt as a cacheable content block (Task B1).
+    """The research system prompt as a cacheable content block (Task B1).
 
-    anthropic>=0.39 supports cache_control. The system prompt is large and fully
-    static, so it forms a stable cacheable prefix; marking it ephemeral lets
-    repeat calls (Haiku + Sonnet, back-to-back queries within the 5-min TTL) read
-    it from cache at ~10% of the input price. When disabled we fall back to the
-    plain string form the API also accepts.
+    The prompt is large and fully static, so it forms a stable cacheable prefix;
+    marking it ephemeral lets repeat calls (Haiku + Sonnet, back-to-back queries
+    within the 5-min TTL) read it from cache at ~10% of the input price.
     """
-    if not settings.PROMPT_CACHE_ENABLED:
-        return SYSTEM_PROMPT
-    return [
-        {
-            "type": "text",
-            "text": SYSTEM_PROMPT,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
+    return cacheable_system(SYSTEM_PROMPT)
 
 
 def route_model(signals: dict) -> str:
@@ -489,16 +480,20 @@ class ResearchAgent:
         source_type_hint = derive_source_type_hint(question, active_modules)
         return steering, source_type_hint
 
-    async def run(
+    async def _prepare(
         self,
         question: str,
         client_id: str,
-        filters: dict | None = None,
-        embedding: list[float] | None = None,
-        client: dict | None = None,
-        session_id: str | None = None,
-    ) -> dict:
-        start = time.monotonic()
+        embedding: list[float] | None,
+        client: dict | None,
+        session_id: str | None,
+    ) -> tuple[str, str, list[dict], dict]:
+        """Shared front half of every generation path: build the advisory steering
+        block + source_type hint, retrieve the merged context, and render the
+        context string. Returns (context, steering, chunks, signals). run(),
+        run_stream() and regenerate_with_feedback() all start here so profile
+        injection, session memory and embedding threading stay in one place.
+        """
         steering, source_type_hint = await self._build_steering(
             question, client_id, client, session_id
         )
@@ -506,11 +501,30 @@ class ResearchAgent:
             question, client_id, embedding=embedding, source_type_hint=source_type_hint
         )
         context = self._build_context_string(chunks)
+        return context, steering, chunks, signals
+
+    @staticmethod
+    def _model_for(routed: str) -> str:
+        """Map a route_model() decision ("haiku"/"sonnet") to the configured model id."""
+        return settings.ANTHROPIC_SONNET_MODEL if routed == "sonnet" else settings.ANTHROPIC_HAIKU_MODEL
+
+    async def run(
+        self,
+        question: str,
+        client_id: str,
+        embedding: list[float] | None = None,
+        client: dict | None = None,
+        session_id: str | None = None,
+    ) -> dict:
+        start = time.monotonic()
+        context, steering, chunks, signals = await self._prepare(
+            question, client_id, embedding, client, session_id
+        )
 
         # Pre-generation model routing (Task A3): decide the model from retrieval
         # signals BEFORE the single generation call. Exactly one _generate per query.
         routed = route_model(signals)
-        model = settings.ANTHROPIC_SONNET_MODEL if routed == "sonnet" else settings.ANTHROPIC_HAIKU_MODEL
+        model = self._model_for(routed)
 
         answer, stats = await self._generate(question, context, model, steering=steering)
         citations = self._parse_citations(answer, chunks)
@@ -556,16 +570,12 @@ class ResearchAgent:
         and source_type soft-boost hint used by run() are applied here, so the
         interactive stream path is personalised identically to the batch path.
         """
-        steering, source_type_hint = await self._build_steering(
-            question, client_id, client, session_id
+        context, steering, chunks, signals = await self._prepare(
+            question, client_id, embedding, client, session_id
         )
-        chunks, signals = await self._retrieve_context(
-            question, client_id, embedding=embedding, source_type_hint=source_type_hint
-        )
-        context = self._build_context_string(chunks)
 
         routed = route_model(signals)
-        model = settings.ANTHROPIC_SONNET_MODEL if routed == "sonnet" else settings.ANTHROPIC_HAIKU_MODEL
+        model = self._model_for(routed)
 
         answer_parts: list[str] = []
         usage = None
@@ -620,13 +630,9 @@ class ResearchAgent:
         The corrective pass reuses the same advisory profile/session steering and
         source_type soft-boost hint (Tasks D1/D2/D3) so the retry stays personalised.
         """
-        steering, source_type_hint = await self._build_steering(
-            question, client_id, client, session_id
+        context, steering, chunks, _signals = await self._prepare(
+            question, client_id, embedding, client, session_id
         )
-        chunks, _signals = await self._retrieve_context(
-            question, client_id, embedding=embedding, source_type_hint=source_type_hint
-        )
-        context = self._build_context_string(chunks)
 
         issue_lines = "\n".join(
             f"- Claim: {i.get('claim', '')}\n  Problem: {i.get('issue', '')}\n"

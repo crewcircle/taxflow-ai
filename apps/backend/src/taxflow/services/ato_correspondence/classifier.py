@@ -3,6 +3,7 @@ import json
 from anthropic import AsyncAnthropic
 
 from taxflow.config import settings
+from taxflow.services.prompt_cache import cacheable_system
 
 LETTER_TYPES = [
     "bas_discrepancy",
@@ -39,11 +40,7 @@ class ATOLetterClassifier:
         )
         # The system prompt is static (LETTER_TYPES is a constant), so cache it as a
         # stable prefix (Task B1); the per-letter text stays in the user message.
-        system_param = (
-            [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-            if settings.PROMPT_CACHE_ENABLED
-            else system
-        )
+        system_param = cacheable_system(system)
         response = await self._client.messages.create(
             model=settings.ANTHROPIC_HAIKU_MODEL,
             max_tokens=500,
