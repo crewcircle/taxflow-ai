@@ -37,6 +37,24 @@ def _format_citations(citations: list[dict]) -> str:
     )
 
 
+def _system_blocks() -> list[dict] | str:
+    """System prompt as a cacheable content block (Task B1).
+
+    The verify system prompt is large and fully static, so it forms a stable
+    cacheable prefix; marking it ephemeral lets repeat verify calls read it from
+    cache at ~10% of the input price. Falls back to the plain string when caching
+    is disabled."""
+    if not settings.PROMPT_CACHE_ENABLED:
+        return SYSTEM_PROMPT
+    return [
+        {
+            "type": "text",
+            "text": SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
 class VerifyAgent:
     def __init__(self) -> None:
         self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -50,7 +68,7 @@ class VerifyAgent:
             model=settings.ANTHROPIC_SONNET_MODEL,
             max_tokens=2000,
             temperature=0,
-            system=SYSTEM_PROMPT,
+            system=_system_blocks(),
             messages=[{"role": "user", "content": user}],
         )
         text = "".join(block.text for block in response.content if block.type == "text").strip()

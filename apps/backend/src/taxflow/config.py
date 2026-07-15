@@ -36,5 +36,28 @@ class Settings(BaseSettings):
     POOL_MIN_CONN: int = 1
     POOL_MAX_CONN: int = 8
 
+    # --- Pre-generation model routing (Task A3) -------------------------------
+    # research.run() picks Haiku or Sonnet BEFORE the single generation call using
+    # retrieval signals only (no LLM call). We bias toward Sonnet when signals are
+    # ambiguous, so these gates describe the "strong retrieval -> Haiku is enough"
+    # case; anything below routes to Sonnet.
+    #   - ROUTE_MIN_STRONG_CHUNKS: how many retrieved chunks we need to trust Haiku.
+    #   - ROUTE_MIN_TOP_RRF_SCORE: the top RRF (or re-rank) score must clear this.
+    # When hybrid search returns nothing (the "insufficient information" situation),
+    # we always route to Sonnet.
+    ROUTE_MIN_STRONG_CHUNKS: int = 5
+    ROUTE_MIN_TOP_RRF_SCORE: float = 0.03
+
+    # --- pgvector index tuning (Task A5) --------------------------------------
+    # ivfflat.probes for the ANN scan. Higher = better recall, more latency. Set
+    # transaction-locally alongside the vector SELECT (SET LOCAL no-ops outside an
+    # explicit transaction on a pooled connection).
+    IVFFLAT_PROBES: int = 10
+
+    # --- Anthropic prompt caching (Task B1) -----------------------------------
+    # Toggle cache_control breakpoints on the large static system prompts. Deploy-
+    # time flag (loaded at process start).
+    PROMPT_CACHE_ENABLED: bool = True
+
 
 settings = Settings()  # type: ignore[call-arg]

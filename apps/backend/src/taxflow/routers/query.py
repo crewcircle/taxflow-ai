@@ -2,6 +2,7 @@
 Query router. Handles research queries through the full agent pipeline.
 All endpoints require valid Supabase JWT (enforced by auth middleware).
 """
+import asyncio
 import json
 import time
 
@@ -14,6 +15,7 @@ from taxflow.middleware.auth import get_current_client
 from taxflow.middleware.trial_gate import check_trial_gate, increment_usage
 from taxflow.services.agents.research import ResearchAgent
 from taxflow.services.agents.verify import VerifyAgent
+from taxflow.services.knowledge.embedder import embed
 
 router = APIRouter(prefix="/query", tags=["query"])
 agent = ResearchAgent()
@@ -51,23 +53,37 @@ async def submit_query(
 ):
     start = time.time()
 
-    query_row = (
-        db.table("queries")
-        .insert(
-            {
-                "client_id": client["id"],
-                "user_email": client["email"],
-                "question": body.question,
-                "module": body.module,
-                "status": "processing",
-            }
+    # Auth (get_current_client) and the trial gate (check_trial_gate) run as
+    # Depends and MUST fully pass before this body executes, so the paid OpenAI
+    # embed below can never fire for an invalid-token (401) or expired/capped
+    # trial (402) request. Once past the gate, overlap the embed with the
+    # queries-row insert (Task A4): both are independent I/O, so gather them and
+    # await the embedding just before the vector search inside agent.run().
+    def _insert_query_row() -> str:
+        row = (
+            db.table("queries")
+            .insert(
+                {
+                    "client_id": client["id"],
+                    "user_email": client["email"],
+                    "question": body.question,
+                    "module": body.module,
+                    "status": "processing",
+                }
+            )
+            .execute()
         )
-        .execute()
+        return row.data[0]["id"]
+
+    embedding, query_id = await asyncio.gather(
+        embed(body.question),
+        asyncio.to_thread(_insert_query_row),
     )
-    query_id = query_row.data[0]["id"]
 
     try:
-        result = await agent.run(question=body.question, client_id=client["id"])
+        result = await agent.run(
+            question=body.question, client_id=client["id"], embedding=embedding
+        )
 
         db.table("queries").update(
             {
@@ -115,27 +131,40 @@ async def stream_query(
     "issues": [...]} event checked against this same answer.
     """
     db = get_supabase_client()
-    query_row = (
-        db.table("queries")
-        .insert(
-            {
-                "client_id": client["id"],
-                "user_email": client["email"],
-                "question": question,
-                "module": "research",
-                "status": "processing",
-                "client_ref": client_ref,
-            }
+
+    # As in POST /query: auth + trial gate (Depends) have already passed before
+    # this body runs, so the paid embed cannot fire for a 401/402 request. Overlap
+    # the embed with the queries-row insert (Task A4) and reuse the single vector
+    # for both global and firm retrieval inside run_stream().
+    def _insert_query_row() -> str:
+        row = (
+            db.table("queries")
+            .insert(
+                {
+                    "client_id": client["id"],
+                    "user_email": client["email"],
+                    "question": question,
+                    "module": "research",
+                    "status": "processing",
+                    "client_ref": client_ref,
+                }
+            )
+            .execute()
         )
-        .execute()
+        return row.data[0]["id"]
+
+    embedding, query_id = await asyncio.gather(
+        embed(question),
+        asyncio.to_thread(_insert_query_row),
     )
-    query_id = query_row.data[0]["id"]
 
     async def generate():
         answer_parts: list[str] = []
         citations: list[dict] = []
 
-        async for event in agent.run_stream(question=question, client_id=client["id"]):
+        async for event in agent.run_stream(
+            question=question, client_id=client["id"], embedding=embedding
+        ):
             if event["type"] == "token":
                 answer_parts.append(event["text"])
             elif event["type"] == "final":

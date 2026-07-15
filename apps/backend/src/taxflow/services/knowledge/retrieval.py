@@ -2,28 +2,35 @@ import asyncio
 
 import psycopg2.extras
 
+from taxflow.config import settings
 from taxflow.db import get_pg_conn
 from taxflow.services.knowledge.embedder import embed
 
 
 def _semantic_search(embedding: list[float], source_types: list[str] | None) -> list[dict]:
     with get_pg_conn() as conn:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(
-            """
-            SELECT id, citation, content, source_url, source_object_key,
-                   1 - (embedding <=> %s::vector) AS cosine_sim
-            FROM knowledge_chunks
-            WHERE is_current = true
-              AND (%s::text[] IS NULL OR source_type = ANY(%s))
-            ORDER BY embedding <=> %s::vector
-            LIMIT 20
-            """,
-            (embedding, source_types, source_types, embedding),
-        )
-        rows = cur.fetchall()
-        cur.close()
-        return list(rows)
+        # SET LOCAL only applies inside an explicit transaction; on a pooled
+        # connection a bare SET LOCAL outside a transaction silently no-ops. The
+        # psycopg2 connection context manager opens/commits one transaction, so we
+        # scope the probes tuning and the vector SELECT together here.
+        with conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SET LOCAL ivfflat.probes = %s", (settings.IVFFLAT_PROBES,))
+            cur.execute(
+                """
+                SELECT id, citation, content, source_url, source_object_key,
+                       1 - (embedding <=> %s::vector) AS cosine_sim
+                FROM knowledge_chunks
+                WHERE is_current = true
+                  AND (%s::text[] IS NULL OR source_type = ANY(%s))
+                ORDER BY embedding <=> %s::vector
+                LIMIT 20
+                """,
+                (embedding, source_types, source_types, embedding),
+            )
+            rows = cur.fetchall()
+            cur.close()
+            return list(rows)
 
 
 def _text_search(query: str, source_types: list[str] | None) -> list[dict]:
@@ -47,8 +54,17 @@ def _text_search(query: str, source_types: list[str] | None) -> list[dict]:
         return list(rows)
 
 
-async def hybrid_search(query: str, top_k: int = 10, source_types: list[str] | None = None) -> list[dict]:
-    embedding = await embed(query)
+async def hybrid_search(
+    query: str,
+    top_k: int = 10,
+    source_types: list[str] | None = None,
+    embedding: list[float] | None = None,
+) -> list[dict]:
+    # Reuse a pre-computed embedding when the caller already paid the OpenAI round
+    # trip (Task A4 embeds once per query and passes the vector down); otherwise
+    # embed here.
+    if embedding is None:
+        embedding = await embed(query)
 
     semantic, textual = await asyncio.gather(
         asyncio.to_thread(_semantic_search, embedding, source_types),

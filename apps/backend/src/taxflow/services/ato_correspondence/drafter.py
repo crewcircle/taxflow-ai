@@ -34,11 +34,18 @@ class ATOResponseDrafter:
             f"Response strategy: {strategy['response_strategy']}\n\n"
             f"Original ATO letter:\n{original_letter}"
         )
+        # The system prompt is large and fully static; cache it as a stable prefix
+        # (Task B1). The per-letter details stay in the user message.
+        system_param = (
+            [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+            if settings.PROMPT_CACHE_ENABLED
+            else SYSTEM_PROMPT
+        )
         response = await self._client.messages.create(
             model=settings.ANTHROPIC_HAIKU_MODEL,
             max_tokens=1200,
             temperature=0.1,
-            system=SYSTEM_PROMPT,
+            system=system_param,
             messages=[{"role": "user", "content": user}],
         )
         letter = "".join(block.text for block in response.content if block.type == "text")

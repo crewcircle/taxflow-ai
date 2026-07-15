@@ -37,11 +37,18 @@ class ATOLetterClassifier:
             "'key_issue': '<one sentence description>'}\n\n"
             f"Valid letter_type values: {LETTER_TYPES}"
         )
+        # The system prompt is static (LETTER_TYPES is a constant), so cache it as a
+        # stable prefix (Task B1); the per-letter text stays in the user message.
+        system_param = (
+            [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+            if settings.PROMPT_CACHE_ENABLED
+            else system
+        )
         response = await self._client.messages.create(
             model=settings.ANTHROPIC_HAIKU_MODEL,
             max_tokens=500,
             temperature=0,
-            system=system,
+            system=system_param,
             messages=[{"role": "user", "content": extracted_text}],
         )
         text = "".join(block.text for block in response.content if block.type == "text")

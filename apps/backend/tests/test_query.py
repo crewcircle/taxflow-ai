@@ -19,7 +19,8 @@ def test_submit_query_returns_answer(client):
 
     with patch.object(query_module, "agent") as mock_agent, patch.object(
         query_module, "increment_usage", new_callable=AsyncMock
-    ):
+    ), patch.object(query_module, "embed", new_callable=AsyncMock) as mock_embed:
+        mock_embed.return_value = [0.0] * 1536
         mock_agent.run = AsyncMock(
             return_value={
                 "answer": "Test answer [1]",
@@ -38,5 +39,10 @@ def test_submit_query_returns_answer(client):
             body = response.json()
             assert body["answer"] == "Test answer [1]"
             assert body["model_used"] == "haiku"
+            # Task A4: the question is embedded once in the route and the vector is
+            # passed down to agent.run (so retrieval does not re-embed).
+            mock_embed.assert_awaited_once()
+            _, run_kwargs = mock_agent.run.call_args
+            assert run_kwargs["embedding"] == mock_embed.return_value
         finally:
             app.dependency_overrides.clear()
