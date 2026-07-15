@@ -132,8 +132,8 @@ export function OnboardingTour({
           {!loading && noQueries && <p className="text-muted-foreground">This firm hasn&apos;t asked a question yet.</p>}
           {!loading && lastQuery && (
             <p className="text-muted-foreground">
-              These are real questions {businessName} has already asked TaxFlow - like this one, asked{" "}
-              {relativeTime(lastQuery.created_at)}. Click any of them to try it yourself.
+              Each tag is a real question {businessName} has already asked TaxFlow - like this one, asked{" "}
+              {relativeTime(lastQuery.created_at)}. Click a tag to load its question back into the ask box.
             </p>
           )}
         </>

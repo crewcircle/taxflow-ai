@@ -32,7 +32,7 @@ async def list_queries(client=Depends(get_current_client), db=Depends(get_db)):
         db.table("queries")
         .select(
             "id, question, status, model_used, confidence_score, verification_result, client_ref, "
-            "context_note, created_at"
+            "context_note, topic_tag, created_at"
         )
         .eq("client_id", client["id"])
         .order("created_at", desc=True)

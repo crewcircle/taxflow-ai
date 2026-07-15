@@ -4,7 +4,6 @@ import { Badge } from "@/components/ui/badge";
 import { Logo } from "@/components/Logo";
 import { OnboardingTour } from "@/components/OnboardingTour";
 import { DemoPersonaSwitcher } from "@/components/DemoPersonaSwitcher";
-import { SignOutButton } from "@/components/SignOutButton";
 
 interface DashboardHeaderProps {
   businessName: string;
@@ -47,7 +46,6 @@ export function DashboardHeader({
             />
           )}
           {isDemo && <DemoPersonaSwitcher currentType={businessType} />}
-          <SignOutButton />
         </div>
       )}
 

@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { DashboardNavLink } from "@/components/DashboardNavLink";
+import { SignOutButton } from "@/components/SignOutButton";
+import { Separator } from "@/components/ui/separator";
 
 interface NavItem {
   href: string;
@@ -43,6 +45,8 @@ export function DashboardSidebar({ navLinks }: { navLinks: NavItem[] }) {
           </DashboardNavLink>
         ))}
       </nav>
+      <Separator className="my-2" />
+      <SignOutButton collapsed={collapsed} />
       <button
         type="button"
         onClick={toggle}

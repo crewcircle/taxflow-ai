@@ -59,6 +59,7 @@ PERSONAS = [
                 ),
                 "days_ago": 18,
                 "client_ref": "Smile Bay Dental",
+                "topic_tag": "Equipment finance",
                 "context_note": (
                     "Client bought a $180k scanner before EOFY - write-off confirmed and "
                     "included in this year's return."
@@ -72,6 +73,7 @@ PERSONAS = [
                 ),
                 "days_ago": 11,
                 "client_ref": "Coastal Family Dentistry",
+                "topic_tag": "FBT car benefits",
                 "context_note": (
                     "FBT return due this quarter - taxable value confirmed and included "
                     "in the lodged return."
@@ -86,6 +88,7 @@ PERSONAS = [
                 ),
                 "days_ago": 3,
                 "client_ref": "Smile Bay Dental",
+                "topic_tag": "Division 7A",
                 "context_note": (
                     "Holding-entity loan flagged in the compliance review - drafting a "
                     "complying Div 7A agreement before lodgment day."
@@ -153,6 +156,7 @@ PERSONAS = [
                 ),
                 "days_ago": 18,
                 "client_ref": "Meridian Developments",
+                "topic_tag": "GST margin scheme",
                 "context_note": (
                     "Site sale settling this quarter - margin confirmed and included "
                     "in the BAS."
@@ -166,6 +170,7 @@ PERSONAS = [
                 ),
                 "days_ago": 11,
                 "client_ref": "Southbank Construction Group",
+                "topic_tag": "Thin capitalisation",
                 "context_note": (
                     "Year-end review of the offshore-funded loan - confirmed within "
                     "safe harbour, no action needed."
@@ -180,6 +185,7 @@ PERSONAS = [
                 ),
                 "days_ago": 3,
                 "client_ref": "Ashfield Property Holdings",
+                "topic_tag": "CGT concessions",
                 "context_note": (
                     "Partner considering selling their interest - confirming discount "
                     "eligibility before the sale contract is signed."
@@ -249,6 +255,7 @@ PERSONAS = [
                 ),
                 "days_ago": 18,
                 "client_ref": "Priya Kapoor",
+                "topic_tag": "Work-from-home deductions",
                 "context_note": "Client lodging their return this month - rate confirmed and applied.",
             },
             {
@@ -260,6 +267,7 @@ PERSONAS = [
                 ),
                 "days_ago": 11,
                 "client_ref": "Whitfield Family Trust",
+                "topic_tag": "Trust distributions",
                 "context_note": (
                     "Trustee flagged an unusual distribution before resolutions were "
                     "finalised - confirmed no reimbursement agreement, resolution can "
@@ -275,6 +283,7 @@ PERSONAS = [
                 ),
                 "days_ago": 3,
                 "client_ref": "Vantage Software Pty Ltd",
+                "topic_tag": "R&D tax incentive",
                 "context_note": (
                     "Software client's R&D claim due before the AusIndustry deadline - "
                     "confirming offset rate and required records before lodging."
@@ -404,6 +413,7 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
                     "model_used": result["model_used"],
                     "verification_result": verification,
                     "client_ref": item["client_ref"],
+                    "topic_tag": item["topic_tag"],
                     "context_note": item["context_note"],
                     "created_at": timestamp,
                     "completed_at": timestamp,

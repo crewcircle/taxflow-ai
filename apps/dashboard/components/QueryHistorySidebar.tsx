@@ -16,6 +16,7 @@ export interface QueryListItem {
   verification_result: { overall_status?: string } | null;
   client_ref: string | null;
   context_note: string | null;
+  topic_tag: string | null;
   created_at: string;
 }
 
