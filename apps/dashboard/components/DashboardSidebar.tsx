@@ -13,11 +13,12 @@ interface NavItem {
 const STORAGE_KEY = "taxflow_nav_collapsed";
 
 export function DashboardSidebar({ navLinks }: { navLinks: NavItem[] }) {
-  const [collapsed, setCollapsed] = useState(false);
+  // Collapsed by default - only expand if the user previously expanded it.
+  const [collapsed, setCollapsed] = useState(true);
 
   useEffect(() => {
-    if (window.localStorage.getItem(STORAGE_KEY) !== "1") return;
-    const t = setTimeout(() => setCollapsed(true), 0);
+    if (window.localStorage.getItem(STORAGE_KEY) !== "0") return;
+    const t = setTimeout(() => setCollapsed(false), 0);
     return () => clearTimeout(t);
   }, []);
 

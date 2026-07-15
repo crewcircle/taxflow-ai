@@ -4,9 +4,11 @@ from pydantic import BaseModel
 
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
+from taxflow.services.agents.draft import DraftAgent
 from taxflow.services.export import generate_docx, generate_pdf
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+drafter = DraftAgent()
 
 TEMPLATE_REGISTRY = {
     "advice_memo": "Tax advice memo",
@@ -52,6 +54,23 @@ async def generate_document(
     if body.document_type not in TEMPLATE_REGISTRY:
         raise HTTPException(status_code=400, detail=f"Unknown document_type: {body.document_type}")
 
+    content_md = body.content_md
+    # Chat answers are the raw research answer, not a formal memo - only
+    # reformat into the firm's 5-section structure here, on demand, when
+    # actually saving one as an advice memo document.
+    if body.document_type == "advice_memo" and body.query_id:
+        query = db.table("queries").select("question, citations").eq("id", body.query_id).execute()
+        if query.data:
+            try:
+                draft_result = await drafter.run(
+                    research_result={"answer": body.content_md, "citations": query.data[0]["citations"] or []},
+                    original_question=query.data[0]["question"],
+                    client_id=client["id"],
+                )
+                content_md = draft_result["draft"]
+            except Exception:  # noqa: BLE001 - drafting failure must not block saving the document
+                pass
+
     result = (
         db.table("documents")
         .insert(
@@ -60,7 +79,7 @@ async def generate_document(
                 "query_id": body.query_id,
                 "document_type": body.document_type,
                 "title": body.title,
-                "content_md": body.content_md,
+                "content_md": content_md,
                 "client_ref": body.client_ref,
             }
         )

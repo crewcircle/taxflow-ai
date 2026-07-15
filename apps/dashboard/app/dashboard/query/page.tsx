@@ -76,6 +76,7 @@ interface QueryResult {
   answer: string;
   citations: SourceCitation[];
   model_used: string | null;
+  query_id: string | null;
 }
 
 const MAX_CHARS = 2000;
@@ -142,14 +143,12 @@ export default function QueryPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [streamedAnswer, setStreamedAnswer] = useState("");
-  const [drafting, setDrafting] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [verification, setVerification] = useState<Verification | null>(null);
   const [copied, setCopied] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(true);
 
   const [history, setHistory] = useState<QueryListItem[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [docType, setDocType] = useState("advice_memo");
   const [savingDoc, setSavingDoc] = useState(false);
@@ -219,7 +218,6 @@ export default function QueryPage() {
   function resetPane() {
     setResult(null);
     setStreamedAnswer("");
-    setDrafting(false);
     setVerification(null);
     setVerifying(false);
     setSavedDocId(null);
@@ -228,7 +226,6 @@ export default function QueryPage() {
   }
 
   function handleNewQuestion() {
-    setActiveId(null);
     setQuestion("");
     setClientRef("");
     resetPane();
@@ -238,33 +235,17 @@ export default function QueryPage() {
     setQuestion(suggestion);
   }
 
-  async function handleSelectHistory(id: string) {
-    setActiveId(id);
+  // Picking a past question loads it back into the ask box for re-asking or
+  // editing - it does not replay the old answer as if it just happened live.
+  function handleSelectHistory(id: string) {
+    const item = history.find((h) => h.id === id);
+    if (!item) return;
     resetPane();
-    setLoading(true);
-    try {
-      const response = await fetch(`/api/query/${id}`);
-      if (!response.ok) throw new Error("Could not load this question");
-      const data = await response.json();
-      setQuestion(data.question);
-      setClientRef(data.client_ref ?? "");
-      setResult({
-        answer: data.final_answer ?? "",
-        citations: data.citations ?? [],
-        model_used: data.model_used,
-      });
-      if (data.verification_result?.overall_status) {
-        setVerification(data.verification_result);
-      }
-    } catch {
-      setError("Could not load this question");
-    } finally {
-      setLoading(false);
-    }
+    setQuestion(item.question);
+    setClientRef(item.client_ref ?? "");
   }
 
   async function handleSubmit() {
-    setActiveId(null);
     setLoading(true);
     resetPane();
 
@@ -293,6 +274,7 @@ export default function QueryPage() {
             type: string;
             text?: string;
             citations?: SourceCitation[];
+            query_id?: string;
             overall_status?: Verification["overall_status"];
             issues?: VerificationIssue[];
           } = JSON.parse(event.data);
@@ -302,11 +284,7 @@ export default function QueryPage() {
             setStreamedAnswer(answer);
           } else if (parsed.type === "final") {
             citations = parsed.citations ?? [];
-            setResult({ answer, citations, model_used: "haiku" });
-            setDrafting(true);
-          } else if (parsed.type === "draft" && parsed.text) {
-            setDrafting(false);
-            setResult({ answer: parsed.text, citations, model_used: "haiku" });
+            setResult({ answer, citations, model_used: "haiku", query_id: parsed.query_id ?? null });
             setVerifying(true);
           } else if (parsed.type === "verification") {
             setVerifying(false);
@@ -344,7 +322,7 @@ export default function QueryPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          query_id: activeId,
+          query_id: result.query_id,
           document_type: docType,
           title: question.slice(0, 80),
           content_md: result.answer,
@@ -367,7 +345,6 @@ export default function QueryPage() {
     <div className="flex h-[calc(100vh-8rem)] min-h-[420px] w-full min-w-0 overflow-hidden rounded-xl border border-border">
       <QueryHistorySidebar
         history={history}
-        activeId={activeId}
         onSelect={handleSelectHistory}
         onNewQuestion={handleNewQuestion}
       />
@@ -380,11 +357,6 @@ export default function QueryPage() {
               <Badge variant="outline" className="gap-1 border-accent/30 text-accent">
                 <Sparkles className="size-3" />
                 Enhanced model
-              </Badge>
-            )}
-            {drafting && (
-              <Badge variant="outline" className="text-muted-foreground">
-                Drafting advice memo...
               </Badge>
             )}
             {verifying && (

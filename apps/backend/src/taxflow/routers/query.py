@@ -12,13 +12,11 @@ from pydantic import BaseModel
 from taxflow.db import get_db, get_supabase_client
 from taxflow.middleware.auth import get_current_client
 from taxflow.middleware.trial_gate import check_trial_gate, increment_usage
-from taxflow.services.agents.draft import DraftAgent
 from taxflow.services.agents.research import ResearchAgent
 from taxflow.services.agents.verify import VerifyAgent
 
 router = APIRouter(prefix="/query", tags=["query"])
 agent = ResearchAgent()
-drafter = DraftAgent()
 verifier = VerifyAgent()
 
 
@@ -107,16 +105,14 @@ async def stream_query(
     client=Depends(get_current_client),
     _trial=Depends(check_trial_gate),
 ):
-    """Server-Sent Events stream of the research -> draft -> verify pipeline.
+    """Server-Sent Events stream of the research -> verify pipeline.
 
-    Emits: {"type": "token", ...} while the raw research answer streams, then
-    {"type": "final", "citations": [...]}, then - once the Draft Agent has
-    rewritten the raw answer into the firm's 5-section advice memo - a
-    {"type": "draft", "text": ...} event, then an async
-    {"type": "verification", "status": ..., "issues": [...]} event checked
-    against the draft (what actually ships), not the raw research text.
-    Streaming keeps the first-token latency low; draft + verification land a
-    few seconds later without blocking the initial response.
+    Emits: {"type": "token", ...} while the answer streams, then
+    {"type": "final", "citations": [...], "query_id": ...} - this raw research
+    answer is what's shown and stored as-is, not rewritten into a formal memo
+    (that reformatting only happens on demand when saving as an advice_memo
+    document). Then an async {"type": "verification", "status": ...,
+    "issues": [...]} event checked against this same answer.
     """
     db = get_supabase_client()
     query_row = (
@@ -144,21 +140,10 @@ async def stream_query(
                 answer_parts.append(event["text"])
             elif event["type"] == "final":
                 citations = event["citations"]
+                event = {**event, "query_id": query_id}
             yield f"data: {json.dumps(event)}\n\n"
 
-        raw_answer = "".join(answer_parts)
-
-        try:
-            draft_result = await drafter.run(
-                research_result={"answer": raw_answer, "citations": citations},
-                original_question=question,
-                client_id=client["id"],
-            )
-            final_answer = draft_result["draft"]
-        except Exception:  # noqa: BLE001 - drafting failure must not break the response
-            final_answer = raw_answer
-
-        yield f"data: {json.dumps({'type': 'draft', 'text': final_answer})}\n\n"
+        final_answer = "".join(answer_parts)
 
         db.table("queries").update(
             {

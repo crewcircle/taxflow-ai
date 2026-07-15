@@ -58,6 +58,7 @@ PERSONAS = [
                     "$180,000 CBCT scanner purchased this financial year?"
                 ),
                 "days_ago": 18,
+                "client_ref": "Smile Bay Dental",
                 "context_note": (
                     "Client bought a $180k scanner before EOFY - write-off confirmed and "
                     "included in this year's return."
@@ -70,6 +71,7 @@ PERSONAS = [
                     "value under the statutory formula method?"
                 ),
                 "days_ago": 11,
+                "client_ref": "Coastal Family Dentistry",
                 "context_note": (
                     "FBT return due this quarter - taxable value confirmed and included "
                     "in the lodged return."
@@ -83,6 +85,7 @@ PERSONAS = [
                     "agreement to avoid it?"
                 ),
                 "days_ago": 3,
+                "client_ref": "Smile Bay Dental",
                 "context_note": (
                     "Holding-entity loan flagged in the compliance review - drafting a "
                     "complying Div 7A agreement before lodgment day."
@@ -91,6 +94,7 @@ PERSONAS = [
         ],
         "document_title": "Instant Asset Write-Off - CBCT Scanner Purchase",
         "document_context_note": "Client-ready memo on the scanner write-off - sent for sign-off.",
+        "ato_client_ref": "Coastal Family Dentistry",
         "ato_context_note": (
             "ATO flagged the FBT car benefit for review - response drafted, awaiting "
             "partner sign-off before sending."
@@ -148,6 +152,7 @@ PERSONAS = [
                     "documentation does the ATO require to support it?"
                 ),
                 "days_ago": 18,
+                "client_ref": "Meridian Developments",
                 "context_note": (
                     "Site sale settling this quarter - margin confirmed and included "
                     "in the BAS."
@@ -160,6 +165,7 @@ PERSONAS = [
                     "limit our interest deductions this year?"
                 ),
                 "days_ago": 11,
+                "client_ref": "Southbank Construction Group",
                 "context_note": (
                     "Year-end review of the offshore-funded loan - confirmed within "
                     "safe harbour, no action needed."
@@ -173,6 +179,7 @@ PERSONAS = [
                     "interest in the development?"
                 ),
                 "days_ago": 3,
+                "client_ref": "Ashfield Property Holdings",
                 "context_note": (
                     "Partner considering selling their interest - confirming discount "
                     "eligibility before the sale contract is signed."
@@ -183,6 +190,7 @@ PERSONAS = [
         "document_context_note": (
             "Client-ready memo on the site sale margin - sent to the partner for review."
         ),
+        "ato_client_ref": "Meridian Developments",
         "ato_context_note": (
             "ATO queried the margin calculation on the site sale - response drafted, "
             "awaiting partner sign-off before sending."
@@ -240,6 +248,7 @@ PERSONAS = [
                     "the current rate per hour?"
                 ),
                 "days_ago": 18,
+                "client_ref": "Priya Kapoor",
                 "context_note": "Client lodging their return this month - rate confirmed and applied.",
             },
             {
@@ -250,6 +259,7 @@ PERSONAS = [
                     "agreement apply?"
                 ),
                 "days_ago": 11,
+                "client_ref": "Whitfield Family Trust",
                 "context_note": (
                     "Trustee flagged an unusual distribution before resolutions were "
                     "finalised - confirmed no reimbursement agreement, resolution can "
@@ -264,6 +274,7 @@ PERSONAS = [
                     "the ATO expect to support the claim?"
                 ),
                 "days_ago": 3,
+                "client_ref": "Vantage Software Pty Ltd",
                 "context_note": (
                     "Software client's R&D claim due before the AusIndustry deadline - "
                     "confirming offset rate and required records before lodging."
@@ -272,6 +283,7 @@ PERSONAS = [
         ],
         "document_title": "Working From Home Deductions - Fixed Rate Method",
         "document_context_note": "Client-ready memo on the WFH deduction rate - sent to the client.",
+        "ato_client_ref": "Whitfield Family Trust",
         "ato_context_note": (
             "ATO reviewing the trust distribution under s100A - response drafted, "
             "awaiting partner sign-off before sending."
@@ -362,16 +374,16 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
 
     first_query_id = None
     first_days_ago = None
+    first_answer = None
+    first_citations = None
     for item in persona["questions"]:
         question = item["question"]
         print(f"    researching: {question[:60]}...")
         result = await research.run(question=question, client_id=client_id)
-        draft_result = await drafter.run(
-            research_result={"answer": result["answer"], "citations": result["citations"]},
-            original_question=question,
-            client_id=client_id,
-        )
-        final_answer = draft_result["draft"]
+        # The raw research answer is what's shown and stored as-is - matches
+        # production, which no longer forces every chat answer into a formal
+        # memo. Verification checks this same answer, not a reformatted one.
+        final_answer = result["answer"]
         verification = await verifier.run(
             draft=final_answer, citations=result["citations"], question=question
         )
@@ -391,6 +403,7 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
                     "confidence_score": result["confidence"],
                     "model_used": result["model_used"],
                     "verification_result": verification,
+                    "client_ref": item["client_ref"],
                     "context_note": item["context_note"],
                     "created_at": timestamp,
                     "completed_at": timestamp,
@@ -401,20 +414,30 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
         if first_query_id is None:
             first_query_id = row.data[0]["id"]
             first_days_ago = item["days_ago"]
+            first_answer = final_answer
+            first_citations = result["citations"]
         print(f"      -> {verification.get('overall_status')}, {len(result['citations'])} citations")
 
-    # One generated document, from the first seeded question's answer - dated
-    # a day after its source question, as if drafted shortly after the
-    # research came back. content_docx is intentionally left unset -
-    # download_document() regenerates the file on demand from content_md.
-    first_result = sb.table("queries").select("*").eq("id", first_query_id).execute().data[0]
+    # One generated document: the first seeded question's answer, reformatted
+    # into the firm's 5-section advice memo (this is the one place that
+    # formatting is used - matches production, where it only applies when
+    # explicitly saving a research answer as an advice_memo document), dated
+    # a day after its source question. content_docx is intentionally left
+    # unset - download_document() regenerates the file on demand from
+    # content_md.
+    draft_result = await drafter.run(
+        research_result={"answer": first_answer, "citations": first_citations},
+        original_question=persona["questions"][0]["question"],
+        client_id=client_id,
+    )
     sb.table("documents").insert(
         {
             "client_id": client_id,
             "query_id": first_query_id,
             "document_type": "advice_memo",
             "title": persona["document_title"],
-            "content_md": first_result["final_answer"],
+            "content_md": draft_result["draft"],
+            "client_ref": persona["questions"][0]["client_ref"],
             "context_note": persona["document_context_note"],
             "status": "draft",
             "created_at": _days_ago(max(first_days_ago - 1, 0)),
@@ -445,6 +468,7 @@ def seed_ato_response(sb, client_id: str, persona: dict) -> None:
             "document_type": "ato_response",
             "title": f"ATO Response - {persona['ato_letter_type']}",
             "content_md": persona["ato_response_md"],
+            "client_ref": persona["ato_client_ref"],
             "context_note": persona["ato_context_note"],
             "status": "draft",
             "created_at": _days_ago(6),

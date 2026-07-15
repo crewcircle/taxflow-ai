@@ -21,7 +21,6 @@ export interface QueryListItem {
 
 interface QueryHistorySidebarProps {
   history: QueryListItem[];
-  activeId: string | null;
   onSelect: (id: string) => void;
   onNewQuestion: () => void;
 }
@@ -54,7 +53,6 @@ function groupByRecency(history: QueryListItem[]) {
 
 export function QueryHistorySidebar({
   history,
-  activeId,
   onSelect,
   onNewQuestion,
 }: QueryHistorySidebarProps) {
@@ -100,9 +98,7 @@ export function QueryHistorySidebar({
                   onClick={() => onSelect(item.id)}
                   className={cn(
                     "flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left text-sm transition-colors",
-                    item.id === activeId
-                      ? "bg-primary text-primary-foreground"
-                      : "text-foreground hover:bg-muted"
+                    "text-foreground hover:bg-muted"
                   )}
                 >
                   <MessageSquare className="mt-0.5 size-3.5 shrink-0 opacity-60" />
