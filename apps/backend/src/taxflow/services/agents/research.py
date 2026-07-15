@@ -4,7 +4,10 @@ import time
 from anthropic import AsyncAnthropic
 
 from taxflow.config import settings
-from taxflow.services.knowledge.retrieval import hybrid_search
+from taxflow.services.knowledge.retrieval import (
+    generate_candidates,
+    rerank_candidates,
+)
 
 SYSTEM_PROMPT = """You are TaxFlow AI, an AI assistant for Australian public practice accounting firms.
 You answer questions about Australian tax law with precision and citations.
@@ -94,20 +97,47 @@ class ResearchAgent:
         and the firm-knowledge search reuse it (Task A4) instead of each paying a
         separate OpenAI round trip.
 
-        Returns (chunks, signals). Signals are derived from the GLOBAL candidate
-        pool only: firm chunks carry an inflated cosine*weight score on a different
-        scale, so mixing them would distort the RRF-based routing thresholds.
+        Task C4: global and firm candidates are merged into ONE pool and ranked
+        together (honouring FIRM_CHUNK_WEIGHT) rather than truncating global to
+        top_k and blindly appending firm chunks after. If C1's re-rank is active
+        it runs over the combined pool, so firm chunks compete on the same
+        relevance scale as global chunks. Final truncation is to RETRIEVAL_TOP_K.
+
+        Returns (chunks, signals). Routing signals (Task A3) are derived from the
+        GLOBAL candidate pool only: firm chunks carry a weighted score on a
+        different scale, so mixing them in would distort the RRF-based thresholds.
         """
-        global_chunks = await hybrid_search(question, top_k=8, embedding=embedding)
-        firm_chunks = await self._firm_knowledge_search(
-            question, client_id, top_k=2, embedding=embedding
+        global_candidates = await generate_candidates(question, embedding=embedding)
+        firm_candidates = await self._firm_knowledge_search(
+            question, client_id, top_k=settings.RETRIEVAL_FIRM_POOL, embedding=embedding
         )
+
+        # Routing signals from the GLOBAL pool only (before merging in firm docs).
         signals = {
-            "num_chunks": len(global_chunks),
-            "top_score": max((c["score"] for c in global_chunks), default=0.0),
-            "insufficient": len(global_chunks) == 0,
+            "num_chunks": len(global_candidates),
+            "top_score": max((c["score"] for c in global_candidates), default=0.0),
+            "insufficient": len(global_candidates) == 0,
         }
-        return (global_chunks + firm_chunks)[:10], signals
+
+        # Merge into one pool. Firm chunks already carry score = sim * FIRM_CHUNK_WEIGHT
+        # (see _firm_knowledge_search), so they participate in the ranking instead
+        # of being appended after global truncation.
+        merged = global_candidates[: settings.RETRIEVAL_GLOBAL_POOL] + firm_candidates
+        merged.sort(key=lambda c: c.get("score", 0.0), reverse=True)
+
+        # If C1's re-rank is active, run the combined pool (global + firm) through
+        # the same re-ranker so firm chunks are judged on relevance too.
+        reranked = await rerank_candidates(question, merged)
+
+        chunks = reranked[: settings.RETRIEVAL_TOP_K]
+
+        # Surface the re-rank top score to the router (Task A3 accepts it) so a
+        # strong LLM-judged relevance can promote to Haiku.
+        rerank_scores = [c["rerank_score"] for c in chunks if "rerank_score" in c]
+        if rerank_scores:
+            signals["rerank_top_score"] = max(rerank_scores)
+
+        return chunks, signals
 
     async def _firm_knowledge_search(
         self, question: str, client_id: str, top_k: int, embedding: list[float] | None = None
@@ -150,14 +180,18 @@ class ResearchAgent:
         except Exception:  # firm knowledge is optional; never fail the query over it
             return []
 
-        # 1.5x weight: firm documents are more specific to the client than global sources
+        # FIRM_CHUNK_WEIGHT (Task C4): firm documents are more specific to the
+        # client than global sources, so we weight their similarity score. Unlike
+        # the old dead 1.5x, this score now participates in the merged ranking in
+        # _retrieve_context instead of being appended after global truncation.
         return [
             {
                 "id": str(r["id"]),
                 "citation": f"Firm knowledge: {r['file_name']}",
                 "content": r["content"],
                 "source_url": "",
-                "score": float(r["sim"]) * 1.5,
+                "source_object_key": None,
+                "score": float(r["sim"]) * settings.FIRM_CHUNK_WEIGHT,
             }
             for r in rows
         ]
@@ -260,14 +294,31 @@ class ResearchAgent:
         }
 
     async def run_stream(self, question: str, client_id: str, embedding: list[float] | None = None):
-        """Yields {"type": "token", "text": ...} events, then a final
-        {"type": "final", "citations": [...]} event."""
-        chunks, _signals = await self._retrieve_context(question, client_id, embedding=embedding)
+        """Yields token events, then a final citations/metrics event.
+
+        Task C2: the streaming path now applies the SAME pre-generation routing as
+        run() (route_model from retrieval signals) instead of always using Haiku,
+        so interactive users get the same model the batch path would pick. The
+        model is decided UP FRONT (streaming can't upgrade mid-stream), keeping one
+        consistent policy across run() and run_stream().
+
+        Events:
+          {"type": "token", "text": ...}   (repeated while streaming)
+          {"type": "final", "citations": [...], "answer": ..., "confidence": ...,
+           "model_used": ..., "input_tokens": ..., "output_tokens": ...,
+           "cache_read_input_tokens": ..., "cache_creation_input_tokens": ...,
+           "chunks_retrieved": ...}
+        """
+        chunks, signals = await self._retrieve_context(question, client_id, embedding=embedding)
         context = self._build_context_string(chunks)
 
+        routed = route_model(signals)
+        model = settings.ANTHROPIC_SONNET_MODEL if routed == "sonnet" else settings.ANTHROPIC_HAIKU_MODEL
+
         answer_parts: list[str] = []
+        usage = None
         async with self._client.messages.stream(
-            model=settings.ANTHROPIC_HAIKU_MODEL,
+            model=model,
             max_tokens=1500,
             temperature=0,
             system=_system_blocks(),
@@ -276,6 +327,71 @@ class ResearchAgent:
             async for text in stream.text_stream:
                 answer_parts.append(text)
                 yield {"type": "token", "text": text}
+            final_message = await stream.get_final_message()
+            usage = final_message.usage
 
-        citations = self._parse_citations("".join(answer_parts), chunks)
-        yield {"type": "final", "citations": citations}
+        answer = "".join(answer_parts)
+        citations = self._parse_citations(answer, chunks)
+        confidence = self._estimate_confidence(answer, chunks, citations)
+
+        # Task C5: surface model/confidence/token metrics on the final event so the
+        # SSE route can persist them on the queries row (parity with POST /query).
+        yield {
+            "type": "final",
+            "citations": citations,
+            "answer": answer,
+            "confidence": confidence,
+            "model_used": routed,
+            "chunks_retrieved": len(chunks),
+            "input_tokens": getattr(usage, "input_tokens", 0) if usage else 0,
+            "output_tokens": getattr(usage, "output_tokens", 0) if usage else 0,
+            "cache_read_input_tokens": (getattr(usage, "cache_read_input_tokens", 0) or 0) if usage else 0,
+            "cache_creation_input_tokens": (getattr(usage, "cache_creation_input_tokens", 0) or 0) if usage else 0,
+        }
+
+    async def regenerate_with_feedback(
+        self,
+        question: str,
+        client_id: str,
+        issues: list[dict],
+        embedding: list[float] | None = None,
+    ) -> dict:
+        """ONE bounded corrective regeneration pass (Task C3).
+
+        Called at most once, only when verification flagged the answer. It appends
+        the verifier's issues to the context and regenerates with Sonnet (the
+        stronger model, since the first pass was found wanting). There is NO loop:
+        the caller invokes this exactly once and does not re-verify-and-retry.
+        """
+        chunks, _signals = await self._retrieve_context(question, client_id, embedding=embedding)
+        context = self._build_context_string(chunks)
+
+        issue_lines = "\n".join(
+            f"- Claim: {i.get('claim', '')}\n  Problem: {i.get('issue', '')}\n"
+            f"  Source says: {i.get('source_says', '')}\n"
+            f"  Correction: {i.get('suggested_correction', '')}"
+            for i in issues
+        )
+        corrective_context = (
+            f"{context}\n\n"
+            "A prior draft of this answer was reviewed and the following issues were "
+            "raised. Produce a corrected answer that resolves each of them, still "
+            "citing only the provided sources:\n"
+            f"{issue_lines}"
+        )
+
+        answer, stats = await self._generate(
+            question, corrective_context, settings.ANTHROPIC_SONNET_MODEL
+        )
+        citations = self._parse_citations(answer, chunks)
+        confidence = self._estimate_confidence(answer, chunks, citations)
+        return {
+            "answer": answer,
+            "citations": citations,
+            "confidence": confidence,
+            "model_used": "sonnet",
+            "input_tokens": stats["input_tokens"],
+            "output_tokens": stats["output_tokens"],
+            "cache_read_input_tokens": stats["cache_read_input_tokens"],
+            "cache_creation_input_tokens": stats["cache_creation_input_tokens"],
+        }

@@ -125,8 +125,11 @@ async def test_retrieve_context_reuses_embedding_without_re_embedding():
     vec = [0.1] * 1536
 
     with patch(
-        "taxflow.services.agents.research.hybrid_search", new=AsyncMock(return_value=[])
-    ) as mock_hybrid, patch.object(
+        "taxflow.services.agents.research.generate_candidates", new=AsyncMock(return_value=[])
+    ) as mock_gen, patch(
+        "taxflow.services.agents.research.rerank_candidates",
+        new=AsyncMock(side_effect=lambda q, c: c),
+    ), patch.object(
         agent, "_firm_knowledge_search", new=AsyncMock(return_value=[])
     ) as mock_firm, patch(
         "taxflow.services.knowledge.embedder.embed", new=AsyncMock()
@@ -135,7 +138,7 @@ async def test_retrieve_context_reuses_embedding_without_re_embedding():
 
     # The pre-computed vector must flow through to both retrieval paths and the
     # embedder must never be called again inside retrieval.
-    assert mock_hybrid.await_args.kwargs["embedding"] == vec
+    assert mock_gen.await_args.kwargs["embedding"] == vec
     assert mock_firm.await_args.kwargs["embedding"] == vec
     mock_embed.assert_not_awaited()
 

@@ -59,5 +59,55 @@ class Settings(BaseSettings):
     # time flag (loaded at process start).
     PROMPT_CACHE_ENABLED: bool = True
 
+    # --- Retrieval re-ranking (Task C1) ---------------------------------------
+    # RRF stays a cheap candidate generator: we widen the semantic/text candidate
+    # pools (RERANK_CANDIDATE_POOL each) and re-rank the merged candidates before
+    # truncating to top_k, per RERANK_MODE:
+    #   - "off"      : plain RRF merge, take top_k. No re-rank, no LLM.
+    #   - "rrf_only" : widen pools, merge by RRF score, take top_k. No LLM. (default)
+    #   - "llm"      : ONE batched Haiku relevance-scoring call over the merged
+    #                  candidates (RERANK_DEPTH of them), re-order by score.
+    # "off"/"rrf_only" MUST NOT call any LLM. We deliberately avoid a local
+    # cross-encoder on the 2 vCPU / 4GB droplet. Deploy-time flag.
+    RERANK_MODE: str = "rrf_only"
+    # How many candidates to pull from EACH of the semantic/text searches before
+    # merging (widened from the historical 20).
+    RERANK_CANDIDATE_POOL: int = 40
+    # How many merged candidates the LLM re-ranker scores in its single batched
+    # call (only used when RERANK_MODE == "llm"). Kept small to bound cost/latency.
+    RERANK_DEPTH: int = 20
+    # Lightweight query normalisation (section-number / synonym) before search.
+    QUERY_NORMALISE_ENABLED: bool = True
+
+    # --- Firm + global merged ranking (Task C4) -------------------------------
+    # research._retrieve_context merges global + firm candidates into ONE pool and
+    # ranks them together instead of appending firm chunks after global truncation.
+    # The firm weight multiplies the firm chunk's score so it participates in the
+    # merged ranking (was a dead 1.5x that never ranked).
+    RETRIEVAL_TOP_K: int = 10
+    RETRIEVAL_GLOBAL_POOL: int = 8
+    RETRIEVAL_FIRM_POOL: int = 4
+    FIRM_CHUNK_WEIGHT: float = 1.5
+
+    # --- Verify gating (Task B2 / C3) -----------------------------------------
+    # Verification no longer runs on every answer. It runs ONLY on risky answers:
+    # low estimated confidence, few/zero parsed citations, or the "insufficient
+    # information" phrase. The default verify model is Haiku; Sonnet is reserved
+    # for flagged (risky) answers. Deploy-time flags.
+    VERIFY_MODEL: str = "claude-haiku-4-5"
+    VERIFY_CONFIDENCE_THRESHOLD: float = 0.60
+    VERIFY_MIN_CITATIONS: int = 1
+    # When True, a needs_correction/unreliable verification (or a critical issue)
+    # triggers ONE bounded corrective regeneration pass (no loops).
+    CORRECTIVE_PASS_ENABLED: bool = True
+
+    # --- Per-client answer cache (Task B3) ------------------------------------
+    # DB-backed answer cache keyed on (normalised question, client_id,
+    # knowledge_version). DB-backed (not in-process) because prod runs 2 uvicorn
+    # workers; an ingest bumps knowledge_version so all workers invalidate
+    # atomically. Short TTL is a backstop. Deploy-time flags.
+    ANSWER_CACHE_ENABLED: bool = True
+    ANSWER_CACHE_TTL_SECONDS: int = 3600
+
 
 settings = Settings()  # type: ignore[call-arg]

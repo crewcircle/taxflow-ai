@@ -43,7 +43,7 @@ def test_semantic_search_sets_probes_in_transaction():
     cm.__exit__ = MagicMock(return_value=False)
 
     with patch.object(retrieval, "get_pg_conn", return_value=cm):
-        retrieval._semantic_search([0.1] * 1536, None)
+        retrieval._semantic_search([0.1] * 1536, None, 20)
 
     # The explicit transaction must be entered so SET LOCAL isn't a no-op, and the
     # probes statement must precede the vector SELECT.

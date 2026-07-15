@@ -19,7 +19,13 @@ def test_submit_query_returns_answer(client):
 
     with patch.object(query_module, "agent") as mock_agent, patch.object(
         query_module, "increment_usage", new_callable=AsyncMock
-    ), patch.object(query_module, "embed", new_callable=AsyncMock) as mock_embed:
+    ), patch.object(query_module, "embed", new_callable=AsyncMock) as mock_embed, patch.object(
+        query_module.answer_cache, "get_cached_answer", new=AsyncMock(return_value=None)
+    ), patch.object(
+        query_module.answer_cache, "store_answer", new=AsyncMock()
+    ), patch.object(
+        query_module.verify_mod, "should_verify", return_value=False
+    ):
         mock_embed.return_value = [0.0] * 1536
         mock_agent.run = AsyncMock(
             return_value={
@@ -30,6 +36,8 @@ def test_submit_query_returns_answer(client):
                 "chunks_retrieved": 1,
                 "input_tokens": 10,
                 "output_tokens": 10,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
             }
         )
 

@@ -15,18 +15,37 @@ ALL_SCRAPERS = [ATORulingsScraper, LegislationScraper, AustLIIScraper]
 
 async def run_all(limit: int | None = None) -> dict[str, int]:
     results: dict[str, int] = {}
+    processed_any = False
     for scraper_cls in ALL_SCRAPERS:
         scraper = scraper_cls()
         try:
             print(f"Running {scraper_cls.__name__}...")
             count = await scraper.run_delta(limit=limit)
             results[scraper_cls.__name__] = count
+            if count > 0:
+                processed_any = True
             print(f"  {count} documents processed")
         except Exception as e:  # noqa: BLE001
             print(f"  {scraper_cls.__name__} failed: {e}")
             results[scraper_cls.__name__] = -1
         finally:
             await scraper.aclose()
+
+    # Task B3: an ingest that changed the knowledge base bumps the shared
+    # knowledge_version token so the per-client answer cache invalidates
+    # atomically across BOTH uvicorn workers (the key includes this version, so
+    # every worker immediately misses on the old cached answers).
+    if processed_any:
+        import asyncio as _asyncio
+
+        from taxflow.services.answer_cache import bump_knowledge_version
+
+        try:
+            new_version = await _asyncio.to_thread(bump_knowledge_version)
+            print(f"  knowledge_version bumped to {new_version}; answer cache invalidated")
+        except Exception as e:  # noqa: BLE001 - a bump failure must not fail the ingest
+            print(f"  knowledge_version bump failed: {e}")
+
     return results
 
 
