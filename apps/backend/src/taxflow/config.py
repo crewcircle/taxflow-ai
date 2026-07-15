@@ -31,5 +31,10 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP_TOKENS: int = 64
     OPENAI_API_KEY: str = ""
 
+    # Postgres connection pool (per uvicorn worker; see db.py). maxconn is sized
+    # so 2 workers (~2 x 8 = 16 connections) stay under Supabase's connection cap.
+    POOL_MIN_CONN: int = 1
+    POOL_MAX_CONN: int = 8
+
 
 settings = Settings()  # type: ignore[call-arg]

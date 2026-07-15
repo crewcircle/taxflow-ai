@@ -39,31 +39,30 @@ class ResearchAgent:
     async def _firm_knowledge_search(self, question: str, client_id: str, top_k: int) -> list[dict]:
         import asyncio
 
-        import psycopg2
         import psycopg2.extras
 
+        from taxflow.db import get_pg_conn
         from taxflow.services.knowledge.embedder import embed
 
         query_embedding = await embed(question)
 
         def _search() -> list[dict]:
-            conn = psycopg2.connect(settings.DATABASE_URL)
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute(
-                """
-                SELECT id, file_name, content,
-                       1 - (embedding <=> %s::vector) AS sim
-                FROM firm_knowledge
-                WHERE client_id = %s AND embedding IS NOT NULL
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
-                """,
-                (query_embedding, client_id, query_embedding, top_k),
-            )
-            rows = cur.fetchall()
-            cur.close()
-            conn.close()
-            return list(rows)
+            with get_pg_conn() as conn:
+                cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                cur.execute(
+                    """
+                    SELECT id, file_name, content,
+                           1 - (embedding <=> %s::vector) AS sim
+                    FROM firm_knowledge
+                    WHERE client_id = %s AND embedding IS NOT NULL
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (query_embedding, client_id, query_embedding, top_k),
+                )
+                rows = cur.fetchall()
+                cur.close()
+                return list(rows)
 
         try:
             rows = await asyncio.to_thread(_search)
