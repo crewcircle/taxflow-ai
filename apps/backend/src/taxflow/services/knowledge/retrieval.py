@@ -49,7 +49,7 @@ def _semantic_search(embedding: list[float], source_types: list[str] | None, lim
             cur.execute("SET LOCAL ivfflat.probes = %s", (settings.IVFFLAT_PROBES,))
             cur.execute(
                 """
-                SELECT id, citation, content, source_url, source_object_key,
+                SELECT id, citation, content, source_url, source_object_key, source_type,
                        1 - (embedding <=> %s::vector) AS cosine_sim
                 FROM knowledge_chunks
                 WHERE is_current = true
@@ -69,7 +69,7 @@ def _text_search(query: str, source_types: list[str] | None, limit: int) -> list
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             """
-            SELECT id, citation, content, source_url, source_object_key,
+            SELECT id, citation, content, source_url, source_object_key, source_type,
                    ts_rank(to_tsvector('english', content), plainto_tsquery('english', %s)) AS text_rank
             FROM knowledge_chunks
             WHERE is_current = true
@@ -108,6 +108,7 @@ def _rrf_merge(semantic: list[dict], textual: list[dict]) -> list[dict]:
             "content": docs[doc_id]["content"],
             "source_url": docs[doc_id]["source_url"],
             "source_object_key": docs[doc_id].get("source_object_key"),
+            "source_type": docs[doc_id].get("source_type"),
             "score": score,
         }
         for doc_id, score in ranked
@@ -187,6 +188,26 @@ def _extract_scores(text: str, depth: int) -> dict[int, float]:
         except (ValueError, TypeError):
             continue
     return out
+
+
+def apply_source_type_boost(candidates: list[dict], boost_types: list[str] | None) -> list[dict]:
+    """SOFT BOOST matching source_types (Task D2). Never excludes anything.
+
+    Multiplies the RRF `score` of candidates whose `source_type` is in
+    boost_types by (1 + SOURCE_TYPE_BOOST_WEIGHT) and re-sorts. The candidate
+    pool is left intact — a non-matching doc keeps its score and stays
+    retrievable, so we can never drop the one relevant doc (unlike a hard SQL
+    filter). No-op when boost_types is empty or the weight is 0. Returns a
+    re-sorted list; mutates each candidate's `score` in place.
+    """
+    if not boost_types or settings.SOURCE_TYPE_BOOST_WEIGHT <= 0:
+        return candidates
+    boost_set = set(boost_types)
+    multiplier = 1.0 + settings.SOURCE_TYPE_BOOST_WEIGHT
+    for cand in candidates:
+        if cand.get("source_type") in boost_set:
+            cand["score"] = cand.get("score", 0.0) * multiplier
+    return sorted(candidates, key=lambda c: c.get("score", 0.0), reverse=True)
 
 
 async def generate_candidates(

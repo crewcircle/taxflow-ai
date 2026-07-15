@@ -1,3 +1,4 @@
+import logging
 import re
 import time
 
@@ -5,9 +6,12 @@ from anthropic import AsyncAnthropic
 
 from taxflow.config import settings
 from taxflow.services.knowledge.retrieval import (
+    apply_source_type_boost,
     generate_candidates,
     rerank_candidates,
 )
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are TaxFlow AI, an AI assistant for Australian public practice accounting firms.
 You answer questions about Australian tax law with precision and citations.
@@ -84,12 +88,126 @@ def route_model(signals: dict) -> str:
     return "haiku" if strong else "sonnet"
 
 
+def build_client_profile(client: dict | None) -> str:
+    """Build a compact ADVISORY client-profile steering string (Task D1).
+
+    Uses fields already on the `clients` row fetched by auth (business_type,
+    state, firm_style jsonb) — no extra query. The result is injected into the
+    research + drafter prompts as advisory steering ("weight jurisdiction/
+    industry-specific guidance accordingly"), NOT a hard filter, so it can never
+    starve a correct general-law answer. Returns "" when disabled or when there's
+    nothing useful to say, in which case prompts behave exactly as before.
+    """
+    if not settings.PROFILE_INJECTION_ENABLED or not client:
+        return ""
+
+    business_type = client.get("business_type")
+    state = client.get("state")
+
+    bits: list[str] = []
+    if business_type and state:
+        bits.append(f"The firm is a {business_type} practice in {state}")
+    elif business_type:
+        bits.append(f"The firm is a {business_type} practice")
+    elif state:
+        bits.append(f"The firm is based in {state}")
+
+    # firm_style jsonb: surface a few short highlights if present (e.g. tone,
+    # specialties). Values are kept short so they steer without dominating.
+    firm_style = client.get("firm_style")
+    if isinstance(firm_style, dict) and firm_style:
+        highlights = []
+        for key, value in firm_style.items():
+            if isinstance(value, (str, int, float, bool)):
+                highlights.append(f"{key}: {value}")
+            if len(highlights) >= 3:
+                break
+        if highlights:
+            bits.append("firm style — " + "; ".join(highlights))
+
+    if not bits:
+        return ""
+
+    return (
+        "Client profile (advisory only — weight jurisdiction/industry-specific "
+        "guidance accordingly, but never withhold correct general Australian law): "
+        + ". ".join(bits)
+        + "."
+    )
+
+
+# source_type enum (003_knowledge_chunks.sql):
+#   ato_ruling, ato_determination, ato_pbr, legislation, court_decision,
+#   ato_guide, ato_news.
+_MODULE_SOURCE_TYPES = {
+    # A firm module hints at the kinds of authority most relevant to it. These
+    # are SOFT boosts only (Task D2), never exclusions.
+    "research": ["legislation", "ato_ruling"],
+    "ato_correspondence": ["ato_ruling", "ato_determination", "ato_pbr"],
+    "regulatory_monitor": ["ato_news", "ato_guide"],
+}
+_INTENT_SOURCE_TYPES = [
+    (re.compile(r"\b(legislation|act|section|s\d|itaa|statut)", re.IGNORECASE), ["legislation"]),
+    (re.compile(r"\b(ruling|tr \d|td \d|determination)", re.IGNORECASE),
+     ["ato_ruling", "ato_determination"]),
+    (re.compile(r"\b(private binding ruling|pbr)", re.IGNORECASE), ["ato_pbr"]),
+    (re.compile(r"\b(court|tribunal|aat|federal court|decision|case law)", re.IGNORECASE),
+     ["court_decision"]),
+]
+
+
+def derive_source_type_hint(question: str, active_modules: list[str] | None) -> list[str] | None:
+    """Derive a source_types SOFT-BOOST hint (Task D2) from question intent and
+    the firm's active_modules. Returns None when nothing matches (no boost).
+
+    This is ONLY a hint: retrieval widens the pool unfiltered and boosts matching
+    source_types during scoring, so nothing is excluded outright (see
+    SOURCE_TYPE_FILTER_MODE for the opt-in hard filter).
+    """
+    hints: list[str] = []
+    for pattern, types in _INTENT_SOURCE_TYPES:
+        if pattern.search(question or ""):
+            hints.extend(types)
+    for module in active_modules or []:
+        hints.extend(_MODULE_SOURCE_TYPES.get(module, []))
+    # De-dup preserving order.
+    seen: set[str] = set()
+    deduped = [t for t in hints if not (t in seen or seen.add(t))]
+    return deduped or None
+
+
+def build_session_block(history: list[dict]) -> str:
+    """Build a compact "conversation so far" block (Task D3).
+
+    history is a list of prior turns {question, answer} for the SAME
+    (client_id, session_id), oldest first. Each prior answer is SUMMARISED AT
+    READ TIME (truncated to SESSION_SUMMARY_CHARS) to protect the token budget —
+    we deliberately do not store summaries. Returns "" for empty history so
+    single-shot queries are unaffected.
+    """
+    if not history:
+        return ""
+    lines = ["Conversation so far (prior turns in this session, for context only):"]
+    for turn in history:
+        q = (turn.get("question") or "").strip()
+        a = (turn.get("answer") or "").strip()
+        summary = a[: settings.SESSION_SUMMARY_CHARS]
+        if len(a) > settings.SESSION_SUMMARY_CHARS:
+            summary += "…"
+        lines.append(f"- Q: {q}\n  A: {summary}")
+    return "\n".join(lines)
+
+
 class ResearchAgent:
     def __init__(self) -> None:
         self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     async def _retrieve_context(
-        self, question: str, client_id: str, embedding: list[float] | None = None
+        self,
+        question: str,
+        client_id: str,
+        embedding: list[float] | None = None,
+        source_type_hint: list[str] | None = None,
     ) -> tuple[list[dict], dict]:
         """Retrieve merged global + firm chunks and the routing signals.
 
@@ -103,11 +221,25 @@ class ResearchAgent:
         it runs over the combined pool, so firm chunks compete on the same
         relevance scale as global chunks. Final truncation is to RETRIEVAL_TOP_K.
 
+        Task D2: source_type_hint is applied as a SOFT BOOST by default — the pool
+        is retrieved UNFILTERED (so a non-matching source is still retrievable) and
+        matching source_types are boosted during scoring. Only when
+        SOURCE_TYPE_FILTER_MODE == "hard" is the hint passed as a hard SQL filter.
+
         Returns (chunks, signals). Routing signals (Task A3) are derived from the
         GLOBAL candidate pool only: firm chunks carry a weighted score on a
         different scale, so mixing them in would distort the RRF-based thresholds.
         """
-        global_candidates = await generate_candidates(question, embedding=embedding)
+        # Only a hard-mode hint reaches the SQL filter; soft mode retrieves the
+        # full pool and boosts after (never excludes the one relevant doc).
+        sql_source_types = (
+            source_type_hint if settings.SOURCE_TYPE_FILTER_MODE == "hard" else None
+        )
+        global_candidates = await generate_candidates(
+            question, source_types=sql_source_types, embedding=embedding
+        )
+        if settings.SOURCE_TYPE_FILTER_MODE != "hard":
+            global_candidates = apply_source_type_boost(global_candidates, source_type_hint)
         firm_candidates = await self._firm_knowledge_search(
             question, client_id, top_k=settings.RETRIEVAL_FIRM_POOL, embedding=embedding
         )
@@ -144,6 +276,7 @@ class ResearchAgent:
     ) -> list[dict]:
         import asyncio
 
+        import psycopg2
         import psycopg2.extras
 
         from taxflow.db import get_pg_conn
@@ -177,7 +310,16 @@ class ResearchAgent:
 
         try:
             rows = await asyncio.to_thread(_search)
-        except Exception:  # firm knowledge is optional; never fail the query over it
+        except (psycopg2.Error, OSError) as e:
+            # Firm knowledge is optional and must never fail the query. But
+            # swallowing every error silently (the old `except Exception: return
+            # []`) meant missing firm context was invisible. Narrow to the
+            # expected DB / connection failures and LOG them so a persistent
+            # problem (bad pool, missing table, embedding issue) is observable,
+            # while still returning [] so the query proceeds on global sources.
+            logger.warning(
+                "firm knowledge search failed for client_id=%s: %s", client_id, e
+            )
             return []
 
         # FIRM_CHUNK_WEIGHT (Task C4): firm documents are more specific to the
@@ -209,13 +351,27 @@ class ResearchAgent:
         max_chars = CONTEXT_TOKEN_LIMIT * 4
         return context[:max_chars]
 
-    async def _generate(self, question: str, context: str, model: str) -> tuple[str, dict]:
+    def _user_content(self, question: str, context: str, steering: str = "") -> str:
+        """Assemble the user message.
+
+        `steering` carries the ADVISORY client-profile block (Task D1) and the
+        "conversation so far" session block (Task D3). It is prepended before the
+        question/sources so it steers without being mistaken for a source
+        document. Empty steering reproduces the original prompt exactly, so
+        single-shot / no-profile queries are unchanged.
+        """
+        prefix = f"{steering}\n\n" if steering else ""
+        return f"{prefix}Question: {question}\n\nSource documents:\n{context}"
+
+    async def _generate(
+        self, question: str, context: str, model: str, steering: str = ""
+    ) -> tuple[str, dict]:
         response = await self._client.messages.create(
             model=model,
             max_tokens=1500,
             temperature=0,
             system=_system_blocks(),
-            messages=[{"role": "user", "content": f"Question: {question}\n\nSource documents:\n{context}"}],
+            messages=[{"role": "user", "content": self._user_content(question, context, steering)}],
         )
         answer = "".join(block.text for block in response.content if block.type == "text")
         usage = response.usage
@@ -260,15 +416,95 @@ class ResearchAgent:
                 )
         return citations
 
+    async def _load_session_history(self, client_id: str, session_id: str) -> list[dict]:
+        """Load the last N prior turns for THIS (client_id, session_id) (Task D3).
+
+        Auto-injection is scoped to the same session AND the same client: the
+        WHERE clause pins BOTH client_id and session_id, so context never bleeds
+        across sessions/engagements or across clients. Returns oldest-first
+        {question, answer} turns; full answers are truncated at read time by
+        build_session_block. Returns [] on any DB error (session memory is best-
+        effort, never fails the query).
+        """
+        import asyncio
+
+        import psycopg2
+        import psycopg2.extras
+
+        from taxflow.db import get_pg_conn
+
+        def _query() -> list[dict]:
+            with get_pg_conn() as conn:
+                with conn:
+                    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                    cur.execute(
+                        """
+                        SELECT question, final_answer
+                        FROM queries
+                        WHERE client_id = %s AND session_id = %s
+                          AND status = 'completed' AND final_answer IS NOT NULL
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                        """,
+                        (client_id, session_id, settings.SESSION_HISTORY_N),
+                    )
+                    rows = cur.fetchall()
+                    cur.close()
+                    return list(rows)
+
+        try:
+            rows = await asyncio.to_thread(_query)
+        except (psycopg2.Error, OSError) as e:
+            logger.warning(
+                "session history load failed for client_id=%s session_id=%s: %s",
+                client_id,
+                session_id,
+                e,
+            )
+            return []
+
+        # DESC from SQL -> reverse to oldest-first for a natural conversation order.
+        return [
+            {"question": r["question"], "answer": r["final_answer"]} for r in reversed(rows)
+        ]
+
+    async def _build_steering(
+        self,
+        question: str,
+        client_id: str,
+        client: dict | None,
+        session_id: str | None,
+    ) -> tuple[str, list[str] | None]:
+        """Assemble the advisory steering block (profile + session memory) and the
+        source_type soft-boost hint (Tasks D1/D2/D3). Threaded into run/run_stream.
+        """
+        profile = build_client_profile(client)
+        history: list[dict] = []
+        if settings.SESSION_MEMORY_ENABLED and session_id:
+            history = await self._load_session_history(client_id, session_id)
+        session_block = build_session_block(history)
+        steering = "\n\n".join(part for part in (profile, session_block) if part)
+
+        active_modules = client.get("active_modules") if client else None
+        source_type_hint = derive_source_type_hint(question, active_modules)
+        return steering, source_type_hint
+
     async def run(
         self,
         question: str,
         client_id: str,
         filters: dict | None = None,
         embedding: list[float] | None = None,
+        client: dict | None = None,
+        session_id: str | None = None,
     ) -> dict:
         start = time.monotonic()
-        chunks, signals = await self._retrieve_context(question, client_id, embedding=embedding)
+        steering, source_type_hint = await self._build_steering(
+            question, client_id, client, session_id
+        )
+        chunks, signals = await self._retrieve_context(
+            question, client_id, embedding=embedding, source_type_hint=source_type_hint
+        )
         context = self._build_context_string(chunks)
 
         # Pre-generation model routing (Task A3): decide the model from retrieval
@@ -276,7 +512,7 @@ class ResearchAgent:
         routed = route_model(signals)
         model = settings.ANTHROPIC_SONNET_MODEL if routed == "sonnet" else settings.ANTHROPIC_HAIKU_MODEL
 
-        answer, stats = await self._generate(question, context, model)
+        answer, stats = await self._generate(question, context, model, steering=steering)
         citations = self._parse_citations(answer, chunks)
         confidence = self._estimate_confidence(answer, chunks, citations)
 
@@ -293,7 +529,14 @@ class ResearchAgent:
             "wall_time_ms": int((time.monotonic() - start) * 1000),
         }
 
-    async def run_stream(self, question: str, client_id: str, embedding: list[float] | None = None):
+    async def run_stream(
+        self,
+        question: str,
+        client_id: str,
+        embedding: list[float] | None = None,
+        client: dict | None = None,
+        session_id: str | None = None,
+    ):
         """Yields token events, then a final citations/metrics event.
 
         Task C2: the streaming path now applies the SAME pre-generation routing as
@@ -308,8 +551,17 @@ class ResearchAgent:
            "model_used": ..., "input_tokens": ..., "output_tokens": ...,
            "cache_read_input_tokens": ..., "cache_creation_input_tokens": ...,
            "chunks_retrieved": ...}
+
+        Tasks D1/D2/D3: the same advisory client-profile + session-memory steering
+        and source_type soft-boost hint used by run() are applied here, so the
+        interactive stream path is personalised identically to the batch path.
         """
-        chunks, signals = await self._retrieve_context(question, client_id, embedding=embedding)
+        steering, source_type_hint = await self._build_steering(
+            question, client_id, client, session_id
+        )
+        chunks, signals = await self._retrieve_context(
+            question, client_id, embedding=embedding, source_type_hint=source_type_hint
+        )
         context = self._build_context_string(chunks)
 
         routed = route_model(signals)
@@ -322,7 +574,7 @@ class ResearchAgent:
             max_tokens=1500,
             temperature=0,
             system=_system_blocks(),
-            messages=[{"role": "user", "content": f"Question: {question}\n\nSource documents:\n{context}"}],
+            messages=[{"role": "user", "content": self._user_content(question, context, steering)}],
         ) as stream:
             async for text in stream.text_stream:
                 answer_parts.append(text)
@@ -355,6 +607,8 @@ class ResearchAgent:
         client_id: str,
         issues: list[dict],
         embedding: list[float] | None = None,
+        client: dict | None = None,
+        session_id: str | None = None,
     ) -> dict:
         """ONE bounded corrective regeneration pass (Task C3).
 
@@ -362,8 +616,16 @@ class ResearchAgent:
         the verifier's issues to the context and regenerates with Sonnet (the
         stronger model, since the first pass was found wanting). There is NO loop:
         the caller invokes this exactly once and does not re-verify-and-retry.
+
+        The corrective pass reuses the same advisory profile/session steering and
+        source_type soft-boost hint (Tasks D1/D2/D3) so the retry stays personalised.
         """
-        chunks, _signals = await self._retrieve_context(question, client_id, embedding=embedding)
+        steering, source_type_hint = await self._build_steering(
+            question, client_id, client, session_id
+        )
+        chunks, _signals = await self._retrieve_context(
+            question, client_id, embedding=embedding, source_type_hint=source_type_hint
+        )
         context = self._build_context_string(chunks)
 
         issue_lines = "\n".join(
@@ -381,7 +643,7 @@ class ResearchAgent:
         )
 
         answer, stats = await self._generate(
-            question, corrective_context, settings.ANTHROPIC_SONNET_MODEL
+            question, corrective_context, settings.ANTHROPIC_SONNET_MODEL, steering=steering
         )
         citations = self._parse_citations(answer, chunks)
         confidence = self._estimate_confidence(answer, chunks, citations)

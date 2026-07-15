@@ -88,7 +88,7 @@ async def test_stream_persists_metrics():
 
     mock_db.table.return_value.update.side_effect = capture_update
 
-    async def fake_stream(question, client_id, embedding=None):
+    async def fake_stream(question, client_id, embedding=None, client=None, session_id=None):
         yield {"type": "token", "text": "hello "}
         yield {
             "type": "final",

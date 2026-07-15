@@ -109,5 +109,36 @@ class Settings(BaseSettings):
     ANSWER_CACHE_ENABLED: bool = True
     ANSWER_CACHE_TTL_SECONDS: int = 3600
 
+    # --- Per-client profile injection (Task D1) -------------------------------
+    # Build a compact client-profile string (business_type, state, firm_style
+    # highlights) once per request and inject it as ADVISORY steering context into
+    # the research + ATO drafter prompts. Advisory, never a hard filter, so it
+    # cannot starve correct general-law answers. Deploy-time flag; default on.
+    PROFILE_INJECTION_ENABLED: bool = True
+
+    # --- source_types soft boost (Task D2) ------------------------------------
+    # A source_types hint is derived from the question intent and the client's
+    # active_modules, then applied as a SOFT BOOST by default: the candidate pool
+    # is retrieved UNFILTERED (so the one relevant doc is never dropped) and
+    # matching source_types get their score multiplied by
+    # (1 + SOURCE_TYPE_BOOST_WEIGHT) before the merged ranking / re-rank.
+    #   - SOURCE_TYPE_FILTER_MODE == "soft" (default): boost only, no exclusion.
+    #   - SOURCE_TYPE_FILTER_MODE == "hard": opt-in HARD SQL filter (may exclude
+    #     non-matching docs — use with care).
+    SOURCE_TYPE_FILTER_MODE: str = "soft"
+    SOURCE_TYPE_BOOST_WEIGHT: float = 0.25
+
+    # --- Session memory (Task D3) ---------------------------------------------
+    # When a request carries an explicit session_id, the last N prior queries for
+    # that (client_id, session_id) are loaded (question + a truncated answer
+    # summary) and prepended as a compact "conversation so far" block. Auto-
+    # injected ONLY within the same session_id, never across sessions or clients.
+    # Summarised at read time (each prior answer truncated to SESSION_SUMMARY_CHARS)
+    # to protect the token budget. Single-shot queries (no session_id) are
+    # unaffected. Deploy-time flags.
+    SESSION_MEMORY_ENABLED: bool = True
+    SESSION_HISTORY_N: int = 5
+    SESSION_SUMMARY_CHARS: int = 300
+
 
 settings = Settings()  # type: ignore[call-arg]

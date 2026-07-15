@@ -25,9 +25,21 @@ class ATOResponseDrafter:
     def __init__(self) -> None:
         self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-    async def draft(self, classification: dict, strategy: dict, original_letter: str) -> dict:
+    async def draft(
+        self,
+        classification: dict,
+        strategy: dict,
+        original_letter: str,
+        client_profile: str = "",
+    ) -> dict:
         today = date.today().isoformat()
+        # Task D1: prepend the advisory client-profile steering string (built from
+        # business_type/state/firm_style) so the letter is tuned to the firm's
+        # industry/jurisdiction. Advisory only; empty string reproduces the
+        # original prompt exactly.
+        profile_line = f"{client_profile}\n\n" if client_profile else ""
         user = (
+            f"{profile_line}"
             f"ATO Reference: {classification.get('ato_reference')}\n"
             f"Our reference: TF-{today}-{classification.get('ato_reference')}\n"
             f"Letter type: {classification.get('letter_type')}\n"

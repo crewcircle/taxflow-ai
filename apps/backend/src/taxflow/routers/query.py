@@ -27,6 +27,14 @@ verifier = VerifyAgent()
 class QueryRequest(BaseModel):
     question: str
     module: str = "research"
+    # Task D3: an explicit per-conversation session id. The dashboard UI must mint
+    # a fresh session_id (uuid) when the user starts a new conversation ("new
+    # chat") and reuse the SAME session_id across every turn of that conversation.
+    # When present, the agent loads prior turns for this (client_id, session_id)
+    # and prepends a compact "conversation so far" block. Auto-injection is scoped
+    # to the same session_id only — never across sessions or clients. Omitting it
+    # (single-shot query) behaves exactly as before.
+    session_id: str | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -41,6 +49,8 @@ async def _maybe_verify(
     citations: list[dict],
     confidence: float,
     embedding: list[float] | None = None,
+    client: dict | None = None,
+    session_id: str | None = None,
 ) -> tuple[str, list[dict], dict | None, str | None]:
     """Run the gated verify pass + optional single corrective pass (B2 + C3).
 
@@ -75,6 +85,8 @@ async def _maybe_verify(
                 client_id=client_id,
                 issues=verification.get("issues", []),
                 embedding=embedding,
+                client=client,
+                session_id=session_id,
             )
             verification["corrective_pass"] = True
             return corrected["answer"], corrected["citations"], verification, caveat
@@ -114,7 +126,16 @@ async def submit_query(
     # pipeline. A hit skips OpenAI embed + Anthropic generation entirely. The key
     # includes the client_id and knowledge_version, so an ingest invalidates and
     # one client never sees another's answer.
-    cached = await answer_cache.get_cached_answer(client["id"], body.question)
+    #
+    # Task D3: skip the cache when a session_id is present — a session answer is
+    # personalised with the "conversation so far" context, so it must not be
+    # served from (or written to) the plain (client, question) cache key and risk
+    # leaking one session's context into another.
+    cached = (
+        None
+        if body.session_id
+        else await answer_cache.get_cached_answer(client["id"], body.question)
+    )
     if cached is not None:
         query_id = await asyncio.to_thread(_persist_cached_query, db, client, body, cached, start)
         await increment_usage(client["id"], "queries")
@@ -143,6 +164,7 @@ async def submit_query(
                     "question": body.question,
                     "module": body.module,
                     "status": "processing",
+                    "session_id": body.session_id,
                 }
             )
             .execute()
@@ -156,7 +178,11 @@ async def submit_query(
 
     try:
         result = await agent.run(
-            question=body.question, client_id=client["id"], embedding=embedding
+            question=body.question,
+            client_id=client["id"],
+            embedding=embedding,
+            client=client,
+            session_id=body.session_id,
         )
 
         # Task B2/C3: gate the verify pass and feed its output back into the
@@ -168,6 +194,8 @@ async def submit_query(
             citations=result["citations"],
             confidence=result["confidence"],
             embedding=embedding,
+            client=client,
+            session_id=body.session_id,
         )
         stored_answer = f"{answer}\n\n{caveat}" if caveat else answer
 
@@ -192,7 +220,9 @@ async def submit_query(
 
         # Task B3: cache the completed answer for this client (only when the
         # verify pass did not flag a correction — never cache a flagged answer).
-        if verification is None or not caveat:
+        # Task D3: never cache a session-personalised answer (see the cache-read
+        # skip above) — its "conversation so far" context is session-specific.
+        if not body.session_id and (verification is None or not caveat):
             await answer_cache.store_answer(
                 client["id"],
                 body.question,
@@ -246,6 +276,7 @@ def _persist_cached_query(db, client, body: QueryRequest, cached: dict, start: f
 async def stream_query(
     question: str,
     client_ref: str | None = None,
+    session_id: str | None = None,
     client=Depends(get_current_client),
     _trial=Depends(check_trial_gate),
 ):
@@ -275,6 +306,7 @@ async def stream_query(
                     "module": "research",
                     "status": "processing",
                     "client_ref": client_ref,
+                    "session_id": session_id,
                 }
             )
             .execute()
@@ -294,7 +326,11 @@ async def stream_query(
         final_meta: dict = {}
 
         async for event in agent.run_stream(
-            question=question, client_id=client["id"], embedding=embedding
+            question=question,
+            client_id=client["id"],
+            embedding=embedding,
+            client=client,
+            session_id=session_id,
         ):
             if event["type"] == "token":
                 answer_parts.append(event["text"])
@@ -318,6 +354,8 @@ async def stream_query(
             citations=citations,
             confidence=confidence,
             embedding=embedding,
+            client=client,
+            session_id=session_id,
         )
         stored_answer = f"{answer}\n\n{caveat}" if caveat else answer
 
@@ -343,7 +381,8 @@ async def stream_query(
         await increment_usage(client["id"], "queries")
 
         # Task B3: cache the streamed answer unless the verify pass flagged it.
-        if verification is None or not caveat:
+        # Task D3: never cache a session-personalised answer.
+        if not session_id and (verification is None or not caveat):
             await answer_cache.store_answer(
                 client["id"],
                 question,

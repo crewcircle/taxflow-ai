@@ -6,6 +6,7 @@ from taxflow.middleware.auth import get_current_client
 from taxflow.services.ato_correspondence.classifier import ATOLetterClassifier
 from taxflow.services.ato_correspondence.drafter import ATOResponseDrafter
 from taxflow.services.ato_correspondence.handlers import get_handler
+from taxflow.services.agents.research import build_client_profile
 
 router = APIRouter(prefix="/ato-response", tags=["ato-response"])
 
@@ -41,7 +42,14 @@ async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client)
     classification = await classifier.classify(extracted_text)
     handler = get_handler(classification["letter_type"])
     strategy = handler.get_strategy(classification)
-    draft = await drafter.draft(classification=classification, strategy=strategy, original_letter=extracted_text)
+    # Task D1: inject the advisory per-client profile (business_type/state/
+    # firm_style) into the drafter prompt so the letter is tuned to the firm.
+    draft = await drafter.draft(
+        classification=classification,
+        strategy=strategy,
+        original_letter=extracted_text,
+        client_profile=build_client_profile(client),
+    )
 
     result = (
         db.table("documents")
