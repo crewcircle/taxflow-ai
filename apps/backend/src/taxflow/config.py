@@ -42,11 +42,16 @@ class Settings(BaseSettings):
     # ambiguous, so these gates describe the "strong retrieval -> Haiku is enough"
     # case; anything below routes to Sonnet.
     #   - ROUTE_MIN_STRONG_CHUNKS: how many retrieved chunks we need to trust Haiku.
-    #   - ROUTE_MIN_TOP_RRF_SCORE: the top RRF (or re-rank) score must clear this.
+    #   - ROUTE_MIN_TOP_RRF_SCORE: the top RRF score must clear this.
+    #   - ROUTE_MIN_RERANK_SCORE: when RERANK_MODE == "llm", the top rerank score
+    #     (a 0-1 relevance score, a DIFFERENT scale from RRF) must clear this to
+    #     count as strong. Judged on its own scale so a weak rerank score can't
+    #     pass the much smaller RRF threshold and route a weak result to Haiku.
     # When hybrid search returns nothing (the "insufficient information" situation),
     # we always route to Sonnet.
     ROUTE_MIN_STRONG_CHUNKS: int = 5
     ROUTE_MIN_TOP_RRF_SCORE: float = 0.03
+    ROUTE_MIN_RERANK_SCORE: float = 0.5
 
     # --- pgvector index tuning (Task A5) --------------------------------------
     # ivfflat.probes for the ANN scan. Higher = better recall, more latency. Set
@@ -139,6 +144,13 @@ class Settings(BaseSettings):
     SESSION_MEMORY_ENABLED: bool = True
     SESSION_HISTORY_N: int = 5
     SESSION_SUMMARY_CHARS: int = 300
+    # Each prior QUESTION is also truncated (a few very long prior questions
+    # could otherwise blow up the block despite the answer summary cap), and the
+    # whole block is capped at SESSION_BLOCK_MAX_CHARS — once the budget is
+    # reached we stop adding older turns, so the session context can never grow
+    # unbounded regardless of SESSION_HISTORY_N.
+    SESSION_QUESTION_CHARS: int = 200
+    SESSION_BLOCK_MAX_CHARS: int = 2000
 
 
 settings = Settings()  # type: ignore[call-arg]

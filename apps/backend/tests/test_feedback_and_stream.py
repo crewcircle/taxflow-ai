@@ -124,3 +124,95 @@ async def test_stream_persists_metrics():
     assert captured_update["cache_creation_input_tokens"] == 10
     assert captured_update["wall_time_ms"] is not None
     assert any("verification" in c for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_stream_correction_swaps_metadata_and_emits_event():
+    """Stream path: a corrective pass replaces the answer, emits a `correction`
+    SSE event, and persists the corrective (Sonnet) metadata — not the streamed
+    first-pass values (should-fix #1 + #2)."""
+    import json
+
+    import taxflow.routers.query as q
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au"}
+
+    captured_update = {}
+    store_calls = []
+    mock_db = MagicMock()
+    mock_db.table.return_value.insert.return_value.execute.return_value.data = [{"id": "query-1"}]
+
+    def capture_update(payload):
+        captured_update.update(payload)
+        return mock_db.table.return_value
+
+    mock_db.table.return_value.update.side_effect = capture_update
+
+    async def fake_stream(question, client_id, embedding=None, client=None, session_id=None):
+        yield {"type": "token", "text": "first pass "}
+        yield {
+            "type": "final",
+            "citations": [{"citation": "x"}],
+            "answer": "first pass answer [1]",
+            "confidence": 0.3,
+            "model_used": "haiku",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 40,
+            "cache_creation_input_tokens": 10,
+        }
+
+    corrected = {
+        "answer": "Corrected answer [1]",
+        "citations": [{"citation": "y"}],
+        "confidence": 0.85,
+        "model_used": "sonnet",
+        "input_tokens": 300,
+        "output_tokens": 120,
+        "cache_read_input_tokens": 200,
+        "cache_creation_input_tokens": 0,
+    }
+    verification = {"overall_status": "needs_correction", "issues": [{"severity": "critical"}]}
+
+    async def store_answer(*args, **kwargs):
+        store_calls.append(args)
+
+    with patch.object(q, "get_supabase_client", return_value=mock_db), patch.object(
+        q, "embed", new=AsyncMock(return_value=[0.0] * 1536)
+    ), patch.object(q, "increment_usage", new=AsyncMock()), patch.object(
+        q.agent, "run_stream", side_effect=fake_stream
+    ), patch.object(
+        q.verify_mod, "should_verify", return_value=True
+    ), patch.object(
+        q.verify_mod, "verify_model_for", return_value="haiku"
+    ), patch.object(
+        q.verify_mod, "needs_correction", return_value=True
+    ), patch.object(
+        q.verify_mod, "build_caveat", return_value="Caveat: review claim 1."
+    ), patch.object(
+        q.verifier, "run", new=AsyncMock(return_value=verification)
+    ), patch.object(
+        q.agent, "regenerate_with_feedback", new=AsyncMock(return_value=corrected)
+    ), patch.object(
+        q.answer_cache, "store_answer", new=AsyncMock(side_effect=store_answer)
+    ):
+        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client)
+        chunks = [c async for c in response.body_iterator]
+
+    # Persisted metadata reflects the corrective (Sonnet) pass, not the first pass.
+    assert captured_update["model_used"] == "sonnet"
+    assert captured_update["confidence_score"] == 0.85
+    assert captured_update["input_tokens"] == 300
+    assert captured_update["output_tokens"] == 120
+    assert captured_update["cache_read_input_tokens"] == 200
+    assert "Corrected answer [1]" in captured_update["final_answer"]
+
+    # A `correction` event carries the authoritative corrected answer + caveat.
+    correction_chunks = [c for c in chunks if '"type": "correction"' in c]
+    assert len(correction_chunks) == 1
+    payload = json.loads(correction_chunks[0].removeprefix("data: ").strip())
+    assert "Corrected answer [1]" in payload["answer"]
+    assert payload["caveat"] == "Caveat: review claim 1."
+
+    # A needs_correction answer must NEVER be cached (B3 _safe_to_cache gate).
+    assert store_calls == []

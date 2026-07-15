@@ -51,18 +51,25 @@ async def _maybe_verify(
     embedding: list[float] | None = None,
     client: dict | None = None,
     session_id: str | None = None,
-) -> tuple[str, list[dict], dict | None, str | None]:
+) -> tuple[str, list[dict], dict | None, str | None, dict | None]:
     """Run the gated verify pass + optional single corrective pass (B2 + C3).
 
-    Returns (answer, citations, verification, caveat). Verification is None when
-    the gate decided the answer wasn't risky enough to verify. When verification
-    flags the answer, we surface a caveat and (if CORRECTIVE_PASS_ENABLED) run
-    exactly ONE corrective regeneration — never a loop.
+    Returns (answer, citations, verification, caveat, corrected_meta).
+
+    - verification is None when the gate decided the answer wasn't risky enough
+      to verify.
+    - When verification flags the answer, we surface a caveat and (if
+      CORRECTIVE_PASS_ENABLED) run exactly ONE corrective regeneration — never a
+      loop.
+    - corrected_meta is None unless a corrective pass actually produced a new
+      answer, in which case it carries the corrected generation's model_used,
+      confidence and token/cache-token metrics so the caller can persist the
+      real (Sonnet) metadata instead of the stale original values.
     """
     from taxflow.config import settings
 
     if not verify_mod.should_verify(confidence, citations, answer):
-        return answer, citations, None, None
+        return answer, citations, None, None, None
 
     model = verify_mod.verify_model_for(confidence, citations, answer)
     try:
@@ -70,10 +77,10 @@ async def _maybe_verify(
             draft=answer, citations=citations, question=question, model=model
         )
     except Exception as e:  # noqa: BLE001 - verification must not break the response
-        return answer, citations, {"overall_status": "parse_error", "issues": [], "error": str(e)}, None
+        return answer, citations, {"overall_status": "parse_error", "issues": [], "error": str(e)}, None, None
 
     if not verify_mod.needs_correction(verification):
-        return answer, citations, verification, None
+        return answer, citations, verification, None, None
 
     caveat = verify_mod.build_caveat(verification)
 
@@ -89,11 +96,26 @@ async def _maybe_verify(
                 session_id=session_id,
             )
             verification["corrective_pass"] = True
-            return corrected["answer"], corrected["citations"], verification, caveat
+            return corrected["answer"], corrected["citations"], verification, caveat, corrected
         except Exception:  # noqa: BLE001 - keep original answer if the retry fails
             verification["corrective_pass"] = False
 
-    return answer, citations, verification, caveat
+    return answer, citations, verification, caveat, None
+
+
+def _safe_to_cache(verification: dict | None) -> bool:
+    """B3 cache-safety gate.
+
+    Cache only when the answer was NOT risky (verification is None, so the gate
+    skipped verification) or when verification explicitly and cleanly passed
+    (overall_status == "verified"). Never cache a parse_error, verifier
+    exception, needs_correction or unreliable result — otherwise a risky,
+    unverified answer would be cached and future requests would skip
+    verification entirely.
+    """
+    if verification is None:
+        return True
+    return verification.get("overall_status") == "verified"
 
 
 @router.get("")
@@ -187,7 +209,7 @@ async def submit_query(
 
         # Task B2/C3: gate the verify pass and feed its output back into the
         # stored answer (caveat + one bounded corrective pass).
-        answer, citations, verification, caveat = await _maybe_verify(
+        answer, citations, verification, caveat, corrected = await _maybe_verify(
             question=body.question,
             client_id=client["id"],
             answer=result["answer"],
@@ -199,16 +221,22 @@ async def submit_query(
         )
         stored_answer = f"{answer}\n\n{caveat}" if caveat else answer
 
+        # When a corrective pass regenerated the answer, its metadata (Sonnet
+        # model, confidence, token/cache-token counts) replaces the original
+        # generation's — otherwise metrics/cost reporting would mislabel a
+        # Sonnet-corrected answer as the first-pass model.
+        meta = corrected or result
+
         update = {
             "status": "completed",
             "final_answer": stored_answer,
             "citations": citations,
-            "confidence_score": result["confidence"],
-            "model_used": result["model_used"],
-            "input_tokens": result["input_tokens"],
-            "output_tokens": result["output_tokens"],
-            "cache_read_input_tokens": result.get("cache_read_input_tokens"),
-            "cache_creation_input_tokens": result.get("cache_creation_input_tokens"),
+            "confidence_score": meta["confidence"],
+            "model_used": meta["model_used"],
+            "input_tokens": meta["input_tokens"],
+            "output_tokens": meta["output_tokens"],
+            "cache_read_input_tokens": meta.get("cache_read_input_tokens"),
+            "cache_creation_input_tokens": meta.get("cache_creation_input_tokens"),
             "wall_time_ms": int((time.time() - start) * 1000),
             "completed_at": "now()",
         }
@@ -218,19 +246,20 @@ async def submit_query(
 
         await increment_usage(client["id"], "queries")
 
-        # Task B3: cache the completed answer for this client (only when the
-        # verify pass did not flag a correction — never cache a flagged answer).
+        # Task B3: cache the completed answer for this client only when it is
+        # safe to (see _safe_to_cache — not risky, or cleanly verified). Never
+        # cache a flagged/parse_error/unverified answer.
         # Task D3: never cache a session-personalised answer (see the cache-read
         # skip above) — its "conversation so far" context is session-specific.
-        if not body.session_id and (verification is None or not caveat):
+        if not body.session_id and _safe_to_cache(verification):
             await answer_cache.store_answer(
                 client["id"],
                 body.question,
                 {
                     "answer": stored_answer,
                     "citations": citations,
-                    "confidence": result["confidence"],
-                    "model_used": result["model_used"],
+                    "confidence": meta["confidence"],
+                    "model_used": meta["model_used"],
                 },
             )
 
@@ -347,7 +376,7 @@ async def stream_query(
         # Task B2/C3: gate the verify pass in the stream path too, feeding its
         # output back (caveat + one bounded corrective pass) instead of running
         # Sonnet on every answer.
-        answer, citations, verification, caveat = await _maybe_verify(
+        answer, citations, verification, caveat, corrected = await _maybe_verify(
             question=question,
             client_id=client["id"],
             answer=final_answer,
@@ -359,6 +388,24 @@ async def stream_query(
         )
         stored_answer = f"{answer}\n\n{caveat}" if caveat else answer
 
+        # If a corrective pass regenerated the answer, its metadata replaces the
+        # streamed first-pass metadata so persisted metrics reflect the model
+        # (Sonnet) and tokens that actually produced the stored answer.
+        confidence = corrected["confidence"] if corrected else confidence
+        model_used = corrected["model_used"] if corrected else final_meta.get("model_used")
+        input_tokens = corrected["input_tokens"] if corrected else final_meta.get("input_tokens")
+        output_tokens = corrected["output_tokens"] if corrected else final_meta.get("output_tokens")
+        cache_read = (
+            corrected["cache_read_input_tokens"]
+            if corrected
+            else final_meta.get("cache_read_input_tokens")
+        )
+        cache_creation = (
+            corrected["cache_creation_input_tokens"]
+            if corrected
+            else final_meta.get("cache_creation_input_tokens")
+        )
+
         # Task C5: persist model_used/confidence/tokens/wall_time on the stream
         # path (previously only POST /query stored these), plus the B1 cache
         # tokens on both paths.
@@ -367,11 +414,11 @@ async def stream_query(
             "final_answer": stored_answer,
             "citations": citations,
             "confidence_score": confidence,
-            "model_used": final_meta.get("model_used"),
-            "input_tokens": final_meta.get("input_tokens"),
-            "output_tokens": final_meta.get("output_tokens"),
-            "cache_read_input_tokens": final_meta.get("cache_read_input_tokens"),
-            "cache_creation_input_tokens": final_meta.get("cache_creation_input_tokens"),
+            "model_used": model_used,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_creation,
             "wall_time_ms": int((time.time() - start) * 1000),
             "completed_at": "now()",
         }
@@ -380,9 +427,9 @@ async def stream_query(
         db.table("queries").update(update).eq("id", query_id).execute()
         await increment_usage(client["id"], "queries")
 
-        # Task B3: cache the streamed answer unless the verify pass flagged it.
-        # Task D3: never cache a session-personalised answer.
-        if not session_id and (verification is None or not caveat):
+        # Task B3: cache the streamed answer only when it is safe to (see
+        # _safe_to_cache). Task D3: never cache a session-personalised answer.
+        if not session_id and _safe_to_cache(verification):
             await answer_cache.store_answer(
                 client["id"],
                 question,
@@ -390,8 +437,27 @@ async def stream_query(
                     "answer": stored_answer,
                     "citations": citations,
                     "confidence": confidence,
-                    "model_used": final_meta.get("model_used"),
+                    "model_used": model_used,
                 },
+            )
+
+        # The `final`/token events above already streamed the FIRST-pass answer.
+        # If verification produced a caveat or a corrective pass replaced the
+        # answer, emit a `correction` event carrying the authoritative stored
+        # answer + citations + caveat so the UI can replace what it displayed
+        # (the streamed tokens can otherwise differ from queries.final_answer).
+        if caveat or corrected:
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "correction",
+                        "answer": stored_answer,
+                        "citations": citations,
+                        "caveat": caveat,
+                    }
+                )
+                + "\n\n"
             )
 
         verification_event = verification or {"overall_status": "not_verified", "issues": []}

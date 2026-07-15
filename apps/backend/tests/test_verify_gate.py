@@ -129,7 +129,7 @@ async def test_maybe_verify_corrective_pass_runs_exactly_once(monkeypatch):
             }
         ),
     ) as mock_regen:
-        answer, citations, verif, caveat = await q._maybe_verify(
+        answer, citations, verif, caveat, corrected = await q._maybe_verify(
             question="q", client_id="c", answer="bad", citations=[{"citation": "x"}], confidence=0.3
         )
 
@@ -138,6 +138,10 @@ async def test_maybe_verify_corrective_pass_runs_exactly_once(monkeypatch):
     assert answer == "Corrected [1]"
     assert caveat is not None
     assert verif["corrective_pass"] is True
+    # The corrective pass metadata is surfaced so the caller persists the real
+    # (Sonnet) model/confidence instead of the stale first-pass values.
+    assert corrected is not None
+    assert corrected["model_used"] == "sonnet"
 
 
 @pytest.mark.asyncio
@@ -147,11 +151,26 @@ async def test_maybe_verify_skips_when_not_risky(monkeypatch):
     with patch.object(q.verify_mod, "should_verify", return_value=False), patch.object(
         q.verifier, "run", new=AsyncMock()
     ) as mock_run:
-        answer, citations, verif, caveat = await q._maybe_verify(
+        answer, citations, verif, caveat, corrected = await q._maybe_verify(
             question="q", client_id="c", answer="good [1]", citations=[{"citation": "x"}], confidence=0.9
         )
 
     mock_run.assert_not_awaited()
     assert verif is None
     assert caveat is None
+    assert corrected is None
     assert answer == "good [1]"
+
+
+def test_safe_to_cache_gate():
+    """B3 cache-safety: only cache non-risky (None) or cleanly verified answers."""
+    import taxflow.routers.query as q
+
+    # Gate skipped verification -> answer wasn't risky -> safe to cache.
+    assert q._safe_to_cache(None) is True
+    # Verification ran and passed cleanly -> safe to cache.
+    assert q._safe_to_cache({"overall_status": "verified", "issues": []}) is True
+    # Risky/failed states must never be cached (would skip future verification).
+    assert q._safe_to_cache({"overall_status": "parse_error", "issues": []}) is False
+    assert q._safe_to_cache({"overall_status": "needs_correction", "issues": []}) is False
+    assert q._safe_to_cache({"overall_status": "unreliable", "issues": []}) is False

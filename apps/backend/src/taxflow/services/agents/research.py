@@ -55,9 +55,12 @@ def route_model(signals: dict) -> str:
                      global candidate pool.
       - insufficient: True when hybrid search returned nothing (the "insufficient
                      information" retrieval situation).
-      - rerank_top_score: optional; from C1's re-ranker when present. When given it
-                     is treated the same way as top_score for the strong-retrieval
-                     gate.
+      - rerank_top_score: optional; from C1's LLM re-ranker when present. This is
+                     a 0-1 relevance score on a DIFFERENT scale from the RRF
+                     top_score, so it is compared against its own threshold
+                     (ROUTE_MIN_RERANK_SCORE) — NOT the RRF threshold. A weak
+                     rerank score must not sneak past the (much smaller) RRF
+                     threshold and route a weak result to Haiku.
 
     Strong, confident retrieval -> Haiku is enough. Anything weak or ambiguous
     routes to Sonnet: we deliberately bias toward Sonnet so a mis-tuned router
@@ -69,13 +72,15 @@ def route_model(signals: dict) -> str:
     num_chunks = signals.get("num_chunks", 0)
     top_score = signals.get("top_score", 0.0) or 0.0
     rerank_top = signals.get("rerank_top_score")
-    if rerank_top is not None:
-        top_score = max(top_score, rerank_top)
 
-    strong = (
-        num_chunks >= settings.ROUTE_MIN_STRONG_CHUNKS
-        and top_score >= settings.ROUTE_MIN_TOP_RRF_SCORE
-    )
+    # Retrieval is "strong" when the RRF top score clears the RRF threshold OR
+    # (when an LLM rerank score is present) that rerank score clears its own
+    # 0-1-scale threshold. Each score is judged on its own scale.
+    score_strong = top_score >= settings.ROUTE_MIN_TOP_RRF_SCORE
+    if rerank_top is not None:
+        score_strong = score_strong or rerank_top >= settings.ROUTE_MIN_RERANK_SCORE
+
+    strong = num_chunks >= settings.ROUTE_MIN_STRONG_CHUNKS and score_strong
     return "haiku" if strong else "sonnet"
 
 
@@ -178,14 +183,24 @@ def build_session_block(history: list[dict]) -> str:
     """
     if not history:
         return ""
-    lines = ["Conversation so far (prior turns in this session, for context only):"]
+    header = "Conversation so far (prior turns in this session, for context only):"
+    lines = [header]
+    total = len(header)
     for turn in history:
         q = (turn.get("question") or "").strip()
         a = (turn.get("answer") or "").strip()
+        if len(q) > settings.SESSION_QUESTION_CHARS:
+            q = q[: settings.SESSION_QUESTION_CHARS] + "…"
         summary = a[: settings.SESSION_SUMMARY_CHARS]
         if len(a) > settings.SESSION_SUMMARY_CHARS:
             summary += "…"
-        lines.append(f"- Q: {q}\n  A: {summary}")
+        line = f"- Q: {q}\n  A: {summary}"
+        # Total-block budget: stop adding turns once we'd exceed the cap so a
+        # long session can't blow up prompt size/cost despite SESSION_HISTORY_N.
+        if total + len(line) + 1 > settings.SESSION_BLOCK_MAX_CHARS:
+            break
+        lines.append(line)
+        total += len(line) + 1
     return "\n".join(lines)
 
 

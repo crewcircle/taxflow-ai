@@ -231,6 +231,8 @@ export default function QueryPage() {
             text?: string;
             citations?: SourceCitation[];
             query_id?: string;
+            answer?: string;
+            caveat?: string | null;
             overall_status?: Verification["overall_status"];
             issues?: VerificationIssue[];
           } = JSON.parse(event.data);
@@ -242,6 +244,16 @@ export default function QueryPage() {
             citations = parsed.citations ?? [];
             setResult({ answer, citations, model_used: "haiku", query_id: parsed.query_id ?? null });
             setVerifying(true);
+          } else if (parsed.type === "correction") {
+            // The verify pass produced a caveat or a corrective regeneration
+            // replaced the streamed answer. Replace what we displayed so the UI
+            // matches the authoritative stored answer (queries.final_answer).
+            answer = parsed.answer ?? answer;
+            citations = parsed.citations ?? citations;
+            setStreamedAnswer(answer);
+            setResult((prev) =>
+              prev ? { ...prev, answer, citations } : { answer, citations, model_used: "haiku", query_id: null },
+            );
           } else if (parsed.type === "verification") {
             setVerifying(false);
             setVerification({
