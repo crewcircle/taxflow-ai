@@ -144,36 +144,6 @@ export default function QueryPage() {
       .catch(() => {});
   }, []);
 
-  // Session continuity: the first time history loads with content, resume
-  // straight into the most recent conversation (answer + sources) as if
-  // the user never left - but leave the ask box empty so they're prompted
-  // for a follow-up rather than seeing their old question repeated.
-  useEffect(() => {
-    if (hasAutoLoaded.current || history.length === 0) return;
-    hasAutoLoaded.current = true;
-    const mostRecent = history[0];
-    const t = setTimeout(async () => {
-      try {
-        const response = await fetch(`/api/query/${mostRecent.id}`);
-        if (!response.ok) return;
-        const data = await response.json();
-        setResult({
-          answer: data.final_answer ?? "",
-          citations: data.citations ?? [],
-          model_used: data.model_used,
-          query_id: data.id ?? mostRecent.id,
-        });
-        setClientRef(mostRecent.client_ref ?? "");
-        if (data.verification_result?.overall_status) {
-          setVerification(data.verification_result);
-        }
-      } catch {
-        // Non-fatal - falls back to the empty-state prompt.
-      }
-    }, 0);
-    return () => clearTimeout(t);
-  }, [history]);
-
   function resetPane() {
     setResult(null);
     setStreamedAnswer("");
@@ -184,21 +154,54 @@ export default function QueryPage() {
     setError(null);
   }
 
+  // Fetches a past query's full detail (answer + citations + verification)
+  // and shows it exactly as it was, so browsing history reads like a real
+  // conversation log rather than just a list of question text to re-ask.
+  async function loadConversation(item: QueryListItem) {
+    resetPane();
+    setQuestion("");
+    setClientRef(item.client_ref ?? "");
+    try {
+      const response = await fetch(`/api/query/${item.id}`);
+      if (!response.ok) return;
+      const data = await response.json();
+      setResult({
+        answer: data.final_answer ?? "",
+        citations: data.citations ?? [],
+        model_used: data.model_used,
+        query_id: data.id ?? item.id,
+      });
+      if (data.verification_result?.overall_status) {
+        setVerification(data.verification_result);
+      }
+    } catch {
+      setError("Could not load this question");
+    }
+  }
+
+  // Session continuity: the first time history loads with content, resume
+  // straight into the most recent conversation as if the user never left.
+  useEffect(() => {
+    if (hasAutoLoaded.current || history.length === 0) return;
+    hasAutoLoaded.current = true;
+    const t = setTimeout(() => loadConversation(history[0]), 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [history]);
+
   function handleNewQuestion() {
     setQuestion("");
     setClientRef("");
     resetPane();
   }
 
-  // Selecting a past question - from the sidebar or a scenario tag - loads
-  // it back into the ask box for re-asking. It does not replay the old
-  // answer as if it just happened live.
+  // Selecting a past question - from the sidebar or a scenario tag - shows
+  // that conversation (answer + sources), same as the auto-loaded most
+  // recent one. The ask box is left as-is so the user can type a follow-up.
   function handleSelectHistory(id: string) {
     const item = history.find((h) => h.id === id);
     if (!item) return;
-    resetPane();
-    setQuestion(item.question);
-    setClientRef(item.client_ref ?? "");
+    loadConversation(item);
   }
 
   async function handleSubmit() {

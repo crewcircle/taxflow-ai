@@ -4,6 +4,7 @@ import { CheckCircle2, FileWarning, MessageSquare, ShieldCheck } from "lucide-re
 import { createClient } from "@/lib/supabase/server";
 import { MarketingHeader } from "@/components/MarketingHeader";
 import { MarketingFooter } from "@/components/MarketingFooter";
+import { DemoCallout } from "@/components/DemoCallout";
 import { Button } from "@/components/ui/button";
 
 const FEATURES = [
@@ -92,6 +93,8 @@ export default async function Home() {
                 <Link href="/pricing">See pricing</Link>
               </Button>
             </div>
+
+            <DemoCallout />
           </div>
         </section>
 
