@@ -169,6 +169,10 @@ export default function QueryPage() {
           query_id: data.id ?? mostRecent.id,
         });
         setClientRef(mostRecent.client_ref ?? "");
+        // Continue the restored conversation: reuse its session_id so a typed
+        // follow-up folds into that session's context rather than starting a new
+        // one. Fall back to the freshly-minted id if the row predates session_id.
+        if (data.session_id) setSessionId(data.session_id);
         if (data.verification_result?.overall_status) {
           setVerification(data.verification_result);
         }
