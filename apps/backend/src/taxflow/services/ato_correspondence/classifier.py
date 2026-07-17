@@ -44,5 +44,9 @@ class ATOLetterClassifier:
             system=system,
             messages=[{"role": "user", "content": extracted_text}],
         )
-        text = "".join(block.text for block in response.content if block.type == "text")
+        text = "".join(block.text for block in response.content if block.type == "text").strip()
+        # Models often wrap JSON in ```json fences despite instructions.
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text
+            text = text.rsplit("```", 1)[0].strip()
         return json.loads(text)
