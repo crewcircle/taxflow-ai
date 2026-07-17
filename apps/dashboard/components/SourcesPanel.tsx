@@ -7,6 +7,7 @@ export interface SourceCitation {
   url: string;
   excerpt: string;
   source_object_key?: string | null;
+  last_scraped_at?: string | null;
 }
 
 interface SourcesPanelProps {
@@ -17,6 +18,7 @@ interface CitationGroup {
   citation: string;
   url: string;
   sourceObjectKey: string | null;
+  lastScrapedAt: string | null;
   occurrences: { index: number; excerpt: string }[];
 }
 
@@ -31,11 +33,16 @@ function groupByCitation(citations: SourceCitation[]): CitationGroup[] {
         citation: c.citation,
         url: c.url,
         sourceObjectKey: c.source_object_key ?? null,
+        lastScrapedAt: c.last_scraped_at ?? null,
         occurrences: [{ index: i, excerpt: c.excerpt }],
       });
     }
   });
   return Array.from(groups.values());
+}
+
+function formatRefreshedDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-AU", { year: "numeric", month: "short" });
 }
 
 export function SourcesPanel({ citations }: SourcesPanelProps) {
@@ -74,6 +81,11 @@ export function SourcesPanel({ citations }: SourcesPanelProps) {
                     </span>
                   )}
                 </div>
+                {group.lastScrapedAt && (
+                  <p className="mb-1.5 text-[10px] text-muted-foreground">
+                    Refreshed {formatRefreshedDate(group.lastScrapedAt)}
+                  </p>
+                )}
                 <div className="mb-2 space-y-1.5">
                   {group.occurrences.map((occ) => (
                     <p key={occ.index} id={`source-${occ.index + 1}`} className="scroll-mt-4 text-muted-foreground">

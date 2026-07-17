@@ -11,6 +11,48 @@ _encoder = tiktoken.get_encoding("cl100k_base")
 
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
+# ATO rulings often name the specific ruling they replace in their own preamble
+# (e.g. "This Ruling replaces TR 2020/4"). When a newly-ingested document says
+# so explicitly, mark the referenced ruling is_current = false so retrieval
+# stops surfacing it as if it were still authoritative. This only catches
+# direct citation-to-citation supersession, not conceptual replacement (e.g.
+# "the third-party debt test replaces the arm's length debt test" names a
+# concept, not a ruling number) - those still need a human to flag.
+_SUPERSESSION_PATTERNS = [
+    re.compile(
+        r"(?:replaces?|withdraws?|supersedes?)\s+(?:Taxation Ruling|Taxation Determination|"
+        r"Practical Compliance Guideline)?\s*((?:TR|TD|PCG)\s?\d{4}/\d+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"((?:TR|TD|PCG)\s?\d{4}/\d+)\s+(?:is|was|has been)\s+(?:withdrawn|replaced|superseded)",
+        re.IGNORECASE,
+    ),
+]
+
+
+def _detect_superseded_citations(text: str) -> set[str]:
+    found: set[str] = set()
+    for pattern in _SUPERSESSION_PATTERNS:
+        for match in pattern.finditer(text):
+            citation = re.sub(r"\s+", " ", match.group(1).upper()).strip()
+            citation = re.sub(r"^(TR|TD|PCG)(\d)", r"\1 \2", citation)
+            found.add(citation)
+    return found
+
+
+def _mark_superseded(citations: set[str]) -> int:
+    if not citations:
+        return 0
+    conn = psycopg2.connect(settings.DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("UPDATE knowledge_chunks SET is_current = false WHERE citation = ANY(%s)", (list(citations),))
+    count = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    return count
+
 
 def chunk_text(text: str, chunk_tokens: int | None = None, overlap_tokens: int | None = None) -> list[str]:
     """Split into ~chunk_tokens segments at sentence boundaries with token overlap."""
@@ -94,4 +136,12 @@ async def process_document(text: str, metadata: dict, source_object_key: str | N
         )
         for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))
     ]
-    return await asyncio.to_thread(_upsert_chunks, rows)
+    chunk_count = await asyncio.to_thread(_upsert_chunks, rows)
+
+    superseded = _detect_superseded_citations(text) - {metadata["citation"]}
+    if superseded:
+        marked = await asyncio.to_thread(_mark_superseded, superseded)
+        if marked:
+            print(f"    {metadata['citation']} marks {superseded} as superseded ({marked} chunks)")
+
+    return chunk_count
