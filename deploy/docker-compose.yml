@@ -4,8 +4,9 @@ services:
       context: ../apps/backend
     restart: unless-stopped
     env_file: /opt/taxflow/.env
-    # 1 worker on the 1GB droplet; bump to 2 when the droplet grows
-    command: ["uv", "run", "uvicorn", "taxflow.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+    # 2 workers on the 4GB RAM / 2 vCPU droplet (one per vCPU); matches the Dockerfile CMD.
+    # NOTE: keep the DB pool (POOL_MAX_CONN, Task A1) sized so 2 workers together stay under Supabase's connection limit.
+    command: ["uv", "run", "uvicorn", "taxflow.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
     expose:
       - "8000"
     healthcheck:

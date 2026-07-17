@@ -3,6 +3,7 @@ from datetime import date
 from anthropic import AsyncAnthropic
 
 from taxflow.config import settings
+from taxflow.services.prompt_cache import cacheable_system
 
 SYSTEM_PROMPT = """You are drafting a formal letter to the Australian Taxation Office on behalf of
 an Australian taxpayer. This is a professional correspondence.
@@ -25,20 +26,35 @@ class ATOResponseDrafter:
     def __init__(self) -> None:
         self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-    async def draft(self, classification: dict, strategy: dict, original_letter: str) -> dict:
+    async def draft(
+        self,
+        classification: dict,
+        strategy: dict,
+        original_letter: str,
+        client_profile: str = "",
+    ) -> dict:
         today = date.today().isoformat()
+        # Task D1: prepend the advisory client-profile steering string (built from
+        # business_type/state/firm_style) so the letter is tuned to the firm's
+        # industry/jurisdiction. Advisory only; empty string reproduces the
+        # original prompt exactly.
+        profile_line = f"{client_profile}\n\n" if client_profile else ""
         user = (
+            f"{profile_line}"
             f"ATO Reference: {classification.get('ato_reference')}\n"
             f"Our reference: TF-{today}-{classification.get('ato_reference')}\n"
             f"Letter type: {classification.get('letter_type')}\n"
             f"Response strategy: {strategy['response_strategy']}\n\n"
             f"Original ATO letter:\n{original_letter}"
         )
+        # The system prompt is large and fully static; cache it as a stable prefix
+        # (Task B1). The per-letter details stay in the user message.
+        system_param = cacheable_system(SYSTEM_PROMPT)
         response = await self._client.messages.create(
             model=settings.ANTHROPIC_HAIKU_MODEL,
             max_tokens=1200,
             temperature=0.1,
-            system=SYSTEM_PROMPT,
+            system=system_param,
             messages=[{"role": "user", "content": user}],
         )
         letter = "".join(block.text for block in response.content if block.type == "text")

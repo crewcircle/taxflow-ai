@@ -5,9 +5,8 @@ import asyncio
 import xml.etree.ElementTree as ET
 
 import httpx
-import psycopg2
 
-from taxflow.config import settings
+from taxflow.db import get_pg_conn
 
 FEEDS = [
     # (feed_url, source, alert_type)
@@ -39,22 +38,21 @@ async def check_feeds() -> int:
         return 0
 
     def _insert() -> int:
-        conn = psycopg2.connect(settings.DATABASE_URL)
-        cur = conn.cursor()
-        inserted = 0
-        for item in items:
-            cur.execute("SELECT 1 FROM regulatory_alerts WHERE url = %s", (item["url"],))
-            if cur.fetchone():
-                continue
-            cur.execute(
-                "INSERT INTO regulatory_alerts (source, alert_type, title, url) VALUES (%s, %s, %s, %s)",
-                (item["source"], item["alert_type"], item["title"], item["url"]),
-            )
-            inserted += 1
-        conn.commit()
-        cur.close()
-        conn.close()
-        return inserted
+        with get_pg_conn() as conn:
+            cur = conn.cursor()
+            inserted = 0
+            for item in items:
+                cur.execute("SELECT 1 FROM regulatory_alerts WHERE url = %s", (item["url"],))
+                if cur.fetchone():
+                    continue
+                cur.execute(
+                    "INSERT INTO regulatory_alerts (source, alert_type, title, url) VALUES (%s, %s, %s, %s)",
+                    (item["source"], item["alert_type"], item["title"], item["url"]),
+                )
+                inserted += 1
+            conn.commit()
+            cur.close()
+            return inserted
 
     return await asyncio.to_thread(_insert)
 
