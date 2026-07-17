@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -51,20 +53,44 @@ interface QueryResult {
 
 const MAX_CHARS = 2000;
 
+// react-markdown treats "[1]" as plain text (it isn't valid link syntax on
+// its own) - rewrite citation markers into real markdown links pointing at
+// the matching source anchor before handing the text to the renderer.
+function linkifyCitations(text: string): string {
+  return text.replace(/\[(\d+)\]/g, "[[$1]](#source-$1)");
+}
+
+const markdownComponents: Components = {
+  h1: ({ children }) => <h3 className="mt-4 mb-1.5 text-base font-semibold first:mt-0">{children}</h3>,
+  h2: ({ children }) => <h3 className="mt-4 mb-1.5 text-base font-semibold first:mt-0">{children}</h3>,
+  h3: ({ children }) => <h4 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h4>,
+  p: ({ children }) => <p className="mb-2 text-sm leading-relaxed last:mb-0">{children}</p>,
+  ul: ({ children }) => <ul className="mb-2 list-disc space-y-1 pl-5 text-sm">{children}</ul>,
+  ol: ({ children }) => <ol className="mb-2 list-decimal space-y-1 pl-5 text-sm">{children}</ol>,
+  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
+  code: ({ children }) => <code className="rounded bg-muted px-1 py-0.5 text-xs">{children}</code>,
+  table: ({ children }) => (
+    <div className="mb-2 overflow-x-auto">
+      <table className="w-full border-collapse text-sm">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => <th className="border border-border px-2 py-1 text-left font-semibold">{children}</th>,
+  td: ({ children }) => <td className="border border-border px-2 py-1">{children}</td>,
+  a: ({ href, children }) => (
+    <a href={href} className="font-medium text-accent hover:underline">
+      {children}
+    </a>
+  ),
+};
+
 function AnswerWithCitationLinks({ text }: { text: string }) {
-  const parts = text.split(/(\[\d+\])/g);
   return (
-    <p className="whitespace-pre-wrap text-sm">
-      {parts.map((part, i) => {
-        const match = part.match(/^\[(\d+)\]$/);
-        if (!match) return <span key={i}>{part}</span>;
-        return (
-          <a key={i} href={`#source-${match[1]}`} className="font-medium text-accent hover:underline">
-            {part}
-          </a>
-        );
-      })}
-    </p>
+    <div>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {linkifyCitations(text)}
+      </ReactMarkdown>
+    </div>
   );
 }
 

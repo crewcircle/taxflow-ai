@@ -45,6 +45,16 @@ function formatRefreshedDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-AU", { year: "numeric", month: "short" });
 }
 
+// Appends the browser-native Text Fragments directive (#:~:text=) so
+// Chrome/Edge auto-scroll to and highlight the matching passage on the
+// external page - the only highlighting lever available for sources we
+// don't hold a copy of. Degrades gracefully (plain link) elsewhere.
+function withTextFragment(url: string, excerpt: string): string {
+  const words = excerpt.replace(/…$/, "").trim().split(/\s+/).slice(0, 12).join(" ");
+  if (!words) return url;
+  return `${url}#:~:text=${encodeURIComponent(words)}`;
+}
+
 export function SourcesPanel({ citations }: SourcesPanelProps) {
   const groups = groupByCitation(citations);
 
@@ -96,7 +106,7 @@ export function SourcesPanel({ citations }: SourcesPanelProps) {
                 <div className="flex flex-wrap gap-3">
                   {group.url && (
                     <a
-                      href={group.url}
+                      href={withTextFragment(group.url, group.occurrences[0].excerpt)}
                       target="_blank"
                       rel="noreferrer"
                       className="inline-flex items-center gap-1 text-accent hover:underline"
@@ -107,12 +117,13 @@ export function SourcesPanel({ citations }: SourcesPanelProps) {
                   )}
                   {group.sourceObjectKey && (
                     <a
-                      href={`/api/knowledge/source/${group.sourceObjectKey}`}
-                      target="_blank"
-                      rel="noreferrer"
+                      href={`/dashboard/sources/${group.sourceObjectKey}?${new URLSearchParams({
+                        excerpt: group.occurrences[0].excerpt,
+                        citation: group.citation,
+                      })}`}
                       className="inline-flex items-center gap-1 text-accent hover:underline"
                     >
-                      View original PDF
+                      View original PDF - highlighted
                       <ExternalLink className="size-3" />
                     </a>
                   )}

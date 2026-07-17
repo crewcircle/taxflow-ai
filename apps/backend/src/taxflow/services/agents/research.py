@@ -125,6 +125,21 @@ class ResearchAgent:
         confidence += min(len(chunks), 8) * 0.02  # retrieval depth, up to +0.16
         return round(min(confidence, 0.95), 2)
 
+    def _trim_excerpt(self, content: str, max_len: int = 200) -> str:
+        """Trim to a sentence or word boundary instead of a hard character
+        cut, so the excerpt reads as an actual quoted passage - this is what
+        the UI shows as "the relevant section" of a source, and what a
+        deep-link's browser-side text search matches against."""
+        if len(content) <= max_len:
+            return content
+        window = content[: max_len + 40]
+        sentence_end = max(window.rfind(". "), window.rfind("? "), window.rfind("! "))
+        if sentence_end > max_len * 0.5:
+            return window[: sentence_end + 1]
+        space = content.rfind(" ", 0, max_len)
+        cutoff = space if space > 0 else max_len
+        return content[:cutoff].rstrip(",;: ") + "…"
+
     def _parse_citations(self, answer: str, chunks: list[dict]) -> list[dict]:
         cited_numbers = {int(n) for n in CITATION_PATTERN.findall(answer)}
         citations = []
@@ -136,7 +151,7 @@ class ResearchAgent:
                     {
                         "citation": chunk["citation"],
                         "url": chunk["source_url"],
-                        "excerpt": chunk["content"][:200],
+                        "excerpt": self._trim_excerpt(chunk["content"]),
                         "source_object_key": chunk.get("source_object_key"),
                         "last_scraped_at": last_scraped_at.isoformat() if last_scraped_at else None,
                     }
