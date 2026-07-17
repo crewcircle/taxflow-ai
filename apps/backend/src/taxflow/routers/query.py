@@ -159,7 +159,9 @@ async def submit_query(
         else await answer_cache.get_cached_answer(client["id"], body.question)
     )
     if cached is not None:
-        query_id = await asyncio.to_thread(_persist_cached_query, db, client, body, cached, start)
+        query_id = await asyncio.to_thread(
+            _persist_cached_query, db, client, body.question, body.module, cached, start
+        )
         await increment_usage(client["id"], "queries")
         return {
             "query_id": query_id,
@@ -193,12 +195,15 @@ async def submit_query(
         )
         return row.data[0]["id"]
 
-    embedding, query_id = await asyncio.gather(
-        embed(body.question),
-        asyncio.to_thread(_insert_query_row),
-    )
+    embed_task = asyncio.create_task(embed(body.question))
+    try:
+        query_id = await asyncio.to_thread(_insert_query_row)
+    except Exception:
+        embed_task.cancel()
+        raise
 
     try:
+        embedding = await embed_task
         result = await agent.run(
             question=body.question,
             client_id=client["id"],
@@ -267,8 +272,8 @@ async def submit_query(
             "query_id": query_id,
             "answer": stored_answer,
             "citations": citations,
-            "confidence": result["confidence"],
-            "model_used": result["model_used"],
+            "confidence": meta["confidence"],
+            "model_used": meta["model_used"],
         }
 
     except Exception as e:
@@ -276,7 +281,9 @@ async def submit_query(
         raise HTTPException(status_code=500, detail=f"Query failed: {e}") from e
 
 
-def _persist_cached_query(db, client, body: QueryRequest, cached: dict, start: float) -> str:
+def _persist_cached_query(
+    db, client, question: str, module: str, cached: dict, start: float, extra: dict | None = None
+) -> str:
     """Insert a completed queries row for a cache hit so history + metrics still
     reflect the served answer (marked model_used='cache')."""
     row = (
@@ -285,8 +292,8 @@ def _persist_cached_query(db, client, body: QueryRequest, cached: dict, start: f
             {
                 "client_id": client["id"],
                 "user_email": client["email"],
-                "question": body.question,
-                "module": body.module,
+                "question": question,
+                "module": module,
                 "status": "completed",
                 "final_answer": cached["answer"],
                 "citations": cached["citations"],
@@ -294,6 +301,7 @@ def _persist_cached_query(db, client, body: QueryRequest, cached: dict, start: f
                 "model_used": "cache",
                 "wall_time_ms": int((time.time() - start) * 1000),
                 "completed_at": "now()",
+                **(extra or {}),
             }
         )
         .execute()
@@ -319,12 +327,9 @@ async def stream_query(
     "issues": [...]} event checked against this same answer.
     """
     db = get_supabase_client()
+    start = time.time()
 
-    # As in POST /query: auth + trial gate (Depends) have already passed before
-    # this body runs, so the paid embed cannot fire for a 401/402 request. Overlap
-    # the embed with the queries-row insert (Task A4) and reuse the single vector
-    # for both global and firm retrieval inside run_stream().
-    def _insert_query_row() -> str:
+    def _insert_query_row(status: str, extra: dict | None = None) -> str:
         row = (
             db.table("queries")
             .insert(
@@ -333,21 +338,78 @@ async def stream_query(
                     "user_email": client["email"],
                     "question": question,
                     "module": "research",
-                    "status": "processing",
+                    "status": status,
                     "client_ref": client_ref,
                     "session_id": session_id,
+                    **(extra or {}),
                 }
             )
             .execute()
         )
         return row.data[0]["id"]
 
-    embedding, query_id = await asyncio.gather(
-        embed(question),
-        asyncio.to_thread(_insert_query_row),
+    # Task B3: the dashboard streams every query, so the cost-saving cache must
+    # be read on THIS path too (not just POST /query) — a hit skips OpenAI embed
+    # + Anthropic generation entirely. Task D3: session-personalised queries
+    # (session_id present) bypass the cache; their answer depends on prior turns.
+    cached = (
+        None
+        if session_id
+        else await answer_cache.get_cached_answer(client["id"], question)
     )
+    if cached is not None:
+        query_id = await asyncio.to_thread(
+            _persist_cached_query,
+            db,
+            client,
+            question,
+            "research",
+            cached,
+            start,
+            {"client_ref": client_ref},
+        )
+        await increment_usage(client["id"], "queries")
 
-    start = time.time()
+        async def cached_stream():
+            yield f"data: {json.dumps({'type': 'token', 'text': cached['answer']})}\n\n"
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "final",
+                        "citations": cached["citations"],
+                        "query_id": query_id,
+                        "model_used": "cache",
+                        "confidence": cached["confidence"],
+                        "cached": True,
+                    }
+                )
+                + "\n\n"
+            )
+            yield f"data: {json.dumps({'type': 'verification', 'overall_status': 'not_verified', 'issues': []})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(cached_stream(), media_type="text/event-stream")
+
+    # As in POST /query: auth + trial gate (Depends) have already passed before
+    # this body runs, so the paid embed cannot fire for a 401/402 request. Overlap
+    # the embed with the queries-row insert (Task A4) and reuse the single vector
+    # for both global and firm retrieval inside run_stream(). Insert first, then
+    # await the embed under the query_id so an embed failure marks the row failed
+    # rather than leaving it stuck in "processing".
+    embed_task = asyncio.create_task(embed(question))
+    try:
+        query_id = await asyncio.to_thread(_insert_query_row, "processing")
+    except Exception:
+        embed_task.cancel()
+        raise
+    try:
+        embedding = await embed_task
+    except Exception as e:
+        db.table("queries").update({"status": "failed", "error_message": str(e)}).eq(
+            "id", query_id
+        ).execute()
+        raise HTTPException(status_code=500, detail=f"Query failed: {e}") from e
 
     async def generate():
         answer_parts: list[str] = []
@@ -367,8 +429,21 @@ async def stream_query(
             elif event["type"] == "final":
                 citations = event["citations"]
                 final_meta = event
-                # The client only needs citations + query_id in the final event.
-                yield f"data: {json.dumps({'type': 'final', 'citations': citations, 'query_id': query_id})}\n\n"
+                # Surface the routed model + confidence so the UI reflects the
+                # actual model (Haiku or routed Sonnet) instead of hardcoding one.
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type": "final",
+                            "citations": citations,
+                            "query_id": query_id,
+                            "model_used": event.get("model_used"),
+                            "confidence": event.get("confidence"),
+                        }
+                    )
+                    + "\n\n"
+                )
 
         final_answer = final_meta.get("answer") or "".join(answer_parts)
         confidence = final_meta.get("confidence", 0.0)
@@ -455,6 +530,8 @@ async def stream_query(
                         "answer": stored_answer,
                         "citations": citations,
                         "caveat": caveat,
+                        "model_used": model_used,
+                        "confidence": confidence,
                     }
                 )
                 + "\n\n"

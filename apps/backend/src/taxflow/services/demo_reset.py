@@ -11,6 +11,10 @@ def reset_demo_data() -> None:
 
         if demo_ids:
             cur.execute("DELETE FROM documents WHERE client_id = ANY(%s)", (demo_ids,))
+            # query_feedback FK cascades from queries (migration 020), but delete
+            # it explicitly first so the reset also works before that migration
+            # is applied and doesn't rely on cascade ordering.
+            cur.execute("DELETE FROM query_feedback WHERE client_id = ANY(%s)", (demo_ids,))
             cur.execute("DELETE FROM queries WHERE client_id = ANY(%s)", (demo_ids,))
             conn.commit()
             print(f"demo reset: cleared queries/documents for {len(demo_ids)} demo client(s)")

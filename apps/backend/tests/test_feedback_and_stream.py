@@ -111,6 +111,8 @@ async def test_stream_persists_metrics():
         q.verify_mod, "should_verify", return_value=False
     ), patch.object(
         q.answer_cache, "store_answer", new=AsyncMock()
+    ), patch.object(
+        q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=None)
     ):
         response = await q.stream_query(question="q", client=fake_client, _trial=fake_client)
         # Drain the SSE generator.
@@ -195,6 +197,8 @@ async def test_stream_correction_swaps_metadata_and_emits_event():
         q.agent, "regenerate_with_feedback", new=AsyncMock(return_value=corrected)
     ), patch.object(
         q.answer_cache, "store_answer", new=AsyncMock(side_effect=store_answer)
+    ), patch.object(
+        q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=None)
     ):
         response = await q.stream_query(question="q", client=fake_client, _trial=fake_client)
         chunks = [c async for c in response.body_iterator]
@@ -216,3 +220,49 @@ async def test_stream_correction_swaps_metadata_and_emits_event():
 
     # A needs_correction answer must NEVER be cached (B3 _safe_to_cache gate).
     assert store_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stream_cache_hit_skips_embed_and_generation():
+    """Stream path: a cache hit must serve the stored answer WITHOUT calling the
+    paid OpenAI embed or Anthropic generation, and emit cached: true (review #2)."""
+    import json
+
+    import taxflow.routers.query as q
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au"}
+    mock_db = MagicMock()
+    mock_db.table.return_value.insert.return_value.execute.return_value.data = [{"id": "cached-query-1"}]
+
+    cached = {
+        "answer": "Cached answer [1]",
+        "citations": [{"citation": "x"}],
+        "confidence": 0.9,
+        "model_used": "haiku",
+    }
+
+    embed_mock = AsyncMock(return_value=[0.0] * 1536)
+    run_stream_mock = MagicMock()
+
+    with patch.object(q, "get_supabase_client", return_value=mock_db), patch.object(
+        q, "embed", new=embed_mock
+    ), patch.object(q, "increment_usage", new=AsyncMock()), patch.object(
+        q.agent, "run_stream", new=run_stream_mock
+    ), patch.object(
+        q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=cached)
+    ):
+        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client)
+        chunks = [c async for c in response.body_iterator]
+
+    # No paid work on a cache hit.
+    embed_mock.assert_not_awaited()
+    run_stream_mock.assert_not_called()
+
+    # The cached answer is streamed and the final event marks it cached.
+    joined = "".join(chunks)
+    assert "Cached answer [1]" in joined
+    final_chunk = next(c for c in chunks if '"type": "final"' in c)
+    payload = json.loads(final_chunk.removeprefix("data: ").strip())
+    assert payload["cached"] is True
+    assert payload["model_used"] == "cache"
+    assert chunks[-1] == "data: [DONE]\n\n"

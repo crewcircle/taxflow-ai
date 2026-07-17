@@ -96,6 +96,11 @@ function VerificationBadge({ verification }: { verification: Verification }) {
 export default function QueryPage() {
   const [question, setQuestion] = useState("");
   const [clientRef, setClientRef] = useState("");
+  // Session memory (Task D3): a UUID minted per conversation and reused across
+  // every follow-up so the backend can load prior turns for this session. Reset
+  // to a fresh id on "new question" / when loading a different past query, so
+  // context never leaks across unrelated conversations.
+  const [sessionId, setSessionId] = useState<string>(() => crypto.randomUUID());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<QueryResult | null>(null);
@@ -187,6 +192,7 @@ export default function QueryPage() {
   function handleNewQuestion() {
     setQuestion("");
     setClientRef("");
+    setSessionId(crypto.randomUUID());
     resetPane();
   }
 
@@ -199,6 +205,9 @@ export default function QueryPage() {
     resetPane();
     setQuestion(item.question);
     setClientRef(item.client_ref ?? "");
+    // Re-asking a past question starts a fresh conversation, so mint a new
+    // session id rather than folding it into the current session's context.
+    setSessionId(crypto.randomUUID());
   }
 
   async function handleSubmit() {
@@ -214,7 +223,7 @@ export default function QueryPage() {
 
       const streamUrl = `/api/query/stream?question=${encodeURIComponent(question)}${
         clientRef.trim() ? `&client_ref=${encodeURIComponent(clientRef.trim())}` : ""
-      }`;
+      }&session_id=${encodeURIComponent(sessionId)}`;
       const source = new EventSource(streamUrl);
       let answer = "";
       let citations: SourceCitation[] = [];
@@ -233,6 +242,7 @@ export default function QueryPage() {
             query_id?: string;
             answer?: string;
             caveat?: string | null;
+            model_used?: string | null;
             overall_status?: Verification["overall_status"];
             issues?: VerificationIssue[];
           } = JSON.parse(event.data);
@@ -242,7 +252,15 @@ export default function QueryPage() {
             setStreamedAnswer(answer);
           } else if (parsed.type === "final") {
             citations = parsed.citations ?? [];
-            setResult({ answer, citations, model_used: "haiku", query_id: parsed.query_id ?? null });
+            // A cache hit streams the whole answer as one token event, so pick it
+            // up here if we didn't accumulate it token-by-token.
+            if (!answer && parsed.answer) answer = parsed.answer;
+            setResult({
+              answer,
+              citations,
+              model_used: parsed.model_used ?? null,
+              query_id: parsed.query_id ?? null,
+            });
             setVerifying(true);
           } else if (parsed.type === "correction") {
             // The verify pass produced a caveat or a corrective regeneration
@@ -252,7 +270,9 @@ export default function QueryPage() {
             citations = parsed.citations ?? citations;
             setStreamedAnswer(answer);
             setResult((prev) =>
-              prev ? { ...prev, answer, citations } : { answer, citations, model_used: "haiku", query_id: null },
+              prev
+                ? { ...prev, answer, citations, model_used: parsed.model_used ?? prev.model_used }
+                : { answer, citations, model_used: parsed.model_used ?? null, query_id: null },
             );
           } else if (parsed.type === "verification") {
             setVerifying(false);
