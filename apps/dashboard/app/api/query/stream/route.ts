@@ -16,10 +16,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "question required" }, { status: 400 });
   }
   const clientRef = request.nextUrl.searchParams.get("client_ref");
+  const sessionId = request.nextUrl.searchParams.get("session_id");
 
   const backendUrl = new URL(`${process.env.NEXT_PUBLIC_API_URL}/query/stream`);
   backendUrl.searchParams.set("question", question);
   if (clientRef) backendUrl.searchParams.set("client_ref", clientRef);
+  if (sessionId) backendUrl.searchParams.set("session_id", sessionId);
 
   const backendResponse = await fetch(backendUrl, {
     headers: { Authorization: `Bearer ${session.access_token}` },

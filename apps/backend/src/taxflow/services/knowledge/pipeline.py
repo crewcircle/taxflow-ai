@@ -1,10 +1,10 @@
 import asyncio
 import re
 
-import psycopg2
 import tiktoken
 
 from taxflow.config import settings
+from taxflow.db import get_pg_conn
 from taxflow.services.knowledge.embedder import embed_batch
 
 _encoder = tiktoken.get_encoding("cl100k_base")
@@ -88,29 +88,28 @@ def chunk_text(text: str, chunk_tokens: int | None = None, overlap_tokens: int |
 
 
 def _upsert_chunks(rows: list[tuple]) -> int:
-    conn = psycopg2.connect(settings.DATABASE_URL)
-    cur = conn.cursor()
-    for row in rows:
-        cur.execute(
-            """
-            INSERT INTO knowledge_chunks
-                (source_type, source_url, source_title, citation, content, embedding,
-                 chunk_index, token_count, effective_date, source_object_key, last_scraped_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
-            ON CONFLICT (source_url, chunk_index) DO UPDATE SET
-                content = EXCLUDED.content,
-                embedding = EXCLUDED.embedding,
-                token_count = EXCLUDED.token_count,
-                source_object_key = EXCLUDED.source_object_key,
-                last_scraped_at = now()
-            """,
-            row,
-        )
-    conn.commit()
-    count = len(rows)
-    cur.close()
-    conn.close()
-    return count
+    with get_pg_conn() as conn:
+        cur = conn.cursor()
+        for row in rows:
+            cur.execute(
+                """
+                INSERT INTO knowledge_chunks
+                    (source_type, source_url, source_title, citation, content, embedding,
+                     chunk_index, token_count, effective_date, source_object_key, last_scraped_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (source_url, chunk_index) DO UPDATE SET
+                    content = EXCLUDED.content,
+                    embedding = EXCLUDED.embedding,
+                    token_count = EXCLUDED.token_count,
+                    source_object_key = EXCLUDED.source_object_key,
+                    last_scraped_at = now()
+                """,
+                row,
+            )
+        conn.commit()
+        count = len(rows)
+        cur.close()
+        return count
 
 
 async def process_document(text: str, metadata: dict, source_object_key: str | None = None) -> int:

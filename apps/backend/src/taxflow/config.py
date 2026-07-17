@@ -31,5 +31,126 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP_TOKENS: int = 64
     OPENAI_API_KEY: str = ""
 
+    # Postgres connection pool (per uvicorn worker; see db.py). maxconn is sized
+    # so 2 workers (~2 x 8 = 16 connections) stay under Supabase's connection cap.
+    POOL_MIN_CONN: int = 1
+    POOL_MAX_CONN: int = 8
+
+    # --- Pre-generation model routing (Task A3) -------------------------------
+    # research.run() picks Haiku or Sonnet BEFORE the single generation call using
+    # retrieval signals only (no LLM call). We bias toward Sonnet when signals are
+    # ambiguous, so these gates describe the "strong retrieval -> Haiku is enough"
+    # case; anything below routes to Sonnet.
+    #   - ROUTE_MIN_STRONG_CHUNKS: how many retrieved chunks we need to trust Haiku.
+    #   - ROUTE_MIN_TOP_RRF_SCORE: the top RRF score must clear this.
+    #   - ROUTE_MIN_RERANK_SCORE: when RERANK_MODE == "llm", the top rerank score
+    #     (a 0-1 relevance score, a DIFFERENT scale from RRF) must clear this to
+    #     count as strong. Judged on its own scale so a weak rerank score can't
+    #     pass the much smaller RRF threshold and route a weak result to Haiku.
+    # When hybrid search returns nothing (the "insufficient information" situation),
+    # we always route to Sonnet.
+    ROUTE_MIN_STRONG_CHUNKS: int = 5
+    ROUTE_MIN_TOP_RRF_SCORE: float = 0.03
+    ROUTE_MIN_RERANK_SCORE: float = 0.5
+
+    # --- pgvector index tuning (Task A5) --------------------------------------
+    # ivfflat.probes for the ANN scan. Higher = better recall, more latency. Set
+    # transaction-locally alongside the vector SELECT (SET LOCAL no-ops outside an
+    # explicit transaction on a pooled connection).
+    IVFFLAT_PROBES: int = 10
+
+    # --- Anthropic prompt caching (Task B1) -----------------------------------
+    # Toggle cache_control breakpoints on the large static system prompts. Deploy-
+    # time flag (loaded at process start).
+    PROMPT_CACHE_ENABLED: bool = True
+
+    # --- Retrieval re-ranking (Task C1) ---------------------------------------
+    # RRF stays a cheap candidate generator: we widen the semantic/text candidate
+    # pools (RERANK_CANDIDATE_POOL each) and re-rank the merged candidates before
+    # truncating to top_k, per RERANK_MODE:
+    #   - "off"      : plain RRF merge, take top_k. No re-rank, no LLM.
+    #   - "rrf_only" : widen pools, merge by RRF score, take top_k. No LLM. (default)
+    #   - "llm"      : ONE batched Haiku relevance-scoring call over the merged
+    #                  candidates (RERANK_DEPTH of them), re-order by score.
+    # "off"/"rrf_only" MUST NOT call any LLM. We deliberately avoid a local
+    # cross-encoder on the 2 vCPU / 4GB droplet. Deploy-time flag.
+    RERANK_MODE: str = "rrf_only"
+    # How many candidates to pull from EACH of the semantic/text searches before
+    # merging (widened from the historical 20).
+    RERANK_CANDIDATE_POOL: int = 40
+    # How many merged candidates the LLM re-ranker scores in its single batched
+    # call (only used when RERANK_MODE == "llm"). Kept small to bound cost/latency.
+    RERANK_DEPTH: int = 20
+    # Lightweight query normalisation (section-number / synonym) before search.
+    QUERY_NORMALISE_ENABLED: bool = True
+
+    # --- Firm + global merged ranking (Task C4) -------------------------------
+    # research._retrieve_context merges global + firm candidates into ONE pool and
+    # ranks them together instead of appending firm chunks after global truncation.
+    # The firm weight multiplies the firm chunk's score so it participates in the
+    # merged ranking (was a dead 1.5x that never ranked).
+    RETRIEVAL_TOP_K: int = 10
+    RETRIEVAL_GLOBAL_POOL: int = 8
+    RETRIEVAL_FIRM_POOL: int = 4
+    FIRM_CHUNK_WEIGHT: float = 1.5
+
+    # --- Verify gating (Task B2 / C3) -----------------------------------------
+    # Verification no longer runs on every answer. It runs ONLY on risky answers:
+    # low estimated confidence, few/zero parsed citations, or the "insufficient
+    # information" phrase. The default verify model is Haiku; Sonnet is reserved
+    # for flagged (risky) answers. Deploy-time flags.
+    VERIFY_MODEL: str = "claude-haiku-4-5"
+    VERIFY_CONFIDENCE_THRESHOLD: float = 0.60
+    VERIFY_MIN_CITATIONS: int = 1
+    # When True, a needs_correction/unreliable verification (or a critical issue)
+    # triggers ONE bounded corrective regeneration pass (no loops).
+    CORRECTIVE_PASS_ENABLED: bool = True
+
+    # --- Per-client answer cache (Task B3) ------------------------------------
+    # DB-backed answer cache keyed on (normalised question, client_id,
+    # knowledge_version). DB-backed (not in-process) because prod runs 2 uvicorn
+    # workers; an ingest bumps knowledge_version so all workers invalidate
+    # atomically. Short TTL is a backstop. Deploy-time flags.
+    ANSWER_CACHE_ENABLED: bool = True
+    ANSWER_CACHE_TTL_SECONDS: int = 3600
+
+    # --- Per-client profile injection (Task D1) -------------------------------
+    # Build a compact client-profile string (business_type, state, firm_style
+    # highlights) once per request and inject it as ADVISORY steering context into
+    # the research + ATO drafter prompts. Advisory, never a hard filter, so it
+    # cannot starve correct general-law answers. Deploy-time flag; default on.
+    PROFILE_INJECTION_ENABLED: bool = True
+
+    # --- source_types soft boost (Task D2) ------------------------------------
+    # A source_types hint is derived from the question intent and the client's
+    # active_modules, then applied as a SOFT BOOST by default: the candidate pool
+    # is retrieved UNFILTERED (so the one relevant doc is never dropped) and
+    # matching source_types get their score multiplied by
+    # (1 + SOURCE_TYPE_BOOST_WEIGHT) before the merged ranking / re-rank.
+    #   - SOURCE_TYPE_FILTER_MODE == "soft" (default): boost only, no exclusion.
+    #   - SOURCE_TYPE_FILTER_MODE == "hard": opt-in HARD SQL filter (may exclude
+    #     non-matching docs — use with care).
+    SOURCE_TYPE_FILTER_MODE: str = "soft"
+    SOURCE_TYPE_BOOST_WEIGHT: float = 0.25
+
+    # --- Session memory (Task D3) ---------------------------------------------
+    # When a request carries an explicit session_id, the last N prior queries for
+    # that (client_id, session_id) are loaded (question + a truncated answer
+    # summary) and prepended as a compact "conversation so far" block. Auto-
+    # injected ONLY within the same session_id, never across sessions or clients.
+    # Summarised at read time (each prior answer truncated to SESSION_SUMMARY_CHARS)
+    # to protect the token budget. Single-shot queries (no session_id) are
+    # unaffected. Deploy-time flags.
+    SESSION_MEMORY_ENABLED: bool = True
+    SESSION_HISTORY_N: int = 5
+    SESSION_SUMMARY_CHARS: int = 300
+    # Each prior QUESTION is also truncated (a few very long prior questions
+    # could otherwise blow up the block despite the answer summary cap), and the
+    # whole block is capped at SESSION_BLOCK_MAX_CHARS — once the budget is
+    # reached we stop adding older turns, so the session context can never grow
+    # unbounded regardless of SESSION_HISTORY_N.
+    SESSION_QUESTION_CHARS: int = 200
+    SESSION_BLOCK_MAX_CHARS: int = 2000
+
 
 settings = Settings()  # type: ignore[call-arg]
