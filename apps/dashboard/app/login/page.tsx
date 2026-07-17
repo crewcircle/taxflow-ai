@@ -14,7 +14,9 @@ import { Separator } from "@/components/ui/separator";
 
 export default function LoginPage() {
   const router = useRouter();
+  const [mode, setMode] = useState<"magic" | "password">("magic");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -39,6 +41,12 @@ export default function LoginPage() {
 
     try {
       const supabase = createClient();
+      if (mode === "password") {
+        const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+        if (signInError) throw signInError;
+        router.push("/dashboard");
+        return;
+      }
       const { error: signInError } = await supabase.auth.signInWithOtp({
         email,
         options: {
@@ -49,7 +57,13 @@ export default function LoginPage() {
       if (signInError) throw signInError;
       setSent(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send sign-in link");
+      setError(
+        err instanceof Error
+          ? err.message
+          : mode === "password"
+            ? "Incorrect email or password"
+            : "Failed to send sign-in link"
+      );
     } finally {
       setLoading(false);
     }
@@ -63,7 +77,9 @@ export default function LoginPage() {
           <CardHeader>
             <h1 className="text-lg font-semibold">Sign in to TaxFlow</h1>
             <p className="text-sm text-muted-foreground">
-              We&apos;ll email you a secure sign-in link.
+              {mode === "password"
+                ? "Sign in with your email and password."
+                : "We'll email you a secure sign-in link."}
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -72,27 +88,70 @@ export default function LoginPage() {
                 Check your email for a sign-in link.
               </p>
             ) : (
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="space-y-1.5">
-                  <Label htmlFor="email">Work email</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@firm.com.au"
-                  />
+              <>
+                <div className="flex gap-1 rounded-lg bg-muted p-1 text-sm">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode("magic");
+                      setError(null);
+                    }}
+                    className={`flex-1 rounded-md py-1.5 font-medium transition-colors ${
+                      mode === "magic" ? "bg-background shadow-sm" : "text-muted-foreground"
+                    }`}
+                  >
+                    Email link
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode("password");
+                      setError(null);
+                    }}
+                    className={`flex-1 rounded-md py-1.5 font-medium transition-colors ${
+                      mode === "password" ? "bg-background shadow-sm" : "text-muted-foreground"
+                    }`}
+                  >
+                    Password
+                  </button>
                 </div>
-                {error && <p className="text-sm text-destructive">{error}</p>}
-                <Button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full"
-                >
-                  {loading ? "Sending..." : "Send sign-in link"}
-                </Button>
-              </form>
+
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="email">Work email</Label>
+                    <Input
+                      id="email"
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@firm.com.au"
+                    />
+                  </div>
+                  {mode === "password" && (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="password">Password</Label>
+                      <Input
+                        id="password"
+                        type="password"
+                        required
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                      />
+                    </div>
+                  )}
+                  {error && <p className="text-sm text-destructive">{error}</p>}
+                  <Button type="submit" disabled={loading} className="w-full">
+                    {loading
+                      ? mode === "password"
+                        ? "Signing in..."
+                        : "Sending..."
+                      : mode === "password"
+                        ? "Sign in"
+                        : "Send sign-in link"}
+                  </Button>
+                </form>
+              </>
             )}
 
             <p className="text-sm text-muted-foreground">
