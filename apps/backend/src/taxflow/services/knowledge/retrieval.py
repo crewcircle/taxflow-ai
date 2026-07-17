@@ -38,6 +38,26 @@ def normalise_query(query: str) -> str:
     return normalised
 
 
+# --- Recency tie-breaker (from main) ------------------------------------------
+_YEAR_RE = re.compile(r"(19|20)\d{2}")
+
+# Small nudge, not a sledgehammer: a single RRF term at rank 0 is ~1/60 = 0.0167,
+# so 0.0006/year means a document ~10 years newer gains roughly one rank-step of
+# priority over an equally-relevant older one - enough to break ties between two
+# rulings on the same topic (e.g. a 2020 and a 2025 ruling covering the same
+# provision) without letting recency override a genuinely better semantic/text
+# match. Documents whose citation has no parseable year (legislation, firm
+# knowledge) get a neutral mid-range year so they're neither boosted nor
+# penalised for lacking one.
+_RECENCY_WEIGHT_PER_YEAR = 0.0006
+_NEUTRAL_YEAR = 2022
+
+
+def _citation_year(citation: str) -> int:
+    match = _YEAR_RE.search(citation)
+    return int(match.group()) if match else _NEUTRAL_YEAR
+
+
 def _semantic_search(embedding: list[float], source_types: list[str] | None, limit: int) -> list[dict]:
     with get_pg_conn() as conn:
         # SET LOCAL only applies inside an explicit transaction; on a pooled
@@ -50,6 +70,7 @@ def _semantic_search(embedding: list[float], source_types: list[str] | None, lim
             cur.execute(
                 """
                 SELECT id, citation, content, source_url, source_object_key, source_type,
+                       last_scraped_at,
                        1 - (embedding <=> %s::vector) AS cosine_sim
                 FROM knowledge_chunks
                 WHERE is_current = true
@@ -70,6 +91,7 @@ def _text_search(query: str, source_types: list[str] | None, limit: int) -> list
         cur.execute(
             """
             SELECT id, citation, content, source_url, source_object_key, source_type,
+                   last_scraped_at,
                    ts_rank(to_tsvector('english', content), plainto_tsquery('english', %s)) AS text_rank
             FROM knowledge_chunks
             WHERE is_current = true
@@ -100,6 +122,15 @@ def _rrf_merge(semantic: list[dict], textual: list[dict]) -> list[dict]:
         scores[row["id"]] = scores.get(row["id"], 0.0) + 1 / (60 + rank)
         docs.setdefault(row["id"], row)
 
+    # Recency tie-breaker (from main): two rulings can be near-equally relevant to
+    # a query (e.g. TR 2020/4 and TR 2025/2 both "about thin capitalisation"), and
+    # with no supersession metadata to lean on, pure relevance ranking has no way
+    # to prefer the newer one. Nudge the score toward whichever is more recent.
+    for doc_id, doc in docs.items():
+        scores[doc_id] += _citation_year(doc["citation"]) * _RECENCY_WEIGHT_PER_YEAR
+
+    # Untruncated (Task C1): callers merge in other candidates (firm chunks, C4)
+    # and re-rank the combined pool before truncating to top_k themselves.
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     return [
         {
@@ -109,6 +140,7 @@ def _rrf_merge(semantic: list[dict], textual: list[dict]) -> list[dict]:
             "source_url": docs[doc_id]["source_url"],
             "source_object_key": docs[doc_id].get("source_object_key"),
             "source_type": docs[doc_id].get("source_type"),
+            "last_scraped_at": docs[doc_id].get("last_scraped_at"),
             "score": score,
         }
         for doc_id, score in ranked

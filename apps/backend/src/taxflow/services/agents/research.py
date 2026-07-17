@@ -28,7 +28,14 @@ Rules:
    a Private Binding Ruling from the ATO."
 6. Format: 2-4 paragraphs. First paragraph: direct answer. Subsequent: analysis and
    nuance. Final: practical implications or recommended action.
-7. End with a "Sources" section listing all cited documents.
+7. If the facts involve cross-border dealings, related parties, or debt/financing
+   structures, explicitly check whether other regimes interact with the primary
+   question - transfer pricing (Division 815), hybrid mismatch rules (Division 832),
+   or debt deduction creation rules (s820-423) commonly apply alongside thin
+   capitalisation and are easy to miss if only the literal question is answered.
+   Only raise a regime if the provided sources actually support it - do not
+   speculate about interactions the sources don't cover.
+8. End with a "Sources" section listing all cited documents.
 """
 
 CONTEXT_TOKEN_LIMIT = 60_000
@@ -339,6 +346,7 @@ class ResearchAgent:
                 "content": r["content"],
                 "source_url": "",
                 "source_object_key": None,
+                "last_scraped_at": None,  # not a scraped source - no freshness concept applies
                 "score": float(r["sim"]) * settings.FIRM_CHUNK_WEIGHT,
             }
             for r in rows
@@ -412,12 +420,14 @@ class ResearchAgent:
         for n in sorted(cited_numbers):
             if 1 <= n <= len(chunks):
                 chunk = chunks[n - 1]
+                last_scraped_at = chunk.get("last_scraped_at")
                 citations.append(
                     {
                         "citation": chunk["citation"],
                         "url": chunk["source_url"],
                         "excerpt": chunk["content"][:200],
                         "source_object_key": chunk.get("source_object_key"),
+                        "last_scraped_at": last_scraped_at.isoformat() if last_scraped_at else None,
                     }
                 )
         return citations
