@@ -53,6 +53,16 @@ export default function DocumentsPage() {
     client_ref: "",
   });
 
+  // Header "Documents generated" dropdown deep-links here with ?client=X to
+  // pre-select that client's documents.
+  useEffect(() => {
+    const client = new URLSearchParams(window.location.search).get("client");
+    if (!client) return;
+    window.history.replaceState(null, "", window.location.pathname);
+    const t = setTimeout(() => setClientFilter(client), 0);
+    return () => clearTimeout(t);
+  }, []);
+
   function loadDocuments() {
     fetch("/api/documents")
       .then((r) => (r.ok ? r.json() : Promise.reject()))

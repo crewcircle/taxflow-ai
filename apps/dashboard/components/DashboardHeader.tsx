@@ -1,9 +1,13 @@
 "use client";
 
+import { usePathname } from "next/navigation";
+import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/Logo";
 import { OnboardingTour } from "@/components/OnboardingTour";
 import { DemoPersonaSwitcher } from "@/components/DemoPersonaSwitcher";
 import { HeaderStats } from "@/components/HeaderStats";
+import { useQueryPane } from "@/components/QueryPaneContext";
 
 interface DashboardHeaderProps {
   businessName: string;
@@ -20,11 +24,28 @@ export function DashboardHeader({
   demoTagline,
   demoDescription,
 }: DashboardHeaderProps) {
+  const pathname = usePathname();
+  const isQueryPage = pathname === "/dashboard/query";
+  const { historyOpen, setHistoryOpen, sourcesOpen, setSourcesOpen } = useQueryPane();
+
   return (
     <header className="relative flex h-16 shrink-0 items-center justify-between border-b border-border px-4">
       <Logo href="/dashboard" />
 
       <HeaderStats />
+
+      {isQueryPage && (
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="sm" onClick={() => setHistoryOpen((v) => !v)}>
+            {historyOpen ? <PanelLeftClose className="size-4" /> : <PanelLeftOpen className="size-4" />}
+            {historyOpen ? "Hide questions" : "Show questions"}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setSourcesOpen((v) => !v)}>
+            {sourcesOpen ? "Hide sources" : "Show sources"}
+            {sourcesOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
+          </Button>
+        </div>
+      )}
 
       {businessName && isDemo && (
         <div className="flex items-center gap-3 pr-16" data-tour="identity-strip">

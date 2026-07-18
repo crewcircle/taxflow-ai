@@ -10,10 +10,6 @@ import {
   CheckCircle2,
   Copy,
   FileDown,
-  PanelLeftClose,
-  PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
   Sparkles,
   User,
 } from "lucide-react";
@@ -27,6 +23,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHistorySidebar";
 import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
 import { AnswerTracePanel, type AnswerTrace } from "@/components/AnswerTracePanel";
+import { useQueryPane } from "@/components/QueryPaneContext";
 import { cn } from "@/lib/utils";
 
 interface DocumentTemplate {
@@ -265,8 +262,9 @@ export default function QueryPage() {
   const [trace, setTrace] = useState<AnswerTrace | null>(null);
   const [repeatCount, setRepeatCount] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [sourcesOpen, setSourcesOpen] = useState(true);
-  const [historyOpen, setHistoryOpen] = useState(true);
+  // Hide questions/Hide sources toggles live in the global header (shared via
+  // context) so they no longer take up a toolbar row inside this page.
+  const { historyOpen, setHistoryOpen, sourcesOpen } = useQueryPane();
   const [historyHighlighted, setHistoryHighlighted] = useState(false);
 
   const [history, setHistory] = useState<QueryListItem[]>([]);
@@ -301,6 +299,7 @@ export default function QueryPage() {
       clearTimeout(openTimer);
       clearTimeout(clearTimer);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -357,10 +356,29 @@ export default function QueryPage() {
   }
 
   // Session continuity: the first time history loads with content, resume
-  // straight into the most recent conversation as if the user never left.
+  // straight into the most recent conversation as if the user never left -
+  // unless the header's tag dropdown deep-linked here with ?tag=X, in which
+  // case jump to and highlight the newest question carrying that tag instead.
   useEffect(() => {
     if (hasAutoLoaded.current || history.length === 0) return;
     hasAutoLoaded.current = true;
+
+    const tag = new URLSearchParams(window.location.search).get("tag");
+    const tagMatch = tag ? history.find((h) => h.topic_tag === tag) : null;
+    if (tagMatch) {
+      window.history.replaceState(null, "", window.location.pathname);
+      const openTimer = setTimeout(() => {
+        setHistoryOpen(true);
+        setHighlightedHistoryId(tagMatch.id);
+        loadConversation(tagMatch);
+      }, 0);
+      const clearTimer = setTimeout(() => setHighlightedHistoryId(null), 2000);
+      return () => {
+        clearTimeout(openTimer);
+        clearTimeout(clearTimer);
+      };
+    }
+
     const t = setTimeout(() => loadConversation(history[0]), 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -521,79 +539,48 @@ export default function QueryPage() {
   }
 
   const displayedCitations = result?.citations ?? [];
-
-  // Scenario tags: one per distinct topic_tag in this firm's history, newest
-  // first, each linked to the question it came from.
-  const topicTags = Array.from(
-    new Map(history.filter((h) => h.topic_tag).map((h) => [h.topic_tag as string, h.id])).entries()
-  );
+  const hasBadges = result?.model_used === "sonnet" || verifying || Boolean(verification);
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] min-h-[420px] w-full min-w-0 overflow-hidden rounded-xl border border-border">
-      {historyOpen && (
-        <div
-          className={
-            historyHighlighted ? "ring-2 ring-accent ring-inset transition-shadow duration-300" : "transition-shadow duration-300"
-          }
-        >
-          <QueryHistorySidebar
-            history={history}
-            onSelect={handleSelectHistory}
-            onNewQuestion={handleNewQuestion}
-            highlightedId={highlightedHistoryId}
-          />
-        </div>
-      )}
-
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-          <Button variant="ghost" size="sm" onClick={() => setHistoryOpen((v) => !v)}>
-            {historyOpen ? <PanelLeftClose className="size-4" /> : <PanelLeftOpen className="size-4" />}
-            {historyOpen ? "Hide questions" : "Show questions"}
-          </Button>
-          <div className="flex flex-wrap items-center gap-2">
-            {result?.model_used === "sonnet" && (
-              <Badge variant="outline" className="gap-1 border-accent/30 text-accent">
-                <Sparkles className="size-3" />
-                Enhanced model
-              </Badge>
-            )}
-            {verifying && (
-              <Badge variant="outline" className="text-muted-foreground">
-                Verifying...
-              </Badge>
-            )}
-            {verification && (
-              <VerificationBadge
-                verification={verification}
-                expanded={verificationExpanded}
-                onToggle={() => setVerificationExpanded((v) => !v)}
-              />
-            )}
+    <div className="flex h-[calc(100vh-8rem)] min-h-[420px] w-full min-w-0 flex-col gap-3">
+      <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-border">
+        {historyOpen && (
+          <div
+            className={
+              historyHighlighted ? "ring-2 ring-accent ring-inset transition-shadow duration-300" : "transition-shadow duration-300"
+            }
+          >
+            <QueryHistorySidebar
+              history={history}
+              onSelect={handleSelectHistory}
+              onNewQuestion={handleNewQuestion}
+              highlightedId={highlightedHistoryId}
+            />
           </div>
-          <Button variant="ghost" size="sm" onClick={() => setSourcesOpen((v) => !v)}>
-            {sourcesOpen ? "Hide sources" : "Show sources"}
-            {sourcesOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
-          </Button>
-        </div>
+        )}
 
-        <div className="flex-1 space-y-4 overflow-y-auto p-6">
-          {topicTags.length > 0 && (
-            <div className="flex flex-wrap gap-1.5" data-tour="suggested-question">
-              {topicTags.map(([tag, id]) => (
-                <button
-                  key={tag}
-                  onClick={() => {
-                    setHistoryOpen(true);
-                    setHighlightedHistoryId(id);
-                    setTimeout(() => setHighlightedHistoryId(null), 2000);
-                    handleSelectHistory(id);
-                  }}
-                  className="rounded-full border border-border bg-background px-3 py-1 text-xs text-foreground hover:border-accent hover:text-accent"
-                >
-                  {tag}
-                </button>
-              ))}
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="flex-1 space-y-4 overflow-y-auto p-6">
+          {hasBadges && (
+            <div className="flex flex-wrap items-center gap-2">
+              {result?.model_used === "sonnet" && (
+                <Badge variant="outline" className="gap-1 border-accent/30 text-accent">
+                  <Sparkles className="size-3" />
+                  Enhanced model
+                </Badge>
+              )}
+              {verifying && (
+                <Badge variant="outline" className="text-muted-foreground">
+                  Verifying...
+                </Badge>
+              )}
+              {verification && (
+                <VerificationBadge
+                  verification={verification}
+                  expanded={verificationExpanded}
+                  onToggle={() => setVerificationExpanded((v) => !v)}
+                />
+              )}
             </div>
           )}
 
@@ -672,42 +659,46 @@ export default function QueryPage() {
           )}
 
           {error && <p className="text-sm text-destructive">{error}</p>}
-        </div>
-
-        <div className="border-t border-border p-4">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="relative mb-2 max-w-xs">
-                <User className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={clientRef}
-                  onChange={(e) => setClientRef(e.target.value)}
-                  placeholder="Client (optional)"
-                  className="h-8 border-accent/30 bg-accent/5 pl-7 text-xs"
-                />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>Tag this question with a client name so you can filter your question history by client</TooltipContent>
-          </Tooltip>
-          <Textarea
-            data-tour="question-textarea"
-            value={question}
-            onChange={(e) => setQuestion(e.target.value.slice(0, MAX_CHARS))}
-            rows={3}
-            placeholder={result ? "Ask a follow-up question..." : "Ask an Australian tax question..."}
-          />
-          <div className="mt-2 flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">
-              {question.length}/{MAX_CHARS} characters
-            </span>
-            <Button onClick={handleSubmit} disabled={loading || !question.trim()}>
-              {loading ? "Thinking..." : "Ask TaxFlow"}
-            </Button>
           </div>
         </div>
+
+        {sourcesOpen && <SourcesPanel citations={displayedCitations} />}
       </div>
 
-      {sourcesOpen && <SourcesPanel citations={displayedCitations} />}
+      {/* Ask TaxFlow input - a sibling of the bordered 3-pane block above, not
+          nested inside it, so it no longer competes with the answer area for
+          the page's fixed height. */}
+      <div className="shrink-0 rounded-xl border border-border p-4">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="relative mb-2 max-w-xs">
+              <User className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={clientRef}
+                onChange={(e) => setClientRef(e.target.value)}
+                placeholder="Client (optional)"
+                className="h-8 border-accent/30 bg-accent/5 pl-7 text-xs"
+              />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>Tag this question with a client name so you can filter your question history by client</TooltipContent>
+        </Tooltip>
+        <Textarea
+          data-tour="question-textarea"
+          value={question}
+          onChange={(e) => setQuestion(e.target.value.slice(0, MAX_CHARS))}
+          rows={3}
+          placeholder={result ? "Ask a follow-up question..." : "Ask an Australian tax question..."}
+        />
+        <div className="mt-2 flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">
+            {question.length}/{MAX_CHARS} characters
+          </span>
+          <Button onClick={handleSubmit} disabled={loading || !question.trim()}>
+            {loading ? "Thinking..." : "Ask TaxFlow"}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
