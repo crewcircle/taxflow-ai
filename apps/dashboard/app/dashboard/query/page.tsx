@@ -281,11 +281,13 @@ interface AnswerActionsProps {
   templates: DocumentTemplate[];
   onSave: () => void;
   clientRef: string;
+  onClientRefChange: (v: string) => void;
 }
 
-// The three things you can do with a finished answer, grouped so the
-// consequence of each is obvious: copy the raw text, or turn it into a
-// saved document (which needs a format choice first).
+// The four things you can do with a finished answer, in the order you'd
+// naturally do them: say who it's for, copy the text if that's all you need,
+// or pick a format and save it as a document (which picks up the client tag
+// above automatically).
 function AnswerActions({
   copied,
   onCopy,
@@ -296,11 +298,32 @@ function AnswerActions({
   templates,
   onSave,
   clientRef,
+  onClientRefChange,
 }: AnswerActionsProps) {
   return (
     <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-3">
       <p className="text-xs font-medium text-muted-foreground">What would you like to do with this answer?</p>
       <div className="flex flex-wrap items-center gap-3">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="relative">
+              <User className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={clientRef}
+                onChange={(e) => onClientRefChange(e.target.value)}
+                placeholder="Client (optional)"
+                className="h-8 w-44 border-accent/30 bg-accent/5 pl-7 text-xs"
+              />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
+            Tag this answer with a client name - carries through automatically if you save it as a document below,
+            and lets you highlight their questions in the history panel
+          </TooltipContent>
+        </Tooltip>
+
+        <div className="h-6 w-px bg-border" aria-hidden />
+
         <Tooltip>
           <TooltipTrigger asChild>
             <Button variant="secondary" size="sm" onClick={onCopy}>
@@ -743,6 +766,7 @@ export default function QueryPage() {
                 templates={templates}
                 onSave={handleSaveAsDocument}
                 clientRef={clientRef}
+                onClientRefChange={setClientRef}
               />
             </div>
           )}
@@ -751,25 +775,10 @@ export default function QueryPage() {
         </div>
 
         {/* Ask TaxFlow input - part of the middle column, below the answer,
-            so a follow-up is always right where the conversation is. */}
+            so a follow-up is always right where the conversation is. Client
+            tagging lives in the action row above once an answer exists; a
+            brand-new first question can be tagged after it comes back. */}
         <div className="shrink-0 border-t border-border p-4">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="relative mb-2 max-w-xs">
-                <User className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={clientRef}
-                  onChange={(e) => setClientRef(e.target.value)}
-                  placeholder="Client (optional)"
-                  className="h-8 border-accent/30 bg-accent/5 pl-7 text-xs"
-                />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>
-              Tag this question with a client name - lets you highlight their questions in the history panel later,
-              and carries through automatically if you save this answer as a document
-            </TooltipContent>
-          </Tooltip>
           <Textarea
             data-tour="question-textarea"
             value={question}
