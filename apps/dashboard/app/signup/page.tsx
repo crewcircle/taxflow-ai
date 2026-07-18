@@ -4,10 +4,12 @@ import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { SiteHeader } from "@/components/SiteHeader";
+import { GoogleSignInButton } from "@/components/GoogleSignInButton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import {
   Select,
   SelectContent,
@@ -103,7 +105,16 @@ export default function SignupPage() {
                 </p>
               </div>
             ) : (
-              <form onSubmit={handleSubmit} className="space-y-4">
+              <>
+                <GoogleSignInButton label="Sign up with Google" />
+
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Separator className="flex-1" />
+                  or fill in your details
+                  <Separator className="flex-1" />
+                </div>
+
+                <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="business_name">Firm name</Label>
                   <Input
@@ -176,7 +187,8 @@ export default function SignupPage() {
                 <Button type="submit" disabled={loading} className="w-full">
                   {loading ? "Creating your trial..." : "Start free trial"}
                 </Button>
-              </form>
+                </form>
+              </>
             )}
 
             <p className="text-sm text-muted-foreground">

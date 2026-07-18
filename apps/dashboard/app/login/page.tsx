@@ -6,6 +6,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { startDemoLogin } from "@/lib/demo-login";
 import { SiteHeader } from "@/components/SiteHeader";
+import { GoogleSignInButton } from "@/components/GoogleSignInButton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -89,6 +90,14 @@ export default function LoginPage() {
               </p>
             ) : (
               <>
+                <GoogleSignInButton />
+
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Separator className="flex-1" />
+                  or
+                  <Separator className="flex-1" />
+                </div>
+
                 <div className="flex gap-1 rounded-lg bg-muted p-1 text-sm">
                   <button
                     type="button"
