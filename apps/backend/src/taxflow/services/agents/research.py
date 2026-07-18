@@ -2,8 +2,7 @@ import logging
 import re
 import time
 
-from anthropic import AsyncAnthropic
-
+from taxflow import providers
 from taxflow.config import settings
 from taxflow.services.prompt_cache import cacheable_system
 from taxflow.services.knowledge.retrieval import (
@@ -212,8 +211,10 @@ def build_session_block(history: list[dict]) -> str:
 
 
 class ResearchAgent:
-    def __init__(self) -> None:
-        self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    def __init__(self, llm=None) -> None:
+        # LLMPort injected (Task A5); defaults to the configured provider so
+        # existing callers (routers, tests) construct it with no arguments.
+        self._llm = llm if llm is not None else providers.get_llm()
 
     async def _retrieve_context(
         self,
@@ -287,42 +288,18 @@ class ResearchAgent:
     async def _firm_knowledge_search(
         self, question: str, client_id: str, top_k: int, embedding: list[float] | None = None
     ) -> list[dict]:
-        import asyncio
-
         import psycopg2
-        import psycopg2.extras
 
-        from taxflow.db import get_pg_conn
         from taxflow.services.knowledge.embedder import embed
 
         # Reuse the single query embedding when the caller passed it (Task A4);
         # only embed here if invoked standalone.
         query_embedding = embedding if embedding is not None else await embed(question)
 
-        def _search() -> list[dict]:
-            with get_pg_conn() as conn:
-                # SET LOCAL needs an explicit transaction on the pooled connection
-                # (Task A5); the psycopg2 connection context manager provides one.
-                with conn:
-                    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-                    cur.execute("SET LOCAL ivfflat.probes = %s", (settings.IVFFLAT_PROBES,))
-                    cur.execute(
-                        """
-                        SELECT id, file_name, content,
-                               1 - (embedding <=> %s::vector) AS sim
-                        FROM firm_knowledge
-                        WHERE client_id = %s AND embedding IS NOT NULL
-                        ORDER BY embedding <=> %s::vector
-                        LIMIT %s
-                        """,
-                        (query_embedding, client_id, query_embedding, top_k),
-                    )
-                    rows = cur.fetchall()
-                    cur.close()
-                    return list(rows)
-
         try:
-            rows = await asyncio.to_thread(_search)
+            hits = await providers.get_vector_store().firm_search(
+                embedding=query_embedding, client_id=client_id, limit=top_k
+            )
         except (psycopg2.Error, OSError) as e:
             # Firm knowledge is optional and must never fail the query. But
             # swallowing every error silently (the old `except Exception: return
@@ -339,18 +316,9 @@ class ResearchAgent:
         # client than global sources, so we weight their similarity score. Unlike
         # the old dead 1.5x, this score now participates in the merged ranking in
         # _retrieve_context instead of being appended after global truncation.
-        return [
-            {
-                "id": str(r["id"]),
-                "citation": f"Firm knowledge: {r['file_name']}",
-                "content": r["content"],
-                "source_url": "",
-                "source_object_key": None,
-                "last_scraped_at": None,  # not a scraped source - no freshness concept applies
-                "score": float(r["sim"]) * settings.FIRM_CHUNK_WEIGHT,
-            }
-            for r in rows
-        ]
+        for hit in hits:
+            hit["score"] = float(hit["score"]) * settings.FIRM_CHUNK_WEIGHT
+        return hits
 
     def _build_context_string(self, chunks: list[dict]) -> str:
         parts = []
@@ -380,25 +348,18 @@ class ResearchAgent:
     async def _generate(
         self, question: str, context: str, model: str, steering: str = ""
     ) -> tuple[str, dict]:
-        response = await self._client.messages.create(
+        result = await self._llm.generate(
+            messages=[{"role": "user", "content": self._user_content(question, context, steering)}],
+            system=_system_blocks(),
             model=model,
             max_tokens=1500,
             temperature=0,
-            system=_system_blocks(),
-            messages=[{"role": "user", "content": self._user_content(question, context, steering)}],
         )
-        answer = "".join(block.text for block in response.content if block.type == "text")
-        usage = response.usage
+        answer = result.text
+        usage = result.usage
         # Capture prompt-cache token usage (Task B1) alongside the existing token
-        # reads. getattr keeps this safe against older SDKs that don't expose the
-        # cache fields; input/output token reads are unchanged.
-        stats = {
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-            "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
-            "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        }
-        return answer, stats
+        # reads. The port's Usage record already normalises the four counters.
+        return answer, usage.as_dict()
 
     def _estimate_confidence(self, answer: str, chunks: list[dict], citations: list[dict]) -> float:
         """Deterministic confidence from retrieval/citation signals. Replaces the LLM
@@ -491,7 +452,7 @@ class ResearchAgent:
         """Load the last N prior turns for THIS (client_id, session_id) (Task D3).
 
         Auto-injection is scoped to the same session AND the same client: the
-        WHERE clause pins BOTH client_id and session_id, so context never bleeds
+        repo query pins BOTH client_id and session_id, so context never bleeds
         across sessions/engagements or across clients. Returns oldest-first
         {question, answer} turns; full answers are truncated at read time by
         build_session_block. Returns [] on any DB error (session memory is best-
@@ -500,31 +461,16 @@ class ResearchAgent:
         import asyncio
 
         import psycopg2
-        import psycopg2.extras
 
-        from taxflow.db import get_pg_conn
-
-        def _query() -> list[dict]:
-            with get_pg_conn() as conn:
-                with conn:
-                    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-                    cur.execute(
-                        """
-                        SELECT question, final_answer
-                        FROM queries
-                        WHERE client_id = %s AND session_id = %s
-                          AND status = 'completed' AND final_answer IS NOT NULL
-                        ORDER BY created_at DESC
-                        LIMIT %s
-                        """,
-                        (client_id, session_id, settings.SESSION_HISTORY_N),
-                    )
-                    rows = cur.fetchall()
-                    cur.close()
-                    return list(rows)
+        from taxflow.providers import get_relational_data
 
         try:
-            rows = await asyncio.to_thread(_query)
+            rows = await asyncio.to_thread(
+                get_relational_data().queries.list_session_history,
+                client_id,
+                session_id,
+                settings.SESSION_HISTORY_N,
+            )
         except (psycopg2.Error, OSError) as e:
             logger.warning(
                 "session history load failed for client_id=%s session_id=%s: %s",
@@ -547,7 +493,8 @@ class ResearchAgent:
         session_id: str | None,
     ) -> tuple[str, list[str] | None]:
         """Assemble the advisory steering block (profile + session memory) and the
-        source_type soft-boost hint (Tasks D1/D2/D3). Threaded into run/run_stream.
+        source_type soft-boost hint (Tasks D1/D2/D3). Threaded into run() and the
+        graph's build_steering node.
         """
         profile = build_client_profile(client)
         history: list[dict] = []
@@ -572,8 +519,8 @@ class ResearchAgent:
         block + source_type hint, retrieve the merged context, and render the
         context string. Returns (context, steering, chunks, signals,
         source_type_hint) - the hint is threaded back out so callers can record
-        it on the answer-flow trace. run(), run_stream() and
-        regenerate_with_feedback() all start here so profile injection, session
+        it on the answer-flow trace. run() and regenerate_with_feedback() both
+        start here so profile injection, session
         memory and embedding threading stay in one place.
         """
         steering, source_type_hint = await self._build_steering(
@@ -618,85 +565,8 @@ class ResearchAgent:
             "confidence": confidence,
             "model_used": routed,
             "chunks_retrieved": len(chunks),
-            "input_tokens": stats["input_tokens"],
-            "output_tokens": stats["output_tokens"],
-            "cache_read_input_tokens": stats["cache_read_input_tokens"],
-            "cache_creation_input_tokens": stats["cache_creation_input_tokens"],
+            **stats,
             "wall_time_ms": int((time.monotonic() - start) * 1000),
-            "trace": self._build_trace(chunks, citations, source_type_hint, routed, stats, confidence),
-        }
-
-    async def run_stream(
-        self,
-        question: str,
-        client_id: str,
-        embedding: list[float] | None = None,
-        client: dict | None = None,
-        session_id: str | None = None,
-    ):
-        """Yields token events, then a final citations/metrics event.
-
-        Task C2: the streaming path now applies the SAME pre-generation routing as
-        run() (route_model from retrieval signals) instead of always using Haiku,
-        so interactive users get the same model the batch path would pick. The
-        model is decided UP FRONT (streaming can't upgrade mid-stream), keeping one
-        consistent policy across run() and run_stream().
-
-        Events:
-          {"type": "token", "text": ...}   (repeated while streaming)
-          {"type": "final", "citations": [...], "answer": ..., "confidence": ...,
-           "model_used": ..., "input_tokens": ..., "output_tokens": ...,
-           "cache_read_input_tokens": ..., "cache_creation_input_tokens": ...,
-           "chunks_retrieved": ...}
-
-        Tasks D1/D2/D3: the same advisory client-profile + session-memory steering
-        and source_type soft-boost hint used by run() are applied here, so the
-        interactive stream path is personalised identically to the batch path.
-        """
-        context, steering, chunks, signals, source_type_hint = await self._prepare(
-            question, client_id, embedding, client, session_id
-        )
-
-        routed = route_model(signals)
-        model = self._model_for(routed)
-
-        answer_parts: list[str] = []
-        usage = None
-        async with self._client.messages.stream(
-            model=model,
-            max_tokens=1500,
-            temperature=0,
-            system=_system_blocks(),
-            messages=[{"role": "user", "content": self._user_content(question, context, steering)}],
-        ) as stream:
-            async for text in stream.text_stream:
-                answer_parts.append(text)
-                yield {"type": "token", "text": text}
-            final_message = await stream.get_final_message()
-            usage = final_message.usage
-
-        answer = "".join(answer_parts)
-        citations = self._parse_citations(answer, chunks)
-        confidence = self._estimate_confidence(answer, chunks, citations)
-
-        stats = {
-            "input_tokens": getattr(usage, "input_tokens", 0) if usage else 0,
-            "output_tokens": getattr(usage, "output_tokens", 0) if usage else 0,
-        }
-
-        # Task C5: surface model/confidence/token metrics on the final event so the
-        # SSE route can persist them on the queries row (parity with POST /query).
-        yield {
-            "type": "final",
-            "citations": citations,
-            "answer": answer,
-            "confidence": confidence,
-            "model_used": routed,
-            "chunks_retrieved": len(chunks),
-            "input_tokens": stats["input_tokens"],
-            "output_tokens": stats["output_tokens"],
-            "cache_read_input_tokens": (getattr(usage, "cache_read_input_tokens", 0) or 0) if usage else 0,
-            "cache_creation_input_tokens": (getattr(usage, "cache_creation_input_tokens", 0) or 0) if usage else 0,
             "trace": self._build_trace(chunks, citations, source_type_hint, routed, stats, confidence),
         }
 
@@ -747,9 +617,6 @@ class ResearchAgent:
             "citations": citations,
             "confidence": confidence,
             "model_used": "sonnet",
-            "input_tokens": stats["input_tokens"],
-            "output_tokens": stats["output_tokens"],
-            "cache_read_input_tokens": stats["cache_read_input_tokens"],
-            "cache_creation_input_tokens": stats["cache_creation_input_tokens"],
+            **stats,
             "trace": self._build_trace(chunks, citations, source_type_hint, "sonnet", stats, confidence),
         }

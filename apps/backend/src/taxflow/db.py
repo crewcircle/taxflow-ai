@@ -69,5 +69,15 @@ def get_supabase_client() -> Client:
     return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
 
-async def get_db() -> Client:
-    return get_supabase_client()
+async def get_db():
+    """Return the RelationalDataPort facade (psycopg2 repositories).
+
+    All relational CRUD now goes through the repositories in
+    ``taxflow.adapters.db.repositories`` rather than the Supabase PostgREST table
+    API. Returning the facade here keeps ``db=Depends(get_db)`` and
+    ``app.dependency_overrides[get_db]`` working for routers and tests.
+    ``get_supabase_client`` is retained for the AuthPort adapter (Supabase Auth).
+    """
+    from taxflow.adapters.db.repositories import Repositories
+
+    return Repositories()

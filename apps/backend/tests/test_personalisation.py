@@ -183,32 +183,25 @@ def test_build_session_block_empty_for_no_history():
 
 @pytest.mark.asyncio
 async def test_load_session_history_scopes_to_client_and_session():
-    """The SQL WHERE must pin BOTH client_id and session_id (never cross-scope)."""
+    """The repo query must pin BOTH client_id and session_id (never cross-scope)."""
     agent = ResearchAgent()
 
-    fake_cur = MagicMock()
-    fake_cur.fetchall.return_value = [
+    repos = MagicMock()
+    # Repo returns newest-first rows; the agent reverses to oldest-first.
+    repos.queries.list_session_history.return_value = [
         {"question": "q2", "final_answer": "a2"},
         {"question": "q1", "final_answer": "a1"},
     ]
-    fake_conn = MagicMock()
-    fake_conn.cursor.return_value = fake_cur
-    fake_conn.__enter__ = MagicMock(return_value=fake_conn)
-    fake_conn.__exit__ = MagicMock(return_value=False)
-    cm = MagicMock()
-    cm.__enter__ = MagicMock(return_value=fake_conn)
-    cm.__exit__ = MagicMock(return_value=False)
 
-    with patch("taxflow.db.get_pg_conn", return_value=cm):
+    with patch("taxflow.providers.get_relational_data", return_value=repos):
         history = await agent._load_session_history("client-1", "sess-1")
 
-    sql = fake_cur.execute.call_args_list[0].args[0]
-    params = fake_cur.execute.call_args_list[0].args[1]
-    assert "client_id = %s" in sql
-    assert "session_id = %s" in sql
-    assert params[0] == "client-1"
-    assert params[1] == "sess-1"
-    # Rows are returned oldest-first (SQL DESC then reversed).
+    # Scoping is enforced by passing BOTH client_id and session_id to the repo,
+    # whose SQL carries the WHERE client_id = %s AND session_id = %s predicate.
+    call = repos.queries.list_session_history.call_args
+    assert call.args[0] == "client-1"
+    assert call.args[1] == "sess-1"
+    # Rows are returned oldest-first (repo returns DESC, agent reverses).
     assert [h["question"] for h in history] == ["q1", "q2"]
 
 
@@ -274,10 +267,10 @@ async def test_firm_knowledge_error_is_logged_and_returns_empty(caplog):
 
     agent = ResearchAgent()
 
-    def _boom(*_a, **_k):
-        raise psycopg2.OperationalError("connection refused")
+    fake_store = MagicMock()
+    fake_store.firm_search = AsyncMock(side_effect=psycopg2.OperationalError("connection refused"))
 
-    with patch("taxflow.db.get_pg_conn", side_effect=_boom):
+    with patch("taxflow.providers.get_vector_store", return_value=fake_store):
         with caplog.at_level(logging.WARNING, logger="taxflow.services.agents.research"):
             result = await agent._firm_knowledge_search(
                 "q", "cid", top_k=2, embedding=[0.1] * 1536
@@ -294,17 +287,10 @@ async def test_firm_knowledge_reuses_passed_embedding_no_reembed():
     agent = ResearchAgent()
     vec = [0.2] * 1536
 
-    fake_cur = MagicMock()
-    fake_cur.fetchall.return_value = []
-    fake_conn = MagicMock()
-    fake_conn.cursor.return_value = fake_cur
-    fake_conn.__enter__ = MagicMock(return_value=fake_conn)
-    fake_conn.__exit__ = MagicMock(return_value=False)
-    cm = MagicMock()
-    cm.__enter__ = MagicMock(return_value=fake_conn)
-    cm.__exit__ = MagicMock(return_value=False)
+    fake_store = MagicMock()
+    fake_store.firm_search = AsyncMock(return_value=[])
 
-    with patch("taxflow.db.get_pg_conn", return_value=cm), patch(
+    with patch("taxflow.providers.get_vector_store", return_value=fake_store), patch(
         "taxflow.services.knowledge.embedder.embed", new=AsyncMock()
     ) as mock_embed:
         await agent._firm_knowledge_search("q", "cid", top_k=2, embedding=vec)
@@ -312,5 +298,4 @@ async def test_firm_knowledge_reuses_passed_embedding_no_reembed():
     # The single embedding passed down (Task A4) is reused: no re-embed here.
     mock_embed.assert_not_awaited()
     # And the reused vector is what the vector query binds.
-    probe_params = fake_cur.execute.call_args_list[1].args[1]
-    assert probe_params[0] == vec
+    assert fake_store.firm_search.await_args.kwargs["embedding"] == vec

@@ -1,11 +1,10 @@
 import asyncio
 import re
 
-import psycopg2
 import tiktoken
 
 from taxflow.config import settings
-from taxflow.db import get_pg_conn
+from taxflow.providers import get_relational_data, get_tokenizer
 from taxflow.services.knowledge.embedder import embed_batch
 
 _encoder = tiktoken.get_encoding("cl100k_base")
@@ -43,16 +42,7 @@ def _detect_superseded_citations(text: str) -> set[str]:
 
 
 def _mark_superseded(citations: set[str]) -> int:
-    if not citations:
-        return 0
-    conn = psycopg2.connect(settings.DATABASE_URL)
-    cur = conn.cursor()
-    cur.execute("UPDATE knowledge_chunks SET is_current = false WHERE citation = ANY(%s)", (list(citations),))
-    count = cur.rowcount
-    conn.commit()
-    cur.close()
-    conn.close()
-    return count
+    return get_relational_data().knowledge_ingest.mark_superseded(citations)
 
 
 # Phase 3: lightweight, deterministic topic classification for the knowledge
@@ -98,20 +88,21 @@ def chunk_text(text: str, chunk_tokens: int | None = None, overlap_tokens: int |
     chunk_tokens = chunk_tokens or settings.CHUNK_SIZE_TOKENS
     overlap_tokens = overlap_tokens or settings.CHUNK_OVERLAP_TOKENS
 
+    tokenizer = get_tokenizer()
     sentences = SENTENCE_SPLIT.split(text)
     chunks: list[str] = []
     current: list[str] = []
     current_tokens = 0
 
     for sentence in sentences:
-        sentence_tokens = len(_encoder.encode(sentence))
+        sentence_tokens = tokenizer.count(sentence)
         if current and current_tokens + sentence_tokens > chunk_tokens:
             chunks.append(" ".join(current))
             # Carry overlap: keep trailing sentences up to overlap_tokens
             kept: list[str] = []
             kept_tokens = 0
             for s in reversed(current):
-                s_tokens = len(_encoder.encode(s))
+                s_tokens = tokenizer.count(s)
                 if kept_tokens + s_tokens > overlap_tokens:
                     break
                 kept.insert(0, s)
@@ -127,31 +118,7 @@ def chunk_text(text: str, chunk_tokens: int | None = None, overlap_tokens: int |
 
 
 def _upsert_chunks(rows: list[tuple]) -> int:
-    with get_pg_conn() as conn:
-        cur = conn.cursor()
-        for row in rows:
-            cur.execute(
-                """
-                INSERT INTO knowledge_chunks
-                    (source_type, source_url, source_title, citation, content, embedding,
-                     chunk_index, token_count, effective_date, source_object_key, jurisdiction,
-                     topic, last_scraped_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
-                ON CONFLICT (source_url, chunk_index) DO UPDATE SET
-                    content = EXCLUDED.content,
-                    embedding = EXCLUDED.embedding,
-                    token_count = EXCLUDED.token_count,
-                    source_object_key = EXCLUDED.source_object_key,
-                    jurisdiction = EXCLUDED.jurisdiction,
-                    topic = EXCLUDED.topic,
-                    last_scraped_at = now()
-                """,
-                row,
-            )
-        conn.commit()
-        count = len(rows)
-        cur.close()
-        return count
+    return get_relational_data().knowledge_ingest.upsert_chunks(rows)
 
 
 async def process_document(text: str, metadata: dict, source_object_key: str | None = None) -> int:

@@ -1,8 +1,10 @@
-import stripe
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from taxflow.config import settings
+from taxflow import providers
 from taxflow.db import get_db
+from taxflow.ports.billing import WebhookVerificationError
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -13,37 +15,43 @@ async def stripe_webhook(request: Request, db=Depends(get_db)):
     sig_header = request.headers.get("stripe-signature", "")
 
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, settings.STRIPE_WEBHOOK_SECRET)
-    except (ValueError, stripe.error.SignatureVerificationError) as e:
+        event = providers.get_billing_port().verify_and_parse_webhook(
+            payload=payload, sig_header=sig_header
+        )
+    except WebhookVerificationError as e:
         raise HTTPException(status_code=400, detail=f"Invalid webhook signature: {e}") from e
 
-    event_type = event["type"]
-    data = event["data"]["object"]
-
-    if event_type == "checkout.session.completed":
-        client_id = data.get("metadata", {}).get("client_id")
-        if client_id:
-            db.table("clients").update(
+    if event.type == "checkout.session.completed":
+        if event.client_id:
+            await asyncio.to_thread(
+                db.clients.activate_from_checkout,
+                event.client_id,
                 {
                     "subscription_status": "active",
-                    "stripe_customer_id": data.get("customer"),
-                    "stripe_subscription_id": data.get("subscription"),
-                }
-            ).eq("id", client_id).execute()
+                    "stripe_customer_id": event.customer_id,
+                    "stripe_subscription_id": event.subscription_id,
+                },
+            )
 
-    elif event_type == "customer.subscription.updated":
-        db.table("clients").update({"subscription_status": data.get("status")}).eq(
-            "stripe_subscription_id", data.get("id")
-        ).execute()
+    elif event.type == "customer.subscription.updated":
+        await asyncio.to_thread(
+            db.clients.set_subscription_by_stripe_subscription_id,
+            event.subscription_id,
+            {"subscription_status": event.status},
+        )
 
-    elif event_type == "customer.subscription.deleted":
-        db.table("clients").update({"subscription_status": "cancelled"}).eq(
-            "stripe_subscription_id", data.get("id")
-        ).execute()
+    elif event.type == "customer.subscription.deleted":
+        await asyncio.to_thread(
+            db.clients.set_subscription_by_stripe_subscription_id,
+            event.subscription_id,
+            {"subscription_status": "cancelled"},
+        )
 
-    elif event_type == "invoice.payment_failed":
-        db.table("clients").update({"subscription_status": "past_due"}).eq(
-            "stripe_customer_id", data.get("customer")
-        ).execute()
+    elif event.type == "invoice.payment_failed":
+        await asyncio.to_thread(
+            db.clients.set_subscription_by_customer_id,
+            event.customer_id,
+            {"subscription_status": "past_due"},
+        )
 
     return {"status": "received"}

@@ -1,3 +1,5 @@
+import asyncio
+
 import pdfplumber
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
@@ -23,15 +25,9 @@ def _extract_text(file_bytes: bytes) -> str:
 
 @router.get("")
 async def list_ato_responses(client=Depends(get_current_client), db=Depends(get_db)):
-    result = (
-        db.table("documents")
-        .select("id, title, status, context_note, created_at")
-        .eq("client_id", client["id"])
-        .eq("document_type", "ato_response")
-        .order("created_at", desc=True)
-        .execute()
+    return await asyncio.to_thread(
+        db.documents.list_for_client, client["id"], "ato_response"
     )
-    return result.data
 
 
 @router.post("/upload")
@@ -51,21 +47,18 @@ async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client)
         client_profile=build_client_profile(client),
     )
 
-    result = (
-        db.table("documents")
-        .insert(
-            {
-                "client_id": client["id"],
-                "document_type": "ato_response",
-                "title": f"ATO Response - {classification['letter_type']}",
-                "content_md": draft["response_letter"],
-            }
-        )
-        .execute()
+    result = await asyncio.to_thread(
+        db.documents.insert,
+        {
+            "client_id": client["id"],
+            "document_type": "ato_response",
+            "title": f"ATO Response - {classification['letter_type']}",
+            "content_md": draft["response_letter"],
+        },
     )
 
     return {
-        "document_id": result.data[0]["id"],
+        "document_id": result["id"],
         "classification": classification,
         "handler_result": strategy,
         "draft_response": draft["response_letter"],
@@ -75,15 +68,19 @@ async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client)
 
 @router.get("/{document_id}")
 async def get_ato_response(document_id: str, client=Depends(get_current_client), db=Depends(get_db)):
-    result = db.table("documents").select("*").eq("id", document_id).eq("client_id", client["id"]).execute()
-    if not result.data:
+    result = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
+    if not result:
         raise HTTPException(status_code=404, detail="Correspondence not found")
-    return result.data[0]
+    return result
 
 
 @router.post("/{document_id}/approve")
 async def approve_ato_response(document_id: str, client=Depends(get_current_client), db=Depends(get_db)):
-    db.table("documents").update({"status": "approved", "approved_at": "now()"}).eq("id", document_id).eq(
-        "client_id", client["id"]
-    ).execute()
+    # Ownership-scoped: only the owning client's document is updated.
+    doc = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Correspondence not found")
+    await asyncio.to_thread(
+        db.documents.update_status, client["id"], document_id, "approved", {"approved_at": "now()"}
+    )
     return {"status": "approved"}

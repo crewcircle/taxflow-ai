@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 
@@ -15,28 +17,17 @@ class FromTextRequest(BaseModel):
 
 @router.get("")
 async def list_firm_knowledge(client=Depends(get_current_client), db=Depends(get_db)):
-    result = (
-        db.table("firm_knowledge")
-        .select("id, file_name, file_type, usage_count, created_at")
-        .eq("client_id", client["id"])
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return result.data
+    return await asyncio.to_thread(db.firm_knowledge.list_for_client, client["id"])
 
 
 @router.get("/{knowledge_id}")
 async def get_firm_knowledge(knowledge_id: str, client=Depends(get_current_client), db=Depends(get_db)):
-    result = (
-        db.table("firm_knowledge")
-        .select("id, file_name, file_type, content, usage_count, created_at")
-        .eq("id", knowledge_id)
-        .eq("client_id", client["id"])
-        .execute()
+    result = await asyncio.to_thread(
+        db.firm_knowledge.get_for_client, client["id"], knowledge_id
     )
-    if not result.data:
+    if not result:
         raise HTTPException(status_code=404, detail="Not found")
-    return result.data[0]
+    return result
 
 
 @router.post("/from-text")
@@ -52,20 +43,17 @@ async def create_firm_knowledge_from_text(
         raise HTTPException(status_code=400, detail="Content cannot be empty")
 
     embedding = await embed(content)
-    result = (
-        db.table("firm_knowledge")
-        .insert(
-            {
-                "client_id": client["id"],
-                "file_name": title,
-                "file_type": "note",
-                "content": content,
-                "embedding": embedding,
-            }
-        )
-        .execute()
+    result = await asyncio.to_thread(
+        db.firm_knowledge.insert,
+        {
+            "client_id": client["id"],
+            "file_name": title,
+            "file_type": "note",
+            "content": content,
+            "embedding": embedding,
+        },
     )
-    return {"id": result.data[0]["id"], "file_name": title}
+    return {"id": result["id"], "file_name": title}
 
 
 @router.post("/upload")
@@ -96,23 +84,20 @@ async def upload_firm_knowledge(file: UploadFile, client=Depends(get_current_cli
         content = "\n".join(p.text for p in DocxDocument(io.BytesIO(file_bytes)).paragraphs)
 
     embedding = await embed(content)
-    result = (
-        db.table("firm_knowledge")
-        .insert(
-            {
-                "client_id": client["id"],
-                "file_name": file.filename,
-                "file_type": file_type,
-                "content": content,
-                "embedding": embedding,
-            }
-        )
-        .execute()
+    result = await asyncio.to_thread(
+        db.firm_knowledge.insert,
+        {
+            "client_id": client["id"],
+            "file_name": file.filename,
+            "file_type": file_type,
+            "content": content,
+            "embedding": embedding,
+        },
     )
-    return {"id": result.data[0]["id"], "file_name": file.filename}
+    return {"id": result["id"], "file_name": file.filename}
 
 
 @router.delete("/{knowledge_id}")
 async def delete_firm_knowledge(knowledge_id: str, client=Depends(get_current_client), db=Depends(get_db)):
-    db.table("firm_knowledge").delete().eq("id", knowledge_id).eq("client_id", client["id"]).execute()
+    await asyncio.to_thread(db.firm_knowledge.delete, client["id"], knowledge_id)
     return {"status": "deleted"}

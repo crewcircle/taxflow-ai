@@ -1,10 +1,9 @@
 import asyncio
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from taxflow.db import get_pg_conn
+from taxflow.providers import get_relational_data
 from taxflow.services.knowledge.pipeline import process_document
 
 USER_AGENT = "TaxFlowAI/1.0 (research purposes; contact: crewcircle@zohomail.com.au)"
@@ -52,16 +51,7 @@ class ScraperBase(ABC):
         """URLs not scraped in the last 24h (or never scraped)."""
         if not urls:
             return set()
-        with get_pg_conn() as conn:
-            cur = conn.cursor()
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-            cur.execute(
-                "SELECT DISTINCT source_url FROM knowledge_chunks WHERE source_url = ANY(%s) AND last_scraped_at > %s",
-                (urls, cutoff),
-            )
-            fresh = {row[0] for row in cur.fetchall()}
-            cur.close()
-            return set(urls) - fresh
+        return set(get_relational_data().knowledge_ingest.stale_urls(urls))
 
     async def run_delta(self, limit: int | None = None) -> int:
         documents = await self.fetch_document_list()

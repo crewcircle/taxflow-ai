@@ -2,6 +2,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from taxflow import providers
+from taxflow.config import settings
 from taxflow.routers import (
     health,
     auth,
@@ -18,8 +20,31 @@ from taxflow.routers import (
 from taxflow.scheduler import start_scheduler, stop_scheduler
 
 
+async def _assert_embedding_dimension() -> None:
+    """Validate that the live embedder's real output length matches config.
+
+    DB columns (``knowledge_chunks.embedding`` / ``firm_knowledge.embedding``)
+    are ``vector(EMBEDDING_DIMENSION)``, so a provider/model whose true vector
+    length differs would silently break inserts and similarity search. Probe the
+    embedder on a short string and fail fast if reality disagrees with config.
+    """
+    probe = "healthcheck"
+    embedding = await providers.get_embedder().embed(probe)
+    actual = len(embedding)
+    if actual != settings.EMBEDDING_DIMENSION:
+        raise RuntimeError(
+            "Embedding dimension mismatch: the configured embedder returned "
+            f"{actual}-dim vectors but EMBEDDING_DIMENSION is "
+            f"{settings.EMBEDDING_DIMENSION}. The pgvector columns are "
+            f"vector({settings.EMBEDDING_DIMENSION}); changing provider/model "
+            "requires a migration + full re-embed."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.EMBEDDING_DIM_GUARD_ENABLED:
+        await _assert_embedding_dimension()
     start_scheduler()
     yield
     stop_scheduler()

@@ -1,8 +1,7 @@
-import psycopg2.extras
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 
-from taxflow.db import get_pg_conn
+from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.services.storage.r2 import get_source_pdf_url
 
@@ -19,7 +18,7 @@ async def get_source_document(object_key: str, _client=Depends(get_current_clien
 
 
 @router.get("/graph")
-async def get_knowledge_graph(_client=Depends(get_current_client)):
+async def get_knowledge_graph(_client=Depends(get_current_client), db=Depends(get_db)):
     """Metadata-only view of the knowledge base for the graph explorer -
     never returns chunk `content`, just enough per citation to browse and
     filter by. Structured as a hub-and-spoke graph: one hub node per topic
@@ -27,27 +26,9 @@ async def get_knowledge_graph(_client=Depends(get_current_client)):
     under - see pipeline.py::classify_topic), so the layout clusters
     meaningfully instead of an unreadable fully-connected hairball.
     """
-    with get_pg_conn() as conn:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(
-            """
-            SELECT
-                citation,
-                min(source_title) AS title,
-                min(source_type) AS source_type,
-                min(jurisdiction) AS jurisdiction,
-                min(source_url) AS source_url,
-                count(*) AS chunk_count,
-                bool_and(is_current) AS is_current,
-                max(last_scraped_at) AS last_scraped_at,
-                array_agg(DISTINCT topic) FILTER (WHERE topic IS NOT NULL) AS topics
-            FROM knowledge_chunks
-            GROUP BY citation
-            ORDER BY citation
-            """
-        )
-        rows = cur.fetchall()
-        cur.close()
+    import asyncio
+
+    rows = await asyncio.to_thread(db.knowledge_ingest.graph_metadata)
 
     documents = []
     topic_counts: dict[str, int] = {}

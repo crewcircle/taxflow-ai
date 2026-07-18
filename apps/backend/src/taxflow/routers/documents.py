@@ -1,11 +1,13 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
+from taxflow.providers import get_document_renderer
 from taxflow.services.agents.draft import DraftAgent
-from taxflow.services.export import generate_docx, generate_pdf
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 drafter = DraftAgent()
@@ -37,14 +39,7 @@ async def list_templates():
 
 @router.get("")
 async def list_documents(client=Depends(get_current_client), db=Depends(get_db)):
-    result = (
-        db.table("documents")
-        .select("id, document_type, title, status, client_ref, context_note, created_at")
-        .eq("client_id", client["id"])
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return result.data
+    return await asyncio.to_thread(db.documents.list_for_client, client["id"])
 
 
 @router.post("/generate")
@@ -59,47 +54,52 @@ async def generate_document(
     # reformat into the firm's 5-section structure here, on demand, when
     # actually saving one as an advice memo document.
     if body.document_type == "advice_memo" and body.query_id:
-        query = db.table("queries").select("question, citations").eq("id", body.query_id).execute()
-        if query.data:
+        query = await asyncio.to_thread(
+            db.queries.get_question_citations, client["id"], body.query_id
+        )
+        if query:
             try:
                 draft_result = await drafter.run(
-                    research_result={"answer": body.content_md, "citations": query.data[0]["citations"] or []},
-                    original_question=query.data[0]["question"],
+                    research_result={"answer": body.content_md, "citations": query["citations"] or []},
+                    original_question=query["question"],
                     client_id=client["id"],
                 )
                 content_md = draft_result["draft"]
             except Exception:  # noqa: BLE001 - drafting failure must not block saving the document
                 pass
 
-    result = (
-        db.table("documents")
-        .insert(
-            {
-                "client_id": client["id"],
-                "query_id": body.query_id,
-                "document_type": body.document_type,
-                "title": body.title,
-                "content_md": content_md,
-                "client_ref": body.client_ref,
-            }
-        )
-        .execute()
+    result = await asyncio.to_thread(
+        db.documents.insert,
+        {
+            "client_id": client["id"],
+            "query_id": body.query_id,
+            "document_type": body.document_type,
+            "title": body.title,
+            "content_md": content_md,
+            "client_ref": body.client_ref,
+        },
     )
-    return result.data[0]
+    return result
 
 
 @router.get("/{document_id}/download")
 async def download_document(document_id: str, fmt: str = "docx", client=Depends(get_current_client), db=Depends(get_db)):
-    result = db.table("documents").select("*").eq("id", document_id).eq("client_id", client["id"]).execute()
-    if not result.data:
+    doc = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
+    if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    doc = result.data[0]
+    renderer = get_document_renderer()
+    render_doc = {
+        "content_md": doc["content_md"],
+        "title": doc["title"],
+        "client_name": client["business_name"],
+        "date": doc["created_at"],
+    }
     if fmt == "pdf":
-        content = generate_pdf(doc["content_md"], doc["title"], client["business_name"], doc["created_at"])
+        content = renderer.render_pdf(render_doc)
         media_type = "application/pdf"
     else:
-        content = generate_docx(doc["content_md"], doc["title"], client["business_name"], doc["created_at"])
+        content = renderer.render_docx(render_doc)
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
     return Response(content=content, media_type=media_type)

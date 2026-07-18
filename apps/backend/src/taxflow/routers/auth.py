@@ -1,13 +1,12 @@
+import asyncio
 import os
 import random
 import time
 
-import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 
-from taxflow.config import settings
-from taxflow.db import get_supabase_client
+from taxflow import providers
 from taxflow.middleware.auth import get_current_client
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -33,16 +32,16 @@ class SignupRequest(BaseModel):
 
 @router.post("/signup")
 async def signup(body: SignupRequest):
-    sb = get_supabase_client()
+    clients = providers.get_relational_data().clients
+    trials = providers.get_relational_data().trials
 
-    existing = sb.table("clients").select("id").eq("email", body.email).execute()
-    if existing.data:
+    if await asyncio.to_thread(clients.email_exists, body.email):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
 
-    result = sb.table("clients").insert(body.model_dump()).execute()
-    client_id = result.data[0]["id"]
+    created = await asyncio.to_thread(clients.create, body.model_dump())
+    client_id = created["id"]
 
-    sb.table("trials").insert({"client_id": client_id}).execute()
+    await asyncio.to_thread(trials.create, client_id)
     return {"client_id": client_id, "status": "trial_started"}
 
 
@@ -68,18 +67,12 @@ async def create_checkout_session(body: CheckoutRequest, client=Depends(get_curr
     if not price_id:
         raise HTTPException(status_code=400, detail=f"No price configured for tier '{body.tier}'")
 
-    stripe.api_key = settings.STRIPE_SECRET_KEY
-    session = stripe.checkout.Session.create(
-        payment_method_types=["card", "au_becs_debit"],
-        line_items=[{"price": price_id, "quantity": 1}],
-        mode="subscription",
-        success_url="https://taxflow.crewcircle.com.au/dashboard?converted=true",
-        cancel_url="https://taxflow.crewcircle.com.au/pricing",
+    session = providers.get_billing_port().create_checkout_session(
+        tier=body.tier,
         customer_email=client["email"],
-        metadata={"client_id": client["id"]},
-        tax_id_collection={"enabled": True},
+        client_id=client["id"],
     )
-    return {"checkout_url": session["url"], "session_id": session["id"]}
+    return {"checkout_url": session.url, "session_id": session.id}
 
 
 @router.post("/demo-login")
@@ -97,29 +90,19 @@ async def demo_login(request: Request, persona: str | None = None):
     hits.append(now)
     _demo_login_hits[ip] = hits
 
-    sb = get_supabase_client()
-    query = sb.table("clients").select("email").eq("is_demo", True)
-    if persona:
-        query = query.eq("business_type", persona)
-    demo_clients = query.execute()
-    if not demo_clients.data:
+    demo_emails = await asyncio.to_thread(
+        providers.get_relational_data().clients.find_demo_emails, persona
+    )
+    if not demo_emails:
         raise HTTPException(status_code=503, detail="Demo account not configured")
-    demo_email = random.choice(demo_clients.data)["email"]
+    demo_email = random.choice(demo_emails)
 
     try:
-        link = sb.auth.admin.generate_link(params={"type": "magiclink", "email": demo_email})
-        anon = create_supabase_anon_client()
-        session = anon.auth.verify_otp({"type": "magiclink", "token_hash": link.properties.hashed_token})
+        session = providers.get_auth_port().issue_demo_session(demo_email)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Demo login failed: {e}") from e
 
     return {
-        "access_token": session.session.access_token,
-        "refresh_token": session.session.refresh_token,
+        "access_token": session.access_token,
+        "refresh_token": session.refresh_token,
     }
-
-
-def create_supabase_anon_client():
-    from supabase import create_client
-
-    return create_client(settings.SUPABASE_URL, settings.SUPABASE_ANON_KEY)

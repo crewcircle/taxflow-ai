@@ -4,18 +4,23 @@ from bs4 import BeautifulSoup
 
 from taxflow.services.knowledge.scraper_base import ScraperBase
 
-RSS_FEEDS = [
-    ("https://www.austlii.edu.au/cgi-bin/rssdisp.cgi?db=/au/cases/cth/FCA&count=50", "FCA"),
-    ("https://www.austlii.edu.au/cgi-bin/rssdisp.cgi?db=/au/cases/cth/AATA&count=50", "AATA"),
-]
+# Number of RSS items to request per feed for a KB scrape (deeper backfill than
+# the regulatory monitor's shallow poll).
+FEED_ITEM_COUNT = 50
 
 
 class AustLIIScraper(ScraperBase):
     source_name = "austlii"
 
     async def fetch_document_list(self) -> list[dict]:
+        # Imported lazily: the canonical feed set lives in the adapters package,
+        # which imports this scraper class into SCRAPER_REGISTRY. Importing it at
+        # module top would create a circular import.
+        from taxflow.adapters.scrapers import AUSTLII_FEEDS, austlii_feed_url
+
         documents: list[dict] = []
-        for feed_url, court in RSS_FEEDS:
+        for feed in AUSTLII_FEEDS:
+            feed_url = austlii_feed_url(feed["db"], FEED_ITEM_COUNT)
             try:
                 response = await self._get(feed_url)
                 root = ET.fromstring(response.text)

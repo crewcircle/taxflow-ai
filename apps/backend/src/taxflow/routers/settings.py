@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
@@ -9,15 +11,8 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 @router.get("/me")
 async def get_me(client=Depends(get_current_client), db=Depends(get_db)):
-    trial = (
-        db.table("trials")
-        .select("*")
-        .eq("client_id", client["id"])
-        .order("trial_started_at", desc=True)
-        .limit(1)
-        .execute()
-    )
-    return {"client": client, "trial": trial.data[0] if trial.data else None}
+    trial = await asyncio.to_thread(db.trials.latest_for_client, client["id"])
+    return {"client": client, "trial": trial}
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -32,5 +27,5 @@ async def update_me(body: UpdateSettingsRequest, client=Depends(get_current_clie
     if not updates:
         return client
 
-    result = db.table("clients").update(updates).eq("id", client["id"]).execute()
-    return result.data[0]
+    result = await asyncio.to_thread(db.clients.update, client["id"], updates)
+    return result

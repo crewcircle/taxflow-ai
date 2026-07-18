@@ -48,34 +48,41 @@ async def test_rerank_llm_mode_calls_llm_once(monkeypatch):
 @pytest.mark.asyncio
 async def test_llm_rerank_single_batched_call_and_reorders(monkeypatch):
     monkeypatch.setattr(settings, "RERANK_DEPTH", 3)
+    from taxflow.services.agents.models import RerankScores
+
     cands = _cands(3)
 
-    fake_response = MagicMock()
-    block = MagicMock()
-    block.type = "text"
-    block.text = '{"0": 0.1, "1": 0.9, "2": 0.5}'
-    fake_response.content = [block]
+    fake_llm = MagicMock()
+    fake_llm.generate_structured = AsyncMock(
+        return_value=RerankScores(scores={0: 0.1, 1: 0.9, 2: 0.5})
+    )
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
 
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(return_value=fake_response)
+    out = await retrieval._llm_rerank("q", cands)
 
-    with patch("anthropic.AsyncAnthropic", return_value=fake_client):
-        out = await retrieval._llm_rerank("q", cands)
-
-    # Exactly ONE Anthropic call over the whole batch (not one per candidate).
-    fake_client.messages.create.assert_awaited_once()
+    # Exactly ONE structured LLM call over the whole batch (not one per candidate).
+    fake_llm.generate_structured.assert_awaited_once()
     # Re-ordered by the returned relevance score, descending.
     assert [c["id"] for c in out[:3]] == ["1", "2", "0"]
 
 
 @pytest.mark.asyncio
-async def test_llm_rerank_falls_back_to_input_order_on_error():
+async def test_llm_rerank_falls_back_to_input_order_on_error(monkeypatch):
     cands = _cands(3)
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(side_effect=RuntimeError("boom"))
-    with patch("anthropic.AsyncAnthropic", return_value=fake_client):
-        out = await retrieval._llm_rerank("q", cands)
+    fake_llm = MagicMock()
+    fake_llm.generate_structured = AsyncMock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+    out = await retrieval._llm_rerank("q", cands)
     assert out == cands
+
+
+def test_extract_scores_accepts_wrapped_and_bare():
+    """The fallback prompt asks for {"scores": {...}}; _extract_scores must parse
+    that AND the bare {index: score} form to the same mapping."""
+    wrapped = retrieval._extract_scores('{"scores": {"0": 0.9, "1": 0.1}}', depth=3)
+    bare = retrieval._extract_scores('{"0": 0.9, "1": 0.1}', depth=3)
+    assert wrapped == {0: 0.9, 1: 0.1}
+    assert wrapped == bare
 
 
 def test_normalise_query_section_and_synonym(monkeypatch):
@@ -128,17 +135,22 @@ async def test_firm_knowledge_search_uses_configurable_weight(monkeypatch):
     monkeypatch.setattr(settings, "FIRM_CHUNK_WEIGHT", 2.0)
     agent = ResearchAgent()
 
-    fake_cur = MagicMock()
-    fake_cur.fetchall.return_value = [{"id": 1, "file_name": "n", "content": "c", "sim": 0.5}]
-    fake_conn = MagicMock()
-    fake_conn.cursor.return_value = fake_cur
-    fake_conn.__enter__ = MagicMock(return_value=fake_conn)
-    fake_conn.__exit__ = MagicMock(return_value=False)
-    cm = MagicMock()
-    cm.__enter__ = MagicMock(return_value=fake_conn)
-    cm.__exit__ = MagicMock(return_value=False)
+    # The vector store returns raw cosine similarity as `score`; the service
+    # layer applies FIRM_CHUNK_WEIGHT.
+    fake_store = MagicMock()
+    fake_store.firm_search = AsyncMock(return_value=[
+        {
+            "id": "1",
+            "citation": "Firm knowledge: n",
+            "content": "c",
+            "source_url": "",
+            "source_object_key": None,
+            "last_scraped_at": None,
+            "score": 0.5,
+        }
+    ])
 
-    with patch("taxflow.db.get_pg_conn", return_value=cm):
+    with patch("taxflow.providers.get_vector_store", return_value=fake_store):
         rows = await agent._firm_knowledge_search("q", "cid", top_k=2, embedding=[0.2] * 1536)
 
     assert rows[0]["score"] == pytest.approx(0.5 * 2.0)

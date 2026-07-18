@@ -10,18 +10,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from taxflow.db import get_db, get_supabase_client
+from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.middleware.trial_gate import check_trial_gate, increment_usage
 from taxflow.services import answer_cache
-from taxflow.services.agents import verify as verify_mod
-from taxflow.services.agents.research import ResearchAgent
-from taxflow.services.agents.verify import VerifyAgent
+from taxflow.services.agents.graph import research_graph
 from taxflow.services.knowledge.embedder import embed
 
 router = APIRouter(prefix="/query", tags=["query"])
-agent = ResearchAgent()
-verifier = VerifyAgent()
+# The compiled research graph (Task A6) owns generation + the gated verify /
+# at-most-once corrective pass; both endpoints drive it directly.
 
 
 class QueryRequest(BaseModel):
@@ -40,67 +38,6 @@ class QueryRequest(BaseModel):
 class FeedbackRequest(BaseModel):
     rating: str  # "up" | "down"
     note: str | None = None
-
-
-async def _maybe_verify(
-    question: str,
-    client_id: str,
-    answer: str,
-    citations: list[dict],
-    confidence: float,
-    embedding: list[float] | None = None,
-    client: dict | None = None,
-    session_id: str | None = None,
-) -> tuple[str, list[dict], dict | None, str | None, dict | None]:
-    """Run the gated verify pass + optional single corrective pass (B2 + C3).
-
-    Returns (answer, citations, verification, caveat, corrected_meta).
-
-    - verification is None when the gate decided the answer wasn't risky enough
-      to verify.
-    - When verification flags the answer, we surface a caveat and (if
-      CORRECTIVE_PASS_ENABLED) run exactly ONE corrective regeneration — never a
-      loop.
-    - corrected_meta is None unless a corrective pass actually produced a new
-      answer, in which case it carries the corrected generation's model_used,
-      confidence and token/cache-token metrics so the caller can persist the
-      real (Sonnet) metadata instead of the stale original values.
-    """
-    from taxflow.config import settings
-
-    if not verify_mod.should_verify(confidence, citations, answer):
-        return answer, citations, None, None, None
-
-    model = verify_mod.verify_model_for(confidence, citations, answer)
-    try:
-        verification = await verifier.run(
-            draft=answer, citations=citations, question=question, model=model
-        )
-    except Exception as e:  # noqa: BLE001 - verification must not break the response
-        return answer, citations, {"overall_status": "parse_error", "issues": [], "error": str(e)}, None, None
-
-    if not verify_mod.needs_correction(verification):
-        return answer, citations, verification, None, None
-
-    caveat = verify_mod.build_caveat(verification)
-
-    # ONE bounded corrective pass (no loop): regenerate with the issues appended.
-    if settings.CORRECTIVE_PASS_ENABLED:
-        try:
-            corrected = await agent.regenerate_with_feedback(
-                question=question,
-                client_id=client_id,
-                issues=verification.get("issues", []),
-                embedding=embedding,
-                client=client,
-                session_id=session_id,
-            )
-            verification["corrective_pass"] = True
-            return corrected["answer"], corrected["citations"], verification, caveat, corrected
-        except Exception:  # noqa: BLE001 - keep original answer if the retry fails
-            verification["corrective_pass"] = False
-
-    return answer, citations, verification, caveat, None
 
 
 def _build_final_trace(
@@ -147,18 +84,7 @@ def _safe_to_cache(verification: dict | None) -> bool:
 @router.get("")
 async def list_queries(client=Depends(get_current_client), db=Depends(get_db)):
     """Recent query history for the sidebar - newest first."""
-    result = (
-        db.table("queries")
-        .select(
-            "id, question, status, model_used, confidence_score, verification_result, client_ref, "
-            "context_note, topic_tag, created_at"
-        )
-        .eq("client_id", client["id"])
-        .order("created_at", desc=True)
-        .limit(50)
-        .execute()
-    )
-    return result.data
+    return await asyncio.to_thread(db.queries.list_recent, client["id"], 50)
 
 
 @router.post("")
@@ -209,23 +135,19 @@ async def submit_query(
     # embed below can never fire for an invalid-token (401) or expired/capped
     # trial (402) request. Once past the gate, overlap the embed with the
     # queries-row insert (Task A4): both are independent I/O, so gather them and
-    # await the embedding just before the vector search inside agent.run().
+    # await the embedding just before it is threaded into the graph's retrieval.
     def _insert_query_row() -> str:
-        row = (
-            db.table("queries")
-            .insert(
-                {
-                    "client_id": client["id"],
-                    "user_email": client["email"],
-                    "question": body.question,
-                    "module": body.module,
-                    "status": "processing",
-                    "session_id": body.session_id,
-                }
-            )
-            .execute()
+        row = db.queries.insert(
+            {
+                "client_id": client["id"],
+                "user_email": client["email"],
+                "question": body.question,
+                "module": body.module,
+                "status": "processing",
+                "session_id": body.session_id,
+            }
         )
-        return row.data[0]["id"]
+        return row["id"]
 
     embed_task = asyncio.create_task(embed(body.question))
     try:
@@ -236,26 +158,28 @@ async def submit_query(
 
     try:
         embedding = await embed_task
-        result = await agent.run(
-            question=body.question,
-            client_id=client["id"],
-            embedding=embedding,
-            client=client,
-            session_id=body.session_id,
-        )
 
-        # Task B2/C3: gate the verify pass and feed its output back into the
-        # stored answer (caveat + one bounded corrective pass).
-        answer, citations, verification, caveat, corrected = await _maybe_verify(
-            question=body.question,
-            client_id=client["id"],
-            answer=result["answer"],
-            citations=result["citations"],
-            confidence=result["confidence"],
-            embedding=embedding,
-            client=client,
-            session_id=body.session_id,
-        )
+        # Task A6: drive the compiled research graph, which internalises
+        # generation, the gated verify pass and the at-most-once corrective pass.
+        # The final state carries the (possibly corrected) answer plus the
+        # metadata the router persists — no separate agent.run/_maybe_verify.
+        initial_state = {
+            "question": body.question,
+            "client": client,
+            "client_id": client["id"],
+            "session_id": body.session_id,
+            "embedding": embedding,
+            "streaming": False,
+            "corrective_count": 0,
+            "re_retrieved": False,
+        }
+        final = await research_graph.ainvoke(initial_state)
+
+        answer = final["answer"]
+        citations = final["citations"]
+        verification = final.get("verification")
+        caveat = final.get("caveat")
+        corrected_meta = final.get("corrected_meta")
         stored_answer = f"{answer}\n\n{caveat}" if caveat else answer
 
         # Firm Knowledge suggestion trigger: how many times has this client
@@ -266,9 +190,17 @@ async def submit_query(
         # When a corrective pass regenerated the answer, its metadata (Sonnet
         # model, confidence, token/cache-token counts) replaces the original
         # generation's — otherwise metrics/cost reporting would mislabel a
-        # Sonnet-corrected answer as the first-pass model.
-        meta = corrected or result
-        trace = _build_final_trace(result.get("trace"), verification, corrected)
+        # Sonnet-corrected answer as the first-pass model. Absent a corrective
+        # pass, read the first-pass metrics straight off the final state.
+        meta = corrected_meta or {
+            "confidence": final["confidence"],
+            "model_used": final["routed_tier"],
+            "input_tokens": final.get("input_tokens"),
+            "output_tokens": final.get("output_tokens"),
+            "cache_read_input_tokens": final.get("cache_read_input_tokens"),
+            "cache_creation_input_tokens": final.get("cache_creation_input_tokens"),
+        }
+        trace = _build_final_trace(final.get("trace"), verification, corrected_meta)
 
         update = {
             "status": "completed",
@@ -286,7 +218,7 @@ async def submit_query(
         }
         if verification is not None:
             update["verification_result"] = verification
-        db.table("queries").update(update).eq("id", query_id).execute()
+        await asyncio.to_thread(db.queries.update, client["id"], query_id, update)
 
         await increment_usage(client["id"], "queries")
 
@@ -318,7 +250,9 @@ async def submit_query(
         }
 
     except Exception as e:
-        db.table("queries").update({"status": "failed", "error_message": str(e)}).eq("id", query_id).execute()
+        await asyncio.to_thread(
+            db.queries.update, client["id"], query_id, {"status": "failed", "error_message": str(e)}
+        )
         raise HTTPException(status_code=500, detail=f"Query failed: {e}") from e
 
 
@@ -327,28 +261,24 @@ def _persist_cached_query(
 ) -> str:
     """Insert a completed queries row for a cache hit so history + metrics still
     reflect the served answer (marked model_used='cache')."""
-    row = (
-        db.table("queries")
-        .insert(
-            {
-                "client_id": client["id"],
-                "user_email": client["email"],
-                "question": question,
-                "module": module,
-                "status": "completed",
-                "final_answer": cached["answer"],
-                "citations": cached["citations"],
-                "confidence_score": cached["confidence"],
-                "model_used": "cache",
-                "wall_time_ms": int((time.time() - start) * 1000),
-                "completed_at": "now()",
-                "trace": _build_final_trace(None, None, None),
-                **(extra or {}),
-            }
-        )
-        .execute()
+    row = db.queries.insert(
+        {
+            "client_id": client["id"],
+            "user_email": client["email"],
+            "question": question,
+            "module": module,
+            "status": "completed",
+            "final_answer": cached["answer"],
+            "citations": cached["citations"],
+            "confidence_score": cached["confidence"],
+            "model_used": "cache",
+            "wall_time_ms": int((time.time() - start) * 1000),
+            "completed_at": "now()",
+            "trace": _build_final_trace(None, None, None),
+            **(extra or {}),
+        }
     )
-    return row.data[0]["id"]
+    return row["id"]
 
 
 @router.get("/stream")
@@ -358,6 +288,7 @@ async def stream_query(
     session_id: str | None = None,
     client=Depends(get_current_client),
     _trial=Depends(check_trial_gate),
+    db=Depends(get_db),
 ):
     """Server-Sent Events stream of the research -> verify pipeline.
 
@@ -368,27 +299,22 @@ async def stream_query(
     document). Then an async {"type": "verification", "status": ...,
     "issues": [...]} event checked against this same answer.
     """
-    db = get_supabase_client()
     start = time.time()
 
     def _insert_query_row(status: str, extra: dict | None = None) -> str:
-        row = (
-            db.table("queries")
-            .insert(
-                {
-                    "client_id": client["id"],
-                    "user_email": client["email"],
-                    "question": question,
-                    "module": "research",
-                    "status": status,
-                    "client_ref": client_ref,
-                    "session_id": session_id,
-                    **(extra or {}),
-                }
-            )
-            .execute()
+        row = db.queries.insert(
+            {
+                "client_id": client["id"],
+                "user_email": client["email"],
+                "question": question,
+                "module": "research",
+                "status": status,
+                "client_ref": client_ref,
+                "session_id": session_id,
+                **(extra or {}),
+            }
         )
-        return row.data[0]["id"]
+        return row["id"]
 
     # Task B3: the dashboard streams every query, so the cost-saving cache must
     # be read on THIS path too (not just POST /query) — a hit skips OpenAI embed
@@ -400,6 +326,11 @@ async def stream_query(
         else await answer_cache.get_cached_answer(client["id"], question)
     )
     if cached is not None:
+        # A cache hit means this exact question already has a completed row, so
+        # count prior asks BEFORE persisting the new cached row (mirrors the
+        # count-before-completed ordering on the non-cached path) so it never
+        # counts itself.
+        repeat_count = await answer_cache.count_prior_asks(client["id"], question)
         query_id = await asyncio.to_thread(
             _persist_cached_query,
             db,
@@ -430,6 +361,7 @@ async def stream_query(
             )
             yield f"data: {json.dumps({'type': 'verification', 'overall_status': 'not_verified', 'issues': []})}\n\n"
             yield f"data: {json.dumps({'type': 'trace', **_build_final_trace(None, None, None)})}\n\n"
+            yield f"data: {json.dumps({'type': 'repeat_count', 'count': repeat_count})}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(cached_stream(), media_type="text/event-stream")
@@ -437,7 +369,7 @@ async def stream_query(
     # As in POST /query: auth + trial gate (Depends) have already passed before
     # this body runs, so the paid embed cannot fire for a 401/402 request. Overlap
     # the embed with the queries-row insert (Task A4) and reuse the single vector
-    # for both global and firm retrieval inside run_stream(). Insert first, then
+    # for both global and firm retrieval inside the graph. Insert first, then
     # await the embed under the query_id so an embed failure marks the row failed
     # rather than leaving it stuck in "processing".
     embed_task = asyncio.create_task(embed(question))
@@ -449,86 +381,103 @@ async def stream_query(
     try:
         embedding = await embed_task
     except Exception as e:
-        db.table("queries").update({"status": "failed", "error_message": str(e)}).eq(
-            "id", query_id
-        ).execute()
+        await asyncio.to_thread(
+            db.queries.update, client["id"], query_id, {"status": "failed", "error_message": str(e)}
+        )
         raise HTTPException(status_code=500, detail=f"Query failed: {e}") from e
 
     async def generate():
-        answer_parts: list[str] = []
-        citations: list[dict] = []
-        final_meta: dict = {}
+        latest_values: dict = {}
+        first_pass_snapshot: dict = {}
 
-        async for event in agent.run_stream(
-            question=question,
-            client_id=client["id"],
-            embedding=embedding,
-            client=client,
-            session_id=session_id,
+        # Task A6: drive the compiled research graph in multi-mode streaming.
+        # ``stream_mode=["custom","values"]`` makes LangGraph (>=1.2,<2) yield
+        # (mode, chunk) TUPLES: "custom" carries the generate node's {"token": ...}
+        # writer events, "values" carries a full state snapshot on EVERY update.
+        # We forward tokens as they arrive, keep the LATEST values snapshot (the
+        # post-graph final state) for persistence + the `correction` event, and
+        # separately capture the FIRST snapshot with a populated `answer` — the
+        # one right after the generate node, BEFORE verify/corrective can
+        # overwrite answer/citations/confidence in state — for the `final` event,
+        # so `final` always reflects the first-pass streamed answer.
+        initial_state = {
+            "question": question,
+            "client": client,
+            "client_id": client["id"],
+            "session_id": session_id,
+            "embedding": embedding,
+            "streaming": True,
+            "corrective_count": 0,
+            "re_retrieved": False,
+        }
+        async for mode, chunk in research_graph.astream(
+            initial_state, stream_mode=["custom", "values"]
         ):
-            if event["type"] == "token":
-                answer_parts.append(event["text"])
-                yield f"data: {json.dumps(event)}\n\n"
-            elif event["type"] == "final":
-                citations = event["citations"]
-                final_meta = event
-                # Surface the routed model + confidence so the UI reflects the
-                # actual model (Haiku or routed Sonnet) instead of hardcoding one.
-                yield (
-                    "data: "
-                    + json.dumps(
-                        {
-                            "type": "final",
-                            "citations": citations,
-                            "query_id": query_id,
-                            "model_used": event.get("model_used"),
-                            "confidence": event.get("confidence"),
-                        }
-                    )
-                    + "\n\n"
-                )
+            if mode == "custom":
+                text = chunk["token"]
+                yield f"data: {json.dumps({'type': 'token', 'text': text})}\n\n"
+            elif mode == "values":
+                latest_values = chunk
+                if not first_pass_snapshot and chunk.get("answer"):
+                    first_pass_snapshot = chunk
 
-        final_answer = final_meta.get("answer") or "".join(answer_parts)
-        confidence = final_meta.get("confidence", 0.0)
+        final = latest_values
 
-        # Task B2/C3: gate the verify pass in the stream path too, feeding its
-        # output back (caveat + one bounded corrective pass) instead of running
-        # Sonnet on every answer.
-        answer, citations, verification, caveat, corrected = await _maybe_verify(
-            question=question,
-            client_id=client["id"],
-            answer=final_answer,
-            citations=citations,
-            confidence=confidence,
-            embedding=embedding,
-            client=client,
-            session_id=session_id,
+        # The `final` event carries the FIRST-pass citations/model/confidence
+        # captured right after the generate node; the streamed tokens above
+        # already delivered the answer text. Emitted ONCE after the loop — never
+        # on an interim `values` snapshot. (Fall back to the final snapshot only
+        # if no first-pass snapshot was captured, e.g. an empty answer.)
+        first_pass = first_pass_snapshot or final
+        first_pass_citations = first_pass.get("citations", [])
+        first_pass_model = first_pass.get("routed_tier")
+        first_pass_confidence = first_pass.get("confidence", 0.0)
+
+        answer = final["answer"]
+        citations = final.get("citations", [])
+        verification = final.get("verification")
+        caveat = final.get("caveat")
+        corrected_meta = final.get("corrected_meta")
+
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "type": "final",
+                    "citations": first_pass_citations,
+                    "query_id": query_id,
+                    "model_used": first_pass_model,
+                    "confidence": first_pass_confidence,
+                }
+            )
+            + "\n\n"
         )
+
         stored_answer = f"{answer}\n\n{caveat}" if caveat else answer
 
         # If a corrective pass regenerated the answer, its metadata replaces the
         # streamed first-pass metadata so persisted metrics reflect the model
         # (Sonnet) and tokens that actually produced the stored answer.
-        confidence = corrected["confidence"] if corrected else confidence
-        model_used = corrected["model_used"] if corrected else final_meta.get("model_used")
-        input_tokens = corrected["input_tokens"] if corrected else final_meta.get("input_tokens")
-        output_tokens = corrected["output_tokens"] if corrected else final_meta.get("output_tokens")
-        cache_read = (
-            corrected["cache_read_input_tokens"]
-            if corrected
-            else final_meta.get("cache_read_input_tokens")
-        )
-        cache_creation = (
-            corrected["cache_creation_input_tokens"]
-            if corrected
-            else final_meta.get("cache_creation_input_tokens")
-        )
+        if corrected_meta:
+            confidence = corrected_meta["confidence"]
+            model_used = corrected_meta["model_used"]
+            input_tokens = corrected_meta["input_tokens"]
+            output_tokens = corrected_meta["output_tokens"]
+            cache_read = corrected_meta.get("cache_read_input_tokens")
+            cache_creation = corrected_meta.get("cache_creation_input_tokens")
+        else:
+            confidence = first_pass_confidence
+            model_used = first_pass_model
+            input_tokens = final.get("input_tokens")
+            output_tokens = final.get("output_tokens")
+            cache_read = final.get("cache_read_input_tokens")
+            cache_creation = final.get("cache_creation_input_tokens")
 
         # Firm Knowledge suggestion trigger: count before the update below
         # marks this row 'completed', so it never counts itself.
         repeat_count = await answer_cache.count_prior_asks(client["id"], question)
 
-        trace = _build_final_trace(final_meta.get("trace"), verification, corrected)
+        trace = _build_final_trace(final.get("trace"), verification, corrected_meta)
 
         # Task C5: persist model_used/confidence/tokens/wall_time on the stream
         # path (previously only POST /query stored these), plus the B1 cache
@@ -549,7 +498,7 @@ async def stream_query(
         }
         if verification is not None:
             update["verification_result"] = verification
-        db.table("queries").update(update).eq("id", query_id).execute()
+        await asyncio.to_thread(db.queries.update, client["id"], query_id, update)
         await increment_usage(client["id"], "queries")
 
         # Task B3: cache the streamed answer only when it is safe to (see
@@ -571,7 +520,7 @@ async def stream_query(
         # answer, emit a `correction` event carrying the authoritative stored
         # answer + citations + caveat so the UI can replace what it displayed
         # (the streamed tokens can otherwise differ from queries.final_answer).
-        if caveat or corrected:
+        if caveat or corrected_meta:
             yield (
                 "data: "
                 + json.dumps(
@@ -612,36 +561,27 @@ async def submit_feedback(
     if body.rating not in ("up", "down"):
         raise HTTPException(status_code=422, detail="rating must be 'up' or 'down'")
 
-    owned = (
-        db.table("queries")
-        .select("id")
-        .eq("id", query_id)
-        .eq("client_id", client["id"])
-        .execute()
-    )
-    if not owned.data:
+    owned = await asyncio.to_thread(db.queries.get_for_client, client["id"], query_id)
+    if not owned:
         raise HTTPException(status_code=404, detail="Query not found")
 
-    row = (
-        db.table("query_feedback")
-        .insert(
-            {
-                "query_id": query_id,
-                "client_id": client["id"],
-                "rating": body.rating,
-                "note": body.note,
-            }
-        )
-        .execute()
+    row = await asyncio.to_thread(
+        db.query_feedback.insert,
+        {
+            "query_id": query_id,
+            "client_id": client["id"],
+            "rating": body.rating,
+            "note": body.note,
+        },
     )
-    return {"id": row.data[0]["id"], "query_id": query_id, "rating": body.rating}
+    return {"id": row["id"], "query_id": query_id, "rating": body.rating}
 
 
 # Must stay below /stream - FastAPI matches routes in declaration order, and this
 # wildcard path param would otherwise swallow /query/stream as query_id="stream".
 @router.get("/{query_id}")
 async def get_query(query_id: str, client=Depends(get_current_client), db=Depends(get_db)):
-    result = db.table("queries").select("*").eq("id", query_id).eq("client_id", client["id"]).execute()
-    if not result.data:
+    result = await asyncio.to_thread(db.queries.get_for_client, client["id"], query_id)
+    if not result:
         raise HTTPException(status_code=404, detail="Query not found")
-    return result.data[0]
+    return result

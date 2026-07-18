@@ -1,8 +1,8 @@
 import json
 
-from anthropic import AsyncAnthropic
-
+from taxflow import providers
 from taxflow.config import settings
+from taxflow.ports.llm import StructuredParseError
 from taxflow.services.prompt_cache import cacheable_system
 
 LETTER_TYPES = [
@@ -25,10 +25,11 @@ LETTER_TYPES = [
 
 
 class ATOLetterClassifier:
-    def __init__(self) -> None:
-        self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-
     async def classify(self, extracted_text: str) -> dict:
+        # Imported lazily: models.py imports LETTER_TYPES from this module, so a
+        # top-level import would be circular.
+        from taxflow.services.agents.models import LetterClassification
+
         system = (
             "Classify this ATO letter. Return JSON: {'letter_type': '<type from list above>', "
             "'confidence': 0.0-1.0, 'ato_reference': '<reference number from letter>', "
@@ -41,14 +42,31 @@ class ATOLetterClassifier:
         # The system prompt is static (LETTER_TYPES is a constant), so cache it as a
         # stable prefix (Task B1); the per-letter text stays in the user message.
         system_param = cacheable_system(system)
-        response = await self._client.messages.create(
+        try:
+            result = await providers.get_llm().generate_structured(
+                messages=[{"role": "user", "content": extracted_text}],
+                system=system_param,
+                model=settings.ANTHROPIC_HAIKU_MODEL,
+                output_model=LetterClassification,
+                max_tokens=500,
+                temperature=0,
+            )
+        except StructuredParseError:
+            # Fall back to the tolerant fenced-JSON parse of a plain generation.
+            return await self._classify_fallback(system_param, extracted_text)
+        return result.model_dump()
+
+    async def _classify_fallback(self, system_param, extracted_text: str) -> dict:
+        """Tolerant fallback: plain generation + fenced-JSON stripping (kept from
+        the original) when structured validation fails."""
+        response = await providers.get_llm().generate(
+            messages=[{"role": "user", "content": extracted_text}],
+            system=system_param,
             model=settings.ANTHROPIC_HAIKU_MODEL,
             max_tokens=500,
             temperature=0,
-            system=system_param,
-            messages=[{"role": "user", "content": extracted_text}],
         )
-        text = "".join(block.text for block in response.content if block.type == "text").strip()
+        text = (response.text or "").strip()
         # Models often wrap JSON in ```json fences despite instructions.
         if text.startswith("```"):
             text = text.split("\n", 1)[1] if "\n" in text else text

@@ -1,9 +1,10 @@
 import json
 import re
 
-from anthropic import AsyncAnthropic
-
+from taxflow import providers
 from taxflow.config import settings
+from taxflow.ports.llm import StructuredParseError
+from taxflow.services.agents.models import VerificationResult
 from taxflow.services.prompt_cache import cacheable_system
 
 SYSTEM_PROMPT = """You are a senior Australian tax lawyer reviewing an AI-drafted advice memo.
@@ -144,9 +145,6 @@ def build_caveat(verification: dict) -> str:
 
 
 class VerifyAgent:
-    def __init__(self) -> None:
-        self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-
     async def run(
         self,
         draft: str,
@@ -158,15 +156,33 @@ class VerifyAgent:
             f"Draft memo to verify:\n{draft}\n\n"
             f"Source documents for verification:\n{_format_citations(citations)}"
         )
-        response = await self._client.messages.create(
-            model=model or settings.VERIFY_MODEL,
-            max_tokens=2000,
-            temperature=0,
-            system=_system_blocks(),
-            messages=[{"role": "user", "content": user}],
-        )
-        text = "".join(block.text for block in response.content if block.type == "text").strip()
-        return _parse_verification(text)
+        system = _system_blocks()
+        resolved_model = model or settings.VERIFY_MODEL
+        try:
+            result = await providers.get_llm().generate_structured(
+                messages=[{"role": "user", "content": user}],
+                system=system,
+                model=resolved_model,
+                output_model=VerificationResult,
+                max_tokens=2000,
+                temperature=0,
+            )
+        except StructuredParseError:
+            # Structured validation failed: retry a plain generation with the SAME
+            # prompt and run the tolerant parser over its text, so fenced/prose-
+            # wrapped JSON (including a real needs_correction verdict) is still
+            # recovered. _parse_verification returns the empty parse_error dict
+            # only when that plain generation also can't be parsed.
+            response = await providers.get_llm().generate(
+                messages=[{"role": "user", "content": user}],
+                system=system,
+                model=resolved_model,
+                max_tokens=2000,
+                temperature=0,
+            )
+            return _parse_verification(response.text or "")
+        # Bridge back to a dict so downstream persistence (query.py) is unchanged.
+        return result.model_dump()
 
 
 def _format_citations(citations: list[dict]) -> str:
