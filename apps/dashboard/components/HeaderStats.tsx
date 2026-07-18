@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { BookOpen, ChevronDown, FileText, MessageSquareText } from "lucide-react";
+import { BookOpen, FileText, MessageSquareText } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface QueryRow {
   topic_tag: string | null;
@@ -17,21 +18,28 @@ function StatLink({
   icon,
   label,
   count,
+  tooltip,
 }: {
   href: string;
   icon: React.ReactNode;
   label: string;
   count: number;
+  tooltip: string;
 }) {
   return (
-    <Link
-      href={href}
-      className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-    >
-      {icon}
-      <span className="font-semibold text-foreground">{count}</span>
-      <span className="hidden sm:inline">{label}</span>
-    </Link>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Link
+          href={href}
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          {icon}
+          <span className="font-semibold text-foreground">{count}</span>
+          <span className="hidden sm:inline">{label}</span>
+        </Link>
+      </TooltipTrigger>
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -41,56 +49,29 @@ interface BreakdownItem {
   href: string;
 }
 
-// A per-stat breakdown (tag counts, client counts, ...) shown in a native
-// <details> dropdown - no extra dependency, no click-outside JS needed.
-function StatDropdown({
-  icon,
-  label,
-  count,
-  items,
-  allHref,
-  tourId,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  count: number;
-  items: BreakdownItem[];
-  allHref: string;
-  tourId?: string;
-}) {
-  if (items.length === 0) {
-    return <StatLink href={allHref} icon={icon} label={label} count={count} />;
-  }
+const MAX_PILLS = 3;
 
+// Top-N breakdown shown as directly-clickable pills next to a stat, instead
+// of a dropdown that hides the options behind an extra click.
+function StatPills({ items, tourId }: { items: BreakdownItem[]; tourId?: string }) {
+  if (items.length === 0) return null;
   return (
-    <details className="group relative" data-tour={tourId}>
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
-        {icon}
-        <span className="font-semibold text-foreground">{count}</span>
-        <span className="hidden sm:inline">{label}</span>
-        <ChevronDown className="size-3 transition-transform group-open:rotate-180" />
-      </summary>
-      <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-lg border border-border bg-background p-1 shadow-lg">
-        <Link
-          href={allHref}
-          className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
-        >
-          <span>All {label.toLowerCase()}</span>
-          <span>{count}</span>
-        </Link>
-        <div className="my-1 border-t border-border" />
-        {items.map((item) => (
-          <Link
-            key={item.label}
-            href={item.href}
-            className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <span className="truncate">{item.label}</span>
-            <span className="font-semibold text-foreground">{item.count}</span>
-          </Link>
-        ))}
-      </div>
-    </details>
+    <div className="flex items-center gap-1" data-tour={tourId}>
+      {items.slice(0, MAX_PILLS).map((item) => (
+        <Tooltip key={item.label}>
+          <TooltipTrigger asChild>
+            <Link
+              href={item.href}
+              className="flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-accent hover:text-accent"
+            >
+              <span className="max-w-24 truncate">{item.label}</span>
+              <span className="font-semibold">{item.count}</span>
+            </Link>
+          </TooltipTrigger>
+          <TooltipContent>Jump to questions/documents for &ldquo;{item.label}&rdquo;</TooltipContent>
+        </Tooltip>
+      ))}
+    </div>
   );
 }
 
@@ -136,27 +117,35 @@ export function HeaderStats() {
   }));
 
   return (
-    <div className="flex items-center gap-1">
-      <StatDropdown
+    <div className="flex flex-wrap items-center gap-1">
+      <StatLink
+        href="/dashboard/query?focus=history"
         icon={<MessageSquareText className="size-3.5" />}
         label="Questions asked"
         count={questionRows.length}
-        items={tagItems}
-        allHref="/dashboard/query?focus=history"
-        tourId="suggested-question"
+        tooltip="Opens the question history panel on the Ask TaxFlow screen"
       />
-      <StatDropdown
+      <StatPills items={tagItems} tourId="suggested-question" />
+
+      <div className="mx-1 h-4 w-px bg-border" aria-hidden />
+
+      <StatLink
+        href="/dashboard/documents"
         icon={<FileText className="size-3.5" />}
         label="Documents generated"
         count={documentRows.length}
-        items={clientItems}
-        allHref="/dashboard/documents"
+        tooltip="Opens the full list of generated documents"
       />
+      <StatPills items={clientItems} />
+
+      <div className="mx-1 h-4 w-px bg-border" aria-hidden />
+
       <StatLink
         href="/dashboard/knowledge"
         icon={<BookOpen className="size-3.5" />}
         label="Firm knowledge"
         count={knowledgeCount}
+        tooltip="Opens your firm's saved precedents and guidance"
       />
     </div>
   );

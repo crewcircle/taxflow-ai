@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Bell } from "lucide-react";
 import { DashboardNavLink } from "@/components/DashboardNavLink";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const LAST_SEEN_KEY = "taxflow_regulatory_last_seen";
 
@@ -27,13 +28,20 @@ export function RegulatoryBellLink({ collapsed }: { collapsed?: boolean }) {
   }
 
   return (
-    <div className="relative" onClick={markSeen}>
-      <DashboardNavLink href="/dashboard/regulatory" icon={<Bell className="size-4" />} collapsed={collapsed}>
-        Regulatory updates
-      </DashboardNavLink>
-      {hasUnread && (
-        <span className="absolute right-2 top-2 size-1.5 rounded-full bg-accent" aria-label="New regulatory updates" />
-      )}
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="relative" onClick={markSeen}>
+          <DashboardNavLink href="/dashboard/regulatory" icon={<Bell className="size-4" />} collapsed={collapsed}>
+            Regulatory updates
+          </DashboardNavLink>
+          {hasUnread && (
+            <span className="absolute right-2 top-2 size-1.5 rounded-full bg-accent" aria-label="New regulatory updates" />
+          )}
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="right">
+        {hasUnread ? "New ATO/tax law updates since you last checked" : "Recent ATO and tax law changes relevant to your clients"}
+      </TooltipContent>
+    </Tooltip>
   );
 }

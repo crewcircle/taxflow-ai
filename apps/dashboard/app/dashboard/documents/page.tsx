@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent } from "@/components/ui/card";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface DocumentRow {
   id: string;
@@ -112,16 +113,28 @@ export default function DocumentsPage() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {documents && documents.some((d) => d.client_ref) && (
-            <Input
-              value={clientFilter}
-              onChange={(e) => setClientFilter(e.target.value)}
-              placeholder="Filter by client..."
-              className="h-8 w-48 text-xs"
-            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Input
+                  value={clientFilter}
+                  onChange={(e) => setClientFilter(e.target.value)}
+                  placeholder="Filter by client..."
+                  className="h-8 w-48 text-xs"
+                />
+              </TooltipTrigger>
+              <TooltipContent>Type a client name to show only their documents</TooltipContent>
+            </Tooltip>
           )}
-          <Button size="sm" variant={creating ? "outline" : "default"} onClick={() => setCreating((v) => !v)}>
-            {creating ? "Cancel" : "New document"}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="sm" variant={creating ? "outline" : "default"} onClick={() => setCreating((v) => !v)}>
+                {creating ? "Cancel" : "New document"}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {creating ? "Close this form without saving" : "Write a document from scratch, rather than saving one from a research answer"}
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
 
@@ -174,9 +187,14 @@ export default function DocumentsPage() {
                 placeholder="Write or paste the document content..."
               />
             </div>
-            <Button onClick={handleCreate} disabled={saving || !form.title.trim() || !form.content_md.trim()}>
-              {saving ? "Creating..." : "Create document"}
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button onClick={handleCreate} disabled={saving || !form.title.trim() || !form.content_md.trim()}>
+                  {saving ? "Creating..." : "Create document"}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Saves this as a new document, tagged to the client above if you entered one</TooltipContent>
+            </Tooltip>
           </CardContent>
         </Card>
       )}
@@ -231,12 +249,17 @@ export default function DocumentsPage() {
                       {new Date(doc.created_at).toLocaleDateString("en-AU")}
                     </TableCell>
                     <TableCell className="text-right">
-                      <a
-                        href={`/api/documents/${doc.id}/download?fmt=docx`}
-                        className="text-accent hover:underline"
-                      >
-                        Download
-                      </a>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <a
+                            href={`/api/documents/${doc.id}/download?fmt=docx`}
+                            className="text-accent hover:underline"
+                          >
+                            Download
+                          </a>
+                        </TooltipTrigger>
+                        <TooltipContent>Downloads this document as a .docx file</TooltipContent>
+                      </Tooltip>
                     </TableCell>
                   </TableRow>
                 ))}

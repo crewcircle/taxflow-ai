@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Plus, MessageSquare } from "lucide-react";
+import { Plus, MessageSquare, PanelLeftClose } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 export interface QueryListItem {
@@ -24,6 +25,7 @@ interface QueryHistorySidebarProps {
   history: QueryListItem[];
   onSelect: (id: string) => void;
   onNewQuestion: () => void;
+  onHide: () => void;
   // Set briefly (e.g. from a topic-tag click) to scroll to and highlight one
   // specific item without hiding the rest of the list.
   highlightedId?: string | null;
@@ -59,6 +61,7 @@ export function QueryHistorySidebar({
   history,
   onSelect,
   onNewQuestion,
+  onHide,
   highlightedId,
 }: QueryHistorySidebarProps) {
   const [clientFilter, setClientFilter] = useState("");
@@ -83,18 +86,44 @@ export function QueryHistorySidebar({
 
   return (
     <div className="flex h-full w-56 shrink-0 flex-col border-r border-border">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Questions</span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onHide}
+              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="Hide questions"
+            >
+              <PanelLeftClose className="size-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Hide this panel to give the answer more room - click the arrow to bring it back</TooltipContent>
+        </Tooltip>
+      </div>
       <div className="space-y-2 border-b border-border p-3">
-        <Button size="sm" className="w-full gap-1.5" onClick={onNewQuestion}>
-          <Plus className="size-4" />
-          New question
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button size="sm" className="w-full gap-1.5" onClick={onNewQuestion}>
+              <Plus className="size-4" />
+              New question
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Start a fresh conversation - clears the current answer and starts a new session</TooltipContent>
+        </Tooltip>
         {hasAnyClientRef && (
-          <Input
-            value={clientFilter}
-            onChange={(e) => setClientFilter(e.target.value)}
-            placeholder="Highlight by client..."
-            className="h-8 text-xs"
-          />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Input
+                value={clientFilter}
+                onChange={(e) => setClientFilter(e.target.value)}
+                placeholder="Highlight by client..."
+                className="h-8 text-xs"
+              />
+            </TooltipTrigger>
+            <TooltipContent>Type a client name to highlight their questions below - the rest stay visible, just dimmed</TooltipContent>
+          </Tooltip>
         )}
       </div>
 

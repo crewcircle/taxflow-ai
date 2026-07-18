@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface KnowledgeRow {
   id: string;
@@ -91,10 +92,20 @@ export default function KnowledgePage() {
       <Card className="border-dashed">
         <CardContent className="flex flex-col items-center gap-4 py-4 text-center">
           <Upload className="size-6 text-muted-foreground" />
-          <input ref={fileInput} type="file" accept=".pdf,.docx,.txt" className="text-sm" />
-          <Button onClick={handleUpload} disabled={uploading}>
-            {uploading ? "Uploading..." : "Upload document"}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <input ref={fileInput} type="file" accept=".pdf,.docx,.txt" className="text-sm" />
+            </TooltipTrigger>
+            <TooltipContent>PDF, DOCX, or TXT - the content is blended into future research answers alongside the AU tax knowledge base</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button onClick={handleUpload} disabled={uploading}>
+                {uploading ? "Uploading..." : "Upload document"}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Adds the selected file to your firm&apos;s knowledge base</TooltipContent>
+          </Tooltip>
           {error && <p className="text-sm text-destructive">{error}</p>}
         </CardContent>
       </Card>
@@ -106,31 +117,43 @@ export default function KnowledgePage() {
           {items.map((item) => (
             <li key={item.id}>
               <div className="flex w-full items-center justify-between gap-3 px-4 py-2 hover:bg-muted">
-                <button
-                  type="button"
-                  onClick={() => toggleExpand(item.id)}
-                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">{item.file_name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {item.file_type.toUpperCase()} · used in {item.usage_count} answers
-                    </p>
-                  </div>
-                  {expandedId === item.id ? (
-                    <ChevronUp className="size-4 shrink-0 text-muted-foreground" />
-                  ) : (
-                    <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
-                  )}
-                </button>
-                <Button
-                  variant="link"
-                  size="sm"
-                  className="shrink-0 text-destructive"
-                  onClick={() => handleDelete(item.id)}
-                >
-                  Remove
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => toggleExpand(item.id)}
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{item.file_name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {item.file_type.toUpperCase()} · used in {item.usage_count} answers
+                        </p>
+                      </div>
+                      {expandedId === item.id ? (
+                        <ChevronUp className="size-4 shrink-0 text-muted-foreground" />
+                      ) : (
+                        <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+                      )}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {expandedId === item.id ? "Collapse this document" : "Expand to read the full saved content"}
+                  </TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="shrink-0 text-destructive"
+                      onClick={() => handleDelete(item.id)}
+                    >
+                      Remove
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Permanently removes this from Firm Knowledge - it will no longer be used in research answers</TooltipContent>
+                </Tooltip>
               </div>
               {expandedId === item.id && (
                 <div className="border-t border-border bg-muted/30 px-4 py-3">

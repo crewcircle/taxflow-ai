@@ -23,7 +23,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHistorySidebar";
 import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
 import { AnswerTracePanel, type AnswerTrace } from "@/components/AnswerTracePanel";
-import { useQueryPane } from "@/components/QueryPaneContext";
+import { CollapsedPanelRail } from "@/components/CollapsedPanelRail";
 import { cn } from "@/lib/utils";
 
 interface DocumentTemplate {
@@ -155,17 +155,32 @@ function FirmKnowledgeSuggestion({ repeatCount, defaultTitle, content }: FirmKno
         )}
         {error && <p className="text-sm text-destructive">{error}</p>}
         <div className="flex flex-wrap gap-2 pt-1">
-          <Button size="sm" disabled={saving} onClick={handleSave}>
-            {saving ? "Saving..." : "Save to Firm Knowledge"}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="sm" disabled={saving} onClick={handleSave}>
+                {saving ? "Saving..." : "Save to Firm Knowledge"}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Saves this answer as reusable firm guidance, so future questions like it can draw on it directly</TooltipContent>
+          </Tooltip>
           {!editing && (
-            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-              Edit title
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+                  Edit title
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Rename this entry before saving - the default title is just the question text</TooltipContent>
+            </Tooltip>
           )}
-          <Button variant="ghost" size="sm" onClick={() => setDismissed(true)}>
-            Not now
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="sm" onClick={() => setDismissed(true)}>
+                Not now
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Dismiss this suggestion - nothing is saved</TooltipContent>
+          </Tooltip>
         </div>
       </CardContent>
     </Card>
@@ -183,10 +198,15 @@ function VerificationBadge({
 }) {
   if (verification.overall_status === "verified") {
     return (
-      <Badge variant="outline" className="gap-1 border-green-600/30 text-green-700">
-        <CheckCircle2 className="size-3" />
-        Verified against sources
-      </Badge>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Badge variant="outline" className="gap-1 border-green-600/30 text-green-700">
+            <CheckCircle2 className="size-3" />
+            Verified against sources
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent>A second pass checked every claim in this answer against the cited sources and found no issues</TooltipContent>
+      </Tooltip>
     );
   }
   if (verification.overall_status === "parse_error") return null;
@@ -198,16 +218,23 @@ function VerificationBadge({
       : `${verification.issues.length} note${verification.issues.length === 1 ? "" : "s"}`;
 
   return (
-    <button type="button" onClick={onToggle}>
-      <Badge
-        variant="outline"
-        className="gap-1 border-amber-600/30 bg-amber-50 text-amber-800 hover:bg-amber-100"
-      >
-        <AlertTriangle className="size-3" />
-        {label}
-        {expanded ? " (hide details)" : " (click for details)"}
-      </Badge>
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" onClick={onToggle}>
+          <Badge
+            variant="outline"
+            className="gap-1 border-amber-600/30 bg-amber-50 text-amber-800 hover:bg-amber-100"
+          >
+            <AlertTriangle className="size-3" />
+            {label}
+            {expanded ? " (hide details)" : " (click for details)"}
+          </Badge>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>
+        {expanded ? "Hide the list of flagged claims" : "Click to see exactly which claims were flagged and why"}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -244,6 +271,97 @@ function VerificationIssuesPanel({ issues }: { issues: VerificationIssue[] }) {
   );
 }
 
+interface AnswerActionsProps {
+  copied: boolean;
+  onCopy: () => void;
+  savedDocId: string | null;
+  savingDoc: boolean;
+  docType: string;
+  onDocTypeChange: (v: string) => void;
+  templates: DocumentTemplate[];
+  onSave: () => void;
+  clientRef: string;
+}
+
+// The three things you can do with a finished answer, grouped so the
+// consequence of each is obvious: copy the raw text, or turn it into a
+// saved document (which needs a format choice first).
+function AnswerActions({
+  copied,
+  onCopy,
+  savedDocId,
+  savingDoc,
+  docType,
+  onDocTypeChange,
+  templates,
+  onSave,
+  clientRef,
+}: AnswerActionsProps) {
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-3">
+      <p className="text-xs font-medium text-muted-foreground">What would you like to do with this answer?</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="secondary" size="sm" onClick={onCopy}>
+              <Copy className="size-3.5" />
+              {copied ? "Copied!" : "Copy"}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            Copies the plain answer text to your clipboard - handy for pasting into an email or another document
+          </TooltipContent>
+        </Tooltip>
+
+        <div className="h-6 w-px bg-border" aria-hidden />
+
+        {savedDocId ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button asChild variant="secondary" size="sm">
+                <Link href="/dashboard/documents">View saved document →</Link>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Opens the Documents list where this was just saved</TooltipContent>
+          </Tooltip>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Select value={docType} onValueChange={onDocTypeChange}>
+                  <SelectTrigger size="sm" className="w-[220px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {templates.map((t) => (
+                      <SelectItem key={t.type} value={t.type}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </TooltipTrigger>
+              <TooltipContent>Choose the document style to generate - e.g. an advice memo vs. a client letter</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="secondary" size="sm" disabled={savingDoc} onClick={onSave}>
+                  <FileDown className="size-3.5" />
+                  {savingDoc ? "Saving..." : "Save as document"}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Saves this answer as a new {templates.find((t) => t.type === docType)?.label.toLowerCase() ?? "document"}{" "}
+                under Documents{clientRef.trim() ? `, tagged to ${clientRef.trim()}` : " (no client tagged)"}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function QueryPage() {
   const [question, setQuestion] = useState("");
   const [clientRef, setClientRef] = useState("");
@@ -262,9 +380,8 @@ export default function QueryPage() {
   const [trace, setTrace] = useState<AnswerTrace | null>(null);
   const [repeatCount, setRepeatCount] = useState(0);
   const [copied, setCopied] = useState(false);
-  // Hide questions/Hide sources toggles live in the global header (shared via
-  // context) so they no longer take up a toolbar row inside this page.
-  const { historyOpen, setHistoryOpen, sourcesOpen } = useQueryPane();
+  const [historyOpen, setHistoryOpen] = useState(true);
+  const [sourcesOpen, setSourcesOpen] = useState(true);
   const [historyHighlighted, setHistoryHighlighted] = useState(false);
 
   const [history, setHistory] = useState<QueryListItem[]>([]);
@@ -299,7 +416,6 @@ export default function QueryPage() {
       clearTimeout(openTimer);
       clearTimeout(clearTimer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -542,25 +658,27 @@ export default function QueryPage() {
   const hasBadges = result?.model_used === "sonnet" || verifying || Boolean(verification);
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] min-h-[420px] w-full min-w-0 flex-col gap-3">
-      <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-border">
-        {historyOpen && (
-          <div
-            className={
-              historyHighlighted ? "ring-2 ring-accent ring-inset transition-shadow duration-300" : "transition-shadow duration-300"
-            }
-          >
-            <QueryHistorySidebar
-              history={history}
-              onSelect={handleSelectHistory}
-              onNewQuestion={handleNewQuestion}
-              highlightedId={highlightedHistoryId}
-            />
-          </div>
-        )}
+    <div className="flex h-[calc(100vh-8rem)] min-h-[420px] w-full min-w-0 overflow-hidden rounded-xl border border-border">
+      {historyOpen ? (
+        <div
+          className={
+            historyHighlighted ? "ring-2 ring-accent ring-inset transition-shadow duration-300" : "transition-shadow duration-300"
+          }
+        >
+          <QueryHistorySidebar
+            history={history}
+            onSelect={handleSelectHistory}
+            onNewQuestion={handleNewQuestion}
+            onHide={() => setHistoryOpen(false)}
+            highlightedId={highlightedHistoryId}
+          />
+        </div>
+      ) : (
+        <CollapsedPanelRail side="left" label="Show questions" onShow={() => setHistoryOpen(true)} />
+      )}
 
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex-1 space-y-4 overflow-y-auto p-6">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex-1 space-y-4 overflow-y-auto p-6">
           {hasBadges && (
             <div className="flex flex-wrap items-center gap-2">
               {result?.model_used === "sonnet" && (
@@ -615,90 +733,73 @@ export default function QueryPage() {
                 content={result.answer}
               />
 
-              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/40 p-2">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button variant="secondary" size="sm" onClick={handleCopy}>
-                      <Copy className="size-3.5" />
-                      {copied ? "Copied!" : "Copy"}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Copy the full answer text to your clipboard</TooltipContent>
-                </Tooltip>
-                {savedDocId ? (
-                  <Button asChild variant="secondary" size="sm">
-                    <Link href="/dashboard/documents">View saved document →</Link>
-                  </Button>
-                ) : (
-                  <>
-                    <Select value={docType} onValueChange={setDocType}>
-                      <SelectTrigger size="sm" className="w-[220px]" title="Document format to save this answer as">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {templates.map((t) => (
-                          <SelectItem key={t.type} value={t.type}>
-                            {t.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button variant="secondary" size="sm" disabled={savingDoc} onClick={handleSaveAsDocument}>
-                          <FileDown className="size-3.5" />
-                          {savingDoc ? "Saving..." : "Save as document"}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>Save this answer as a document you can find under Documents</TooltipContent>
-                    </Tooltip>
-                  </>
-                )}
-              </div>
+              <AnswerActions
+                copied={copied}
+                onCopy={handleCopy}
+                savedDocId={savedDocId}
+                savingDoc={savingDoc}
+                docType={docType}
+                onDocTypeChange={setDocType}
+                templates={templates}
+                onSave={handleSaveAsDocument}
+                clientRef={clientRef}
+              />
             </div>
           )}
 
           {error && <p className="text-sm text-destructive">{error}</p>}
+        </div>
+
+        {/* Ask TaxFlow input - part of the middle column, below the answer,
+            so a follow-up is always right where the conversation is. */}
+        <div className="shrink-0 border-t border-border p-4">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="relative mb-2 max-w-xs">
+                <User className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={clientRef}
+                  onChange={(e) => setClientRef(e.target.value)}
+                  placeholder="Client (optional)"
+                  className="h-8 border-accent/30 bg-accent/5 pl-7 text-xs"
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              Tag this question with a client name - lets you highlight their questions in the history panel later,
+              and carries through automatically if you save this answer as a document
+            </TooltipContent>
+          </Tooltip>
+          <Textarea
+            data-tour="question-textarea"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value.slice(0, MAX_CHARS))}
+            rows={3}
+            placeholder={result ? "Ask a follow-up question..." : "Ask an Australian tax question..."}
+          />
+          <div className="mt-2 flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">
+              {question.length}/{MAX_CHARS} characters
+            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button onClick={handleSubmit} disabled={loading || !question.trim()}>
+                  {loading ? "Thinking..." : "Ask TaxFlow"}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {result ? "Continues this conversation with your follow-up" : "Runs your question against the AU tax knowledge base"}
+              </TooltipContent>
+            </Tooltip>
           </div>
         </div>
-
-        {sourcesOpen && <SourcesPanel citations={displayedCitations} />}
       </div>
 
-      {/* Ask TaxFlow input - a sibling of the bordered 3-pane block above, not
-          nested inside it, so it no longer competes with the answer area for
-          the page's fixed height. */}
-      <div className="shrink-0 rounded-xl border border-border p-4">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="relative mb-2 max-w-xs">
-              <User className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={clientRef}
-                onChange={(e) => setClientRef(e.target.value)}
-                placeholder="Client (optional)"
-                className="h-8 border-accent/30 bg-accent/5 pl-7 text-xs"
-              />
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>Tag this question with a client name so you can filter your question history by client</TooltipContent>
-        </Tooltip>
-        <Textarea
-          data-tour="question-textarea"
-          value={question}
-          onChange={(e) => setQuestion(e.target.value.slice(0, MAX_CHARS))}
-          rows={3}
-          placeholder={result ? "Ask a follow-up question..." : "Ask an Australian tax question..."}
-        />
-        <div className="mt-2 flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">
-            {question.length}/{MAX_CHARS} characters
-          </span>
-          <Button onClick={handleSubmit} disabled={loading || !question.trim()}>
-            {loading ? "Thinking..." : "Ask TaxFlow"}
-          </Button>
-        </div>
-      </div>
+      {sourcesOpen ? (
+        <SourcesPanel citations={displayedCitations} onHide={() => setSourcesOpen(false)} />
+      ) : (
+        <CollapsedPanelRail side="right" label="Show sources" onShow={() => setSourcesOpen(true)} />
+      )}
     </div>
   );
 }

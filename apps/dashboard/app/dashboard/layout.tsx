@@ -9,7 +9,6 @@ import { createClient } from "@/lib/supabase/server";
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { DashboardSidebar } from "@/components/DashboardSidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { QueryPaneProvider } from "@/components/QueryPaneContext";
 
 const NAV_LINKS = [
   { href: "/dashboard/query", label: "Ask TaxFlow", icon: MessageSquareText },
@@ -64,21 +63,19 @@ export default async function DashboardLayout({
 
   return (
     <TooltipProvider>
-      <QueryPaneProvider>
-        <div className="flex h-screen flex-col">
-          <DashboardHeader
-            businessName={businessName}
-            businessType={businessType}
-            isDemo={isDemo}
-            demoTagline={demoTagline}
-            demoDescription={demoDescription}
-          />
-          <div className="flex flex-1 overflow-hidden">
-            <DashboardSidebar navLinks={navLinks} businessName={businessName} businessType={businessType} />
-            <main className="min-w-0 flex-1 overflow-y-auto p-6">{children}</main>
-          </div>
+      <div className="flex h-screen flex-col">
+        <DashboardHeader
+          businessName={businessName}
+          businessType={businessType}
+          isDemo={isDemo}
+          demoTagline={demoTagline}
+          demoDescription={demoDescription}
+        />
+        <div className="flex flex-1 overflow-hidden">
+          <DashboardSidebar navLinks={navLinks} businessName={businessName} businessType={businessType} />
+          <main className="min-w-0 flex-1 overflow-y-auto p-6">{children}</main>
         </div>
-      </QueryPaneProvider>
+      </div>
     </TooltipProvider>
   );
 }

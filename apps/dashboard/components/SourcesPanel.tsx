@@ -1,6 +1,7 @@
 "use client";
 
-import { ExternalLink, FileText } from "lucide-react";
+import { ExternalLink, FileText, PanelRightClose } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 export interface SourceCitation {
   citation: string;
@@ -12,6 +13,7 @@ export interface SourceCitation {
 
 interface SourcesPanelProps {
   citations: SourceCitation[];
+  onHide: () => void;
 }
 
 interface CitationGroup {
@@ -55,7 +57,7 @@ function withTextFragment(url: string, excerpt: string): string {
   return `${url}#:~:text=${encodeURIComponent(words)}`;
 }
 
-export function SourcesPanel({ citations }: SourcesPanelProps) {
+export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
   const groups = groupByCitation(citations);
 
   return (
@@ -64,10 +66,23 @@ export function SourcesPanel({ citations }: SourcesPanelProps) {
         <FileText className="size-4 text-muted-foreground" />
         <span className="text-sm font-semibold text-foreground">Sources</span>
         {groups.length > 0 && (
-          <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
             {groups.length}
           </span>
         )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onHide}
+              className="ml-auto rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="Hide sources"
+            >
+              <PanelRightClose className="size-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Hide this panel to give the answer more room - click the arrow to bring it back</TooltipContent>
+        </Tooltip>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">
@@ -105,27 +120,42 @@ export function SourcesPanel({ citations }: SourcesPanelProps) {
                 </div>
                 <div className="flex flex-wrap gap-3">
                   {group.url && (
-                    <a
-                      href={withTextFragment(group.url, group.occurrences[0].excerpt)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-accent hover:underline"
-                    >
-                      View source
-                      <ExternalLink className="size-3" />
-                    </a>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <a
+                          href={withTextFragment(group.url, group.occurrences[0].excerpt)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-accent hover:underline"
+                        >
+                          View source
+                          <ExternalLink className="size-3" />
+                        </a>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Opens the ATO page this citation came from in a new tab, jumping to the matching text where
+                        supported
+                      </TooltipContent>
+                    </Tooltip>
                   )}
                   {group.sourceObjectKey && (
-                    <a
-                      href={`/dashboard/sources/${group.sourceObjectKey}?${new URLSearchParams({
-                        excerpt: group.occurrences[0].excerpt,
-                        citation: group.citation,
-                      })}`}
-                      className="inline-flex items-center gap-1 text-accent hover:underline"
-                    >
-                      View original PDF - highlighted
-                      <ExternalLink className="size-3" />
-                    </a>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <a
+                          href={`/dashboard/sources/${group.sourceObjectKey}?${new URLSearchParams({
+                            excerpt: group.occurrences[0].excerpt,
+                            citation: group.citation,
+                          })}`}
+                          className="inline-flex items-center gap-1 text-accent hover:underline"
+                        >
+                          View original PDF - highlighted
+                          <ExternalLink className="size-3" />
+                        </a>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Opens our stored copy of the PDF and scrolls to the exact passage cited above
+                      </TooltipContent>
+                    </Tooltip>
                   )}
                 </div>
               </li>
