@@ -590,27 +590,37 @@ class KnowledgeIngestRepo:
         return [u for u in urls if u not in fresh]
 
     def graph_metadata(self) -> list[dict]:
-        """One aggregated row per citation for the knowledge-graph explorer.
+        """One aggregated row per citation for the knowledge-graph/table explorer.
 
-        Metadata-only (never chunk ``content``): enough per citation to browse
-        and filter the knowledge base and cluster documents by their classified
-        topic(s). Powers ``GET /knowledge/graph``.
+        Metadata-only (never chunk ``content``): enough per citation to browse,
+        filter, and audit the knowledge base - including ``cited_count``, real
+        usage data (how many times this citation has actually appeared in an
+        answer, via ``queries.citations``) rather than leaving "which sources
+        were used" for the frontend to guess at. Powers ``GET /knowledge/graph``.
         """
         return _fetchall(
             """
+            WITH citation_counts AS (
+                SELECT elem ->> 'citation' AS citation, count(*) AS cited_count
+                FROM queries, jsonb_array_elements(citations) AS elem
+                WHERE citations IS NOT NULL
+                GROUP BY elem ->> 'citation'
+            )
             SELECT
-                citation,
-                min(source_title) AS title,
-                min(source_type) AS source_type,
-                min(jurisdiction) AS jurisdiction,
-                min(source_url) AS source_url,
+                kc.citation,
+                min(kc.source_title) AS title,
+                min(kc.source_type) AS source_type,
+                min(kc.jurisdiction) AS jurisdiction,
+                min(kc.source_url) AS source_url,
                 count(*) AS chunk_count,
-                bool_and(is_current) AS is_current,
-                max(last_scraped_at) AS last_scraped_at,
-                array_agg(DISTINCT topic) FILTER (WHERE topic IS NOT NULL) AS topics
-            FROM knowledge_chunks
-            GROUP BY citation
-            ORDER BY citation
+                bool_and(kc.is_current) AS is_current,
+                max(kc.last_scraped_at) AS last_scraped_at,
+                array_agg(DISTINCT kc.topic) FILTER (WHERE kc.topic IS NOT NULL) AS topics,
+                coalesce(max(cc.cited_count), 0) AS cited_count
+            FROM knowledge_chunks kc
+            LEFT JOIN citation_counts cc ON cc.citation = kc.citation
+            GROUP BY kc.citation
+            ORDER BY kc.citation
             """
         )
 

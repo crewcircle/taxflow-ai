@@ -19,12 +19,14 @@ async def get_source_document(object_key: str, _client=Depends(get_current_clien
 
 @router.get("/graph")
 async def get_knowledge_graph(_client=Depends(get_current_client), db=Depends(get_db)):
-    """Metadata-only view of the knowledge base for the graph explorer -
-    never returns chunk `content`, just enough per citation to browse and
-    filter by. Structured as a hub-and-spoke graph: one hub node per topic
-    (documents connect to the topic hub(s) their chunks were classified
-    under - see pipeline.py::classify_topic), so the layout clusters
-    meaningfully instead of an unreadable fully-connected hairball.
+    """Metadata-only view of the knowledge base for the graph/table explorer -
+    never returns chunk `content`, just enough per citation to browse,
+    categorise, and audit freshness. Returns a flat `documents` list (every
+    groupable attribute a document has - topic(s), jurisdiction, source_type,
+    is_current, cited_count) so the frontend can switch between grouping
+    views (by topic, by jurisdiction, by source type, by currency status)
+    without another round trip, plus a topic-hub `nodes`/`edges` shape for
+    the graph view.
     """
     import asyncio
 
@@ -41,12 +43,13 @@ async def get_knowledge_graph(_client=Depends(get_current_client), db=Depends(ge
                 "type": "document",
                 "title": row["title"],
                 "source_type": row["source_type"],
-                "jurisdiction": row["jurisdiction"],
+                "jurisdiction": row["jurisdiction"] or "Federal",
                 "source_url": row["source_url"],
                 "chunk_count": row["chunk_count"],
                 "is_current": row["is_current"],
                 "last_scraped_at": row["last_scraped_at"].isoformat() if row["last_scraped_at"] else None,
                 "topics": topics,
+                "cited_count": row["cited_count"],
             }
         )
         for topic in topics:
@@ -57,4 +60,4 @@ async def get_knowledge_graph(_client=Depends(get_current_client), db=Depends(ge
         {"id": topic, "type": "topic", "document_count": count} for topic, count in topic_counts.items()
     ]
 
-    return {"nodes": documents + topic_nodes, "edges": edges}
+    return {"documents": documents, "nodes": documents + topic_nodes, "edges": edges}
