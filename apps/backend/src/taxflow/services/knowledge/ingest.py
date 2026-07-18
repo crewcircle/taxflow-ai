@@ -9,25 +9,36 @@ import asyncio
 from taxflow.services.knowledge.scrapers.ato_rulings import ATORulingsScraper
 from taxflow.services.knowledge.scrapers.austlii import AustLIIScraper
 from taxflow.services.knowledge.scrapers.legislation import LegislationScraper
+from taxflow.services.knowledge.scrapers.state_revenue import STATES, StateRevenueScraper
 
-ALL_SCRAPERS = [ATORulingsScraper, LegislationScraper, AustLIIScraper]
+# (name, zero-arg factory) - state scrapers all share one class parameterised by
+# a StateConfig (see scrapers/state_revenue.py), so they can't be listed as bare
+# classes the way the single-jurisdiction scrapers can.
+ALL_SCRAPERS = [
+    ("ATORulingsScraper", ATORulingsScraper),
+    ("LegislationScraper", LegislationScraper),
+    ("AustLIIScraper", AustLIIScraper),
+] + [
+    (f"StateRevenueScraper[{config.jurisdiction}]", lambda c=config: StateRevenueScraper(c))
+    for config in STATES
+]
 
 
 async def run_all(limit: int | None = None) -> dict[str, int]:
     results: dict[str, int] = {}
     processed_any = False
-    for scraper_cls in ALL_SCRAPERS:
-        scraper = scraper_cls()
+    for name, factory in ALL_SCRAPERS:
+        scraper = factory()
         try:
-            print(f"Running {scraper_cls.__name__}...")
+            print(f"Running {name}...")
             count = await scraper.run_delta(limit=limit)
-            results[scraper_cls.__name__] = count
+            results[name] = count
             if count > 0:
                 processed_any = True
             print(f"  {count} documents processed")
         except Exception as e:  # noqa: BLE001
-            print(f"  {scraper_cls.__name__} failed: {e}")
-            results[scraper_cls.__name__] = -1
+            print(f"  {name} failed: {e}")
+            results[name] = -1
         finally:
             await scraper.aclose()
 
