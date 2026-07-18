@@ -55,6 +55,44 @@ def _mark_superseded(citations: set[str]) -> int:
     return count
 
 
+# Phase 3: lightweight, deterministic topic classification for the knowledge
+# graph explorer - not retrieval-critical (never filters/boosts search), so a
+# cheap keyword match beats an LLM call here. Checked in order, first match
+# wins; the vocabulary matches the demo persona scenario tags already used
+# elsewhere in the product (seed_demo.py topic_tag values) plus the newer
+# source areas (payroll tax, duties/land tax, superannuation) Phase 2 added.
+_TOPICS: list[tuple[str, re.Pattern]] = [
+    ("Division 7A", re.compile(r"division 7a|deemed dividend", re.IGNORECASE)),
+    ("Thin capitalisation", re.compile(r"thin capitalisation|debt deduction creation", re.IGNORECASE)),
+    (
+        "Trust distributions",
+        re.compile(r"present entitlement|reimbursement agreement|division 6\b|trust distribution", re.IGNORECASE),
+    ),
+    ("CGT concessions", re.compile(r"capital gains tax|cgt discount|small business cgt", re.IGNORECASE)),
+    ("GST margin scheme", re.compile(r"margin scheme", re.IGNORECASE)),
+    ("R&D tax incentive", re.compile(r"research and development tax incentive|r&d tax offset", re.IGNORECASE)),
+    ("FBT car benefits", re.compile(r"car benefit|fringe benefits tax|\bfbt\b", re.IGNORECASE)),
+    ("Work-from-home deductions", re.compile(r"work[- ]from[- ]home|home office", re.IGNORECASE)),
+    ("Superannuation", re.compile(r"superannuation guarantee|super contribution", re.IGNORECASE)),
+    ("Payroll tax", re.compile(r"payroll tax", re.IGNORECASE)),
+    ("Stamp duty / land tax", re.compile(r"stamp duty|transfer duty|land tax|dutiable transaction", re.IGNORECASE)),
+    ("Equipment finance", re.compile(r"equipment finance|hire purchase|chattel mortgage", re.IGNORECASE)),
+    ("GST", re.compile(r"goods and services tax|\bgst\b", re.IGNORECASE)),
+]
+
+
+def classify_topic(title: str, citation: str, text: str) -> str | None:
+    """Classified per CHUNK, not per document: a focused ruling is topically
+    uniform throughout so this makes no difference there, but a whole Act
+    (one citation, thousands of chunks covering every topic it legislates)
+    would otherwise get one meaningless topic guessed from its title page."""
+    sample = f"{title} {citation} {text}"
+    for topic, pattern in _TOPICS:
+        if pattern.search(sample):
+            return topic
+    return None
+
+
 def chunk_text(text: str, chunk_tokens: int | None = None, overlap_tokens: int | None = None) -> list[str]:
     """Split into ~chunk_tokens segments at sentence boundaries with token overlap."""
     chunk_tokens = chunk_tokens or settings.CHUNK_SIZE_TOKENS
@@ -97,14 +135,15 @@ def _upsert_chunks(rows: list[tuple]) -> int:
                 INSERT INTO knowledge_chunks
                     (source_type, source_url, source_title, citation, content, embedding,
                      chunk_index, token_count, effective_date, source_object_key, jurisdiction,
-                     last_scraped_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                     topic, last_scraped_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                 ON CONFLICT (source_url, chunk_index) DO UPDATE SET
                     content = EXCLUDED.content,
                     embedding = EXCLUDED.embedding,
                     token_count = EXCLUDED.token_count,
                     source_object_key = EXCLUDED.source_object_key,
                     jurisdiction = EXCLUDED.jurisdiction,
+                    topic = EXCLUDED.topic,
                     last_scraped_at = now()
                 """,
                 row,
@@ -136,6 +175,7 @@ async def process_document(text: str, metadata: dict, source_object_key: str | N
             metadata.get("effective_date"),
             source_object_key,
             metadata.get("jurisdiction"),
+            classify_topic(metadata["title"], metadata["citation"], chunk),
         )
         for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))
     ]
