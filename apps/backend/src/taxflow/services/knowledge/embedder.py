@@ -1,6 +1,7 @@
+import asyncio
 from functools import lru_cache
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 
 from taxflow.config import settings
 
@@ -13,8 +14,24 @@ def _get_client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 
+async def _create_with_retry(input_):
+    """Retry on 429s with backoff. Large ingest runs (a whole Act's worth of
+    chunks, hundreds of batches back to back) can burst past the account's
+    tokens-per-minute limit even though any single batch is well within it -
+    this was previously uncaught and aborted the whole ingest partway through.
+    """
+    for attempt in range(5):
+        try:
+            return await _get_client().embeddings.create(model=EMBEDDING_MODEL, input=input_)
+        except RateLimitError:
+            if attempt == 4:
+                raise
+            await asyncio.sleep(2**attempt)
+    raise AssertionError("unreachable")
+
+
 async def embed(text: str) -> list[float]:
-    response = await _get_client().embeddings.create(model=EMBEDDING_MODEL, input=text[: MAX_INPUT_TOKENS * 4])
+    response = await _create_with_retry(text[: MAX_INPUT_TOKENS * 4])
     return response.data[0].embedding
 
 
@@ -22,6 +39,6 @@ async def embed_batch(texts: list[str]) -> list[list[float]]:
     results: list[list[float]] = []
     for i in range(0, len(texts), 100):
         batch = texts[i : i + 100]
-        response = await _get_client().embeddings.create(model=EMBEDDING_MODEL, input=batch)
+        response = await _create_with_retry(batch)
         results.extend(item.embedding for item in response.data)
     return results
