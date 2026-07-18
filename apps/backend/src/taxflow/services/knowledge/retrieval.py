@@ -2,10 +2,8 @@ import asyncio
 import json
 import re
 
-import psycopg2.extras
-
+from taxflow import providers
 from taxflow.config import settings
-from taxflow.db import get_pg_conn
 from taxflow.services.knowledge.embedder import embed
 
 # --- Lightweight query normalisation (Task C1) --------------------------------
@@ -58,55 +56,6 @@ def _citation_year(citation: str) -> int:
     return int(match.group()) if match else _NEUTRAL_YEAR
 
 
-def _semantic_search(embedding: list[float], source_types: list[str] | None, limit: int) -> list[dict]:
-    with get_pg_conn() as conn:
-        # SET LOCAL only applies inside an explicit transaction; on a pooled
-        # connection a bare SET LOCAL outside a transaction silently no-ops. The
-        # psycopg2 connection context manager opens/commits one transaction, so we
-        # scope the probes tuning and the vector SELECT together here.
-        with conn:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute("SET LOCAL ivfflat.probes = %s", (settings.IVFFLAT_PROBES,))
-            cur.execute(
-                """
-                SELECT id, citation, content, source_url, source_object_key, source_type,
-                       last_scraped_at,
-                       1 - (embedding <=> %s::vector) AS cosine_sim
-                FROM knowledge_chunks
-                WHERE is_current = true
-                  AND (%s::text[] IS NULL OR source_type = ANY(%s))
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
-                """,
-                (embedding, source_types, source_types, embedding, limit),
-            )
-            rows = cur.fetchall()
-            cur.close()
-            return list(rows)
-
-
-def _text_search(query: str, source_types: list[str] | None, limit: int) -> list[dict]:
-    with get_pg_conn() as conn:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(
-            """
-            SELECT id, citation, content, source_url, source_object_key, source_type,
-                   last_scraped_at,
-                   ts_rank(to_tsvector('english', content), plainto_tsquery('english', %s)) AS text_rank
-            FROM knowledge_chunks
-            WHERE is_current = true
-              AND to_tsvector('english', content) @@ plainto_tsquery('english', %s)
-              AND (%s::text[] IS NULL OR source_type = ANY(%s))
-            ORDER BY text_rank DESC
-            LIMIT %s
-            """,
-            (query, query, source_types, source_types, limit),
-        )
-        rows = cur.fetchall()
-        cur.close()
-        return list(rows)
-
-
 def _rrf_merge(semantic: list[dict], textual: list[dict]) -> list[dict]:
     """Reciprocal-rank-fusion merge of the semantic + text candidate lists.
 
@@ -152,12 +101,12 @@ async def _llm_rerank(query: str, candidates: list[dict]) -> list[dict]:
 
     Only invoked when RERANK_MODE == "llm". Sends the top RERANK_DEPTH candidates
     to a single cheap-model call that returns a relevance score per candidate; we
-    re-order by that score and store it as `rerank_score`. A single Anthropic call
-    over the whole batch — never one call per candidate. On any failure we fall
-    back to the input order so retrieval never breaks over the re-rank.
+    re-order by that score and store it as `rerank_score`. A single structured LLM
+    call over the whole batch — never one call per candidate. On any failure we
+    fall back to the input order so retrieval never breaks over the re-rank.
     """
-    # Imported lazily so "off"/"rrf_only" paths never import the Anthropic client.
-    from anthropic import AsyncAnthropic
+    from taxflow.ports.llm import StructuredParseError
+    from taxflow.services.agents.models import RerankScores
 
     depth = min(len(candidates), settings.RERANK_DEPTH)
     if depth == 0:
@@ -170,22 +119,36 @@ async def _llm_rerank(query: str, candidates: list[dict]) -> list[dict]:
     system = (
         "You are a retrieval re-ranker for Australian tax law. Score how relevant "
         "each candidate passage is to the user's question from 0.0 (irrelevant) to "
-        "1.0 (directly answers it). Return ONLY a JSON object mapping the candidate "
-        'index (as a string) to its score, e.g. {"0": 0.9, "1": 0.2}. No prose.'
+        "1.0 (directly answers it). Return ONLY a JSON object with a `scores` field "
+        "mapping the candidate index (as a string) to its score, "
+        'e.g. {"scores": {"0": 0.9, "1": 0.2}}. No prose.'
     )
     user = f"Question: {query}\n\nCandidates:\n{listing}"
 
-    client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
     try:
-        response = await client.messages.create(
+        result = await providers.get_llm().generate_structured(
+            messages=[{"role": "user", "content": user}],
+            system=system,
             model=settings.ANTHROPIC_HAIKU_MODEL,
+            output_model=RerankScores,
             max_tokens=500,
             temperature=0,
-            system=system,
-            messages=[{"role": "user", "content": user}],
         )
-        text = "".join(block.text for block in response.content if block.type == "text").strip()
-        scores = _extract_scores(text, depth)
+        scores = {i: s for i, s in result.scores.items() if 0 <= i < depth}
+    except StructuredParseError:
+        # Structured validation failed: retry once as a plain generation and parse
+        # tolerantly. Any failure here also falls back to the input order below.
+        try:
+            response = await providers.get_llm().generate(
+                messages=[{"role": "user", "content": user}],
+                system=system,
+                model=settings.ANTHROPIC_HAIKU_MODEL,
+                max_tokens=500,
+                temperature=0,
+            )
+            scores = _extract_scores((response.text or "").strip(), depth)
+        except Exception:  # noqa: BLE001 - never fail retrieval over the re-rank
+            return candidates
     except Exception:  # noqa: BLE001 - never fail retrieval over the re-rank
         return candidates
 
@@ -212,6 +175,10 @@ def _extract_scores(text: str, depth: int) -> dict[int, float]:
         except json.JSONDecodeError:
             return {}
     out: dict[int, float] = {}
+    # Accept BOTH the bare `{"0": 0.9}` map and the wrapped `{"scores": {...}}`
+    # form (the structured RerankScores shape the fallback prompt now asks for).
+    if isinstance(raw, dict) and isinstance(raw.get("scores"), dict):
+        raw = raw["scores"]
     for k, v in raw.items():
         try:
             idx = int(k)
@@ -258,9 +225,10 @@ async def generate_candidates(
 
     text_query = normalise_query(query)
     pool = settings.RERANK_CANDIDATE_POOL
+    store = providers.get_vector_store()
     semantic, textual = await asyncio.gather(
-        asyncio.to_thread(_semantic_search, embedding, source_types, pool),
-        asyncio.to_thread(_text_search, text_query, source_types, pool),
+        store.semantic_search(embedding=embedding, source_types=source_types, limit=pool),
+        store.text_search(query=text_query, source_types=source_types, limit=pool),
     )
     return _rrf_merge(semantic, textual)
 

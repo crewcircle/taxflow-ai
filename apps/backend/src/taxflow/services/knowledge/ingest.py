@@ -6,28 +6,13 @@ CLI smoke test:          uv run python -m taxflow.services.knowledge.ingest --li
 import argparse
 import asyncio
 
-from taxflow.services.knowledge.scrapers.ato_rulings import ATORulingsScraper
-from taxflow.services.knowledge.scrapers.austlii import AustLIIScraper
-from taxflow.services.knowledge.scrapers.legislation import LegislationScraper
-from taxflow.services.knowledge.scrapers.state_revenue import STATES, StateRevenueScraper
-
-# (name, zero-arg factory) - state scrapers all share one class parameterised by
-# a StateConfig (see scrapers/state_revenue.py), so they can't be listed as bare
-# classes the way the single-jurisdiction scrapers can.
-ALL_SCRAPERS = [
-    ("ATORulingsScraper", ATORulingsScraper),
-    ("LegislationScraper", LegislationScraper),
-    ("AustLIIScraper", AustLIIScraper),
-] + [
-    (f"StateRevenueScraper[{config.jurisdiction}]", lambda c=config: StateRevenueScraper(c))
-    for config in STATES
-]
+from taxflow import providers
 
 
 async def run_all(limit: int | None = None) -> dict[str, int]:
     results: dict[str, int] = {}
     processed_any = False
-    for name, factory in ALL_SCRAPERS:
+    for name, factory in providers.get_scraper_registry():
         scraper = factory()
         try:
             print(f"Running {name}...")

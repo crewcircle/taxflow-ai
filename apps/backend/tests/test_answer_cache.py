@@ -72,17 +72,9 @@ async def test_cache_disabled_returns_none(monkeypatch):
 
 
 def test_bump_knowledge_version_increments():
-    fake_cur = MagicMock()
-    fake_cur.fetchone.return_value = [5]
-    fake_conn = MagicMock()
-    fake_conn.cursor.return_value = fake_cur
-    fake_conn.__enter__ = MagicMock(return_value=fake_conn)
-    fake_conn.__exit__ = MagicMock(return_value=False)
-    cm = MagicMock()
-    cm.__enter__ = MagicMock(return_value=fake_conn)
-    cm.__exit__ = MagicMock(return_value=False)
+    repos = MagicMock()
+    repos.query_cache.bump_knowledge_version.return_value = 5
 
-    with patch("taxflow.services.answer_cache.get_pg_conn", return_value=cm):
+    with patch("taxflow.services.answer_cache.get_relational_data", return_value=repos):
         assert answer_cache.bump_knowledge_version() == 5
-    sql = fake_cur.execute.call_args.args[0]
-    assert "version = version + 1" in sql
+    repos.query_cache.bump_knowledge_version.assert_called_once()

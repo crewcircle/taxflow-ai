@@ -1,7 +1,6 @@
 from datetime import date
 
-from anthropic import AsyncAnthropic
-
+from taxflow import providers
 from taxflow.config import settings
 from taxflow.services.prompt_cache import cacheable_system
 
@@ -23,8 +22,9 @@ Never: aggressive, emotional, or personal."""
 
 
 class ATOResponseDrafter:
-    def __init__(self) -> None:
-        self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    def __init__(self, llm=None) -> None:
+        # LLMPort injected (Task A5); defaults to the configured provider.
+        self._llm = llm if llm is not None else providers.get_llm()
 
     async def draft(
         self,
@@ -50,12 +50,12 @@ class ATOResponseDrafter:
         # The system prompt is large and fully static; cache it as a stable prefix
         # (Task B1). The per-letter details stay in the user message.
         system_param = cacheable_system(SYSTEM_PROMPT)
-        response = await self._client.messages.create(
+        result = await self._llm.generate(
+            messages=[{"role": "user", "content": user}],
+            system=system_param,
             model=settings.ANTHROPIC_HAIKU_MODEL,
             max_tokens=1200,
             temperature=0.1,
-            system=system_param,
-            messages=[{"role": "user", "content": user}],
         )
-        letter = "".join(block.text for block in response.content if block.type == "text")
+        letter = result.text
         return {"response_letter": letter}

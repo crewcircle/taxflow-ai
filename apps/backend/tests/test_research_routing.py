@@ -163,7 +163,9 @@ async def test_firm_knowledge_search_wraps_probes_in_transaction():
     cm.__enter__ = MagicMock(return_value=fake_conn)
     cm.__exit__ = MagicMock(return_value=False)
 
-    with patch("taxflow.db.get_pg_conn", return_value=cm):
+    # SET LOCAL in an explicit transaction now lives in the pgvector adapter;
+    # the agent method delegates to it via the provider registry.
+    with patch("taxflow.adapters.vectorstore.pgvector.get_pg_conn", return_value=cm):
         await agent._firm_knowledge_search("q", "cid", top_k=2, embedding=vec)
 
     # The connection-level transaction context must be entered so SET LOCAL applies.

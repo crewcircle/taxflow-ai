@@ -152,5 +152,52 @@ class Settings(BaseSettings):
     SESSION_QUESTION_CHARS: int = 200
     SESSION_BLOCK_MAX_CHARS: int = 2000
 
+    # --- Ports-and-adapters provider selection (hexagonal refactor) -----------
+    # Each coupled subsystem is chosen by a provider knob so the concrete vendor
+    # adapter is swappable via config, not code. Defaults reproduce today's stack.
+    LLM_PROVIDER: str = "anthropic"
+    EMBEDDING_PROVIDER: str = "openai"
+    RELATIONAL_PROVIDER: str = "postgres"
+    AUTH_PROVIDER: str = "supabase"
+    BILLING_PROVIDER: str = "stripe"
+    OBJECT_STORAGE_PROVIDER: str = "r2"
+    SCHEDULER_PROVIDER: str = "apscheduler"
+    DOCUMENT_RENDER_PROVIDER: str = "docx_pdf"
+    TOKENIZER_PROVIDER: str = "tiktoken"
+
+    # Embedding model + dimension moved out of embedder.py so a provider/model
+    # swap is config-driven. The DB vector() columns (migrations 003/006) and
+    # seed.sql are 1536-dim, so changing EMBEDDING_DIMENSION is a breaking change
+    # requiring an ALTER + reindex + full re-embed. A startup probe guard asserts
+    # the live model's real output length equals EMBEDDING_DIMENSION.
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_DIMENSION: int = 1536
+    EMBEDDING_DIM_GUARD_ENABLED: bool = True
+
+    # Provider-neutral model tiers. route_model()/verify keep emitting the
+    # abstract tier names ("haiku"/"sonnet"); resolve_model(tier) maps a tier to
+    # a LiteLLM model string (provider/model). Falls back to the legacy
+    # ANTHROPIC_*_MODEL fields when a tier is absent from the map.
+    MODEL_TIER_MAP: dict[str, str] = {
+        "haiku": "anthropic/claude-haiku-4-5",
+        "sonnet": "anthropic/claude-sonnet-4-6",
+    }
+
+    # Tokenizer used for chunk sizing (was hard-coded tiktoken cl100k_base).
+    TOKENIZER_MODEL: str = "cl100k_base"
+
+    # Optional confidence-gated single re-retrieval inside the bounded agent loop
+    # (LangGraph). Off by default so cost/behaviour is unchanged out of the box.
+    RE_RETRIEVE_ENABLED: bool = False
+    RE_RETRIEVE_MIN_TOP_SCORE: float = 0.03
+
+    # Object storage (S3-compatible / Cloudflare R2). Moved out of os.environ in
+    # services/storage/r2.py into config. Empty defaults preserve the graceful
+    # "storage unconfigured -> None" degradation.
+    R2_ACCOUNT_ID: str = ""
+    R2_ACCESS_KEY_ID: str = ""
+    R2_SECRET_ACCESS_KEY: str = ""
+    R2_BUCKET_NAME: str = ""
+
 
 settings = Settings()  # type: ignore[call-arg]

@@ -1,33 +1,24 @@
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+"""Public scheduler entry points.
 
-scheduler = AsyncIOScheduler()
+These are thin delegators to the configured :class:`SchedulerPort` adapter
+(see :func:`taxflow.providers.get_scheduler_port`). The scheduler construction
+and the three cron-job registrations live in
+``taxflow.adapters.scheduler.apscheduler``; ``main.py`` and
+``routers/health.py`` call these functions and stay unchanged.
+"""
 
+from __future__ import annotations
 
-def _register_jobs() -> None:
-    from taxflow.services.demo_reset import reset_demo_data
-    from taxflow.services.knowledge.ingest import run_all
-    from taxflow.services.regulatory_monitor import check_feeds
-
-    # Daily knowledge base delta scrape, 2am Sydney time (UTC+10/11 -> use 16:00 UTC)
-    scheduler.add_job(run_all, "cron", hour=16, minute=0, id="kb_ingestion", replace_existing=True)
-    # Regulatory monitor weekly, Monday 6am Sydney time (UTC+10/11 -> 20:00 UTC Sunday)
-    scheduler.add_job(
-        check_feeds, "cron", day_of_week="sun", hour=20, minute=0, id="regulatory_monitor", replace_existing=True
-    )
-    # Demo account cleanup, 3am Sydney time (17:00 UTC)
-    scheduler.add_job(reset_demo_data, "cron", hour=17, minute=0, id="demo_reset", replace_existing=True)
+from taxflow import providers
 
 
 def start_scheduler() -> None:
-    if not scheduler.running:
-        _register_jobs()
-        scheduler.start()
+    providers.get_scheduler_port().start()
 
 
 def stop_scheduler() -> None:
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
+    providers.get_scheduler_port().stop()
 
 
 def is_running() -> bool:
-    return scheduler.running
+    return providers.get_scheduler_port().is_running()

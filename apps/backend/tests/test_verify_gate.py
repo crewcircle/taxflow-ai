@@ -1,5 +1,5 @@
 """Tests for verify gating (Task B2) + hardened parsing / corrective pass (C3)."""
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -49,17 +49,20 @@ def test_verify_model_escalates_to_sonnet_when_severe(monkeypatch):
 @pytest.mark.asyncio
 async def test_verify_run_uses_default_model(monkeypatch):
     monkeypatch.setattr(settings, "VERIFY_MODEL", "claude-haiku-4-5")
-    agent = VerifyAgent()
-    fake_response = MagicMock()
-    block = MagicMock()
-    block.type = "text"
-    block.text = '{"overall_status": "verified", "issues": []}'
-    fake_response.content = [block]
-    agent._client = MagicMock()
-    agent._client.messages.create = AsyncMock(return_value=fake_response)
+    from taxflow.services.agents.models import VerificationResult
 
-    await agent.run(draft="d", citations=[], question="q")
-    assert agent._client.messages.create.await_args.kwargs["model"] == "claude-haiku-4-5"
+    fake_llm = MagicMock()
+    fake_llm.generate_structured = AsyncMock(
+        return_value=VerificationResult(overall_status="verified", issues=[])
+    )
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+
+    agent = VerifyAgent()
+    result = await agent.run(draft="d", citations=[], question="q")
+    assert fake_llm.generate_structured.await_args.kwargs["model"] == "claude-haiku-4-5"
+    # Dict bridge: callers keep receiving dict-shaped verification data.
+    assert isinstance(result, dict)
+    assert result["overall_status"] == "verified"
 
 
 # --- Task C3: hardened JSON parsing on fenced / malformed output --------------
@@ -104,62 +107,11 @@ def test_needs_correction_false_on_clean():
 
 
 # --- Task C3: corrective pass bounded to ONE call -----------------------------
-
-
-@pytest.mark.asyncio
-async def test_maybe_verify_corrective_pass_runs_exactly_once(monkeypatch):
-    import taxflow.routers.query as q
-
-    monkeypatch.setattr(settings, "CORRECTIVE_PASS_ENABLED", True)
-
-    verification = {"overall_status": "needs_correction", "issues": [{"claim": "c", "issue": "i"}]}
-    with patch.object(q.verify_mod, "should_verify", return_value=True), patch.object(
-        q.verify_mod, "verify_model_for", return_value="claude-haiku-4-5"
-    ), patch.object(
-        q.verifier, "run", new=AsyncMock(return_value=verification)
-    ), patch.object(
-        q.agent,
-        "regenerate_with_feedback",
-        new=AsyncMock(
-            return_value={
-                "answer": "Corrected [1]",
-                "citations": [{"citation": "x"}],
-                "confidence": 0.8,
-                "model_used": "sonnet",
-            }
-        ),
-    ) as mock_regen:
-        answer, citations, verif, caveat, corrected = await q._maybe_verify(
-            question="q", client_id="c", answer="bad", citations=[{"citation": "x"}], confidence=0.3
-        )
-
-    # Exactly ONE corrective regeneration — no loop.
-    mock_regen.assert_awaited_once()
-    assert answer == "Corrected [1]"
-    assert caveat is not None
-    assert verif["corrective_pass"] is True
-    # The corrective pass metadata is surfaced so the caller persists the real
-    # (Sonnet) model/confidence instead of the stale first-pass values.
-    assert corrected is not None
-    assert corrected["model_used"] == "sonnet"
-
-
-@pytest.mark.asyncio
-async def test_maybe_verify_skips_when_not_risky(monkeypatch):
-    import taxflow.routers.query as q
-
-    with patch.object(q.verify_mod, "should_verify", return_value=False), patch.object(
-        q.verifier, "run", new=AsyncMock()
-    ) as mock_run:
-        answer, citations, verif, caveat, corrected = await q._maybe_verify(
-            question="q", client_id="c", answer="good [1]", citations=[{"citation": "x"}], confidence=0.9
-        )
-
-    mock_run.assert_not_awaited()
-    assert verif is None
-    assert caveat is None
-    assert corrected is None
-    assert answer == "good [1]"
+# The gated verify + at-most-once corrective pass now lives entirely in the
+# research graph (services/agents/graph.py); its control flow is exercised by
+# tests/test_agent_graph.py (test_corrective_pass_runs_once_and_is_not_reverified,
+# test_strong_retrieval_skips_verify). The router no longer has a _maybe_verify
+# helper, so there is nothing router-level to test here beyond _safe_to_cache.
 
 
 def test_safe_to_cache_gate():

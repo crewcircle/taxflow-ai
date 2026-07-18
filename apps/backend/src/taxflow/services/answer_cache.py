@@ -12,17 +12,14 @@ is backed by Postgres (query_cache table) instead:
   - Client isolation is hard: the client_id is part of the key and RLS scopes the
     table to the service role. One client's answer is never served to another.
 
-All DB access goes through the shared pool (get_pg_conn); psycopg2 calls run in a
-thread so the event loop is not blocked.
+All DB access goes through the QueryCacheRepo (Task B4); the synchronous
+psycopg2 calls run in a thread so the event loop is not blocked.
 """
 import asyncio
-import json
 import re
 
-import psycopg2.extras
-
 from taxflow.config import settings
-from taxflow.db import get_pg_conn
+from taxflow.providers import get_relational_data
 
 _WS = re.compile(r"\s+")
 
@@ -36,13 +33,7 @@ def normalise_question(question: str) -> str:
 
 
 def _get_knowledge_version_sync() -> int:
-    with get_pg_conn() as conn:
-        with conn:
-            cur = conn.cursor()
-            cur.execute("SELECT version FROM knowledge_version WHERE id = true")
-            row = cur.fetchone()
-            cur.close()
-            return int(row[0]) if row else 1
+    return get_relational_data().query_cache.current_knowledge_version()
 
 
 async def get_knowledge_version() -> int:
@@ -55,45 +46,11 @@ def bump_knowledge_version() -> int:
     Bumping the token makes every worker compute a new cache key, so all existing
     cached answers become unreachable at once. Returns the new version.
     """
-    with get_pg_conn() as conn:
-        with conn:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                UPDATE knowledge_version
-                SET version = version + 1, updated_at = now()
-                WHERE id = true
-                RETURNING version
-                """
-            )
-            row = cur.fetchone()
-            cur.close()
-            return int(row[0]) if row else 1
+    return get_relational_data().query_cache.bump_knowledge_version()
 
 
 def _get_sync(client_id: str, question_norm: str, version: int) -> dict | None:
-    with get_pg_conn() as conn:
-        with conn:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute(
-                """
-                SELECT result
-                FROM query_cache
-                WHERE client_id = %s
-                  AND question_norm = %s
-                  AND knowledge_version = %s
-                  AND created_at > now() - (%s || ' seconds')::interval
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (client_id, question_norm, version, settings.ANSWER_CACHE_TTL_SECONDS),
-            )
-            row = cur.fetchone()
-            cur.close()
-            if not row:
-                return None
-            result = row["result"]
-            return result if isinstance(result, dict) else json.loads(result)
+    return get_relational_data().query_cache.get_cached(question_norm, client_id, version)
 
 
 async def get_cached_answer(client_id: str, question: str) -> dict | None:
@@ -110,19 +67,14 @@ async def get_cached_answer(client_id: str, question: str) -> dict | None:
 
 
 def _store_sync(client_id: str, question_norm: str, version: int, result: dict) -> None:
-    with get_pg_conn() as conn:
-        with conn:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT INTO query_cache (client_id, question_norm, knowledge_version, result)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (client_id, question_norm, knowledge_version)
-                DO UPDATE SET result = EXCLUDED.result, created_at = now()
-                """,
-                (client_id, question_norm, version, json.dumps(result)),
-            )
-            cur.close()
+    get_relational_data().query_cache.put_cached(
+        {
+            "client_id": client_id,
+            "question_norm": question_norm,
+            "knowledge_version": version,
+            "result": result,
+        }
+    )
 
 
 async def store_answer(client_id: str, question: str, result: dict) -> None:
@@ -134,33 +86,17 @@ async def store_answer(client_id: str, question: str, result: dict) -> None:
     await asyncio.to_thread(_store_sync, client_id, question_norm, version, result)
 
 
-def _count_prior_asks_sync(client_id: str, question_norm: str) -> int:
-    with get_pg_conn() as conn:
-        with conn:
-            cur = conn.cursor()
-            cur.execute(
-                r"""
-                SELECT COUNT(*) FROM queries
-                WHERE client_id = %s
-                  AND status = 'completed'
-                  AND btrim(regexp_replace(lower(btrim(question)), '\s+', ' ', 'g'), E' \t\n?.!') = %s
-                """,
-                (client_id, question_norm),
-            )
-            row = cur.fetchone()
-            cur.close()
-            return int(row[0]) if row else 0
-
-
 async def count_prior_asks(client_id: str, question: str) -> int:
     """Count this client's already-completed queries with the same normalised
     question text (Firm Knowledge suggestion trigger: prompt to save an
     answer once a client has asked essentially the same thing before).
 
-    Mirrors normalise_question's logic in SQL (lowercase, collapse whitespace,
-    strip surrounding punctuation) so a match here is a genuine repeat, not a
-    formatting difference. Called before the current query's row is marked
-    'completed', so it never counts itself.
+    The SQL (in QueryCacheRepo) mirrors normalise_question's logic (lowercase,
+    collapse whitespace, strip surrounding punctuation) so a match is a genuine
+    repeat, not a formatting difference. Called before the current query's row
+    is marked 'completed', so it never counts itself.
     """
     question_norm = normalise_question(question)
-    return await asyncio.to_thread(_count_prior_asks_sync, client_id, question_norm)
+    return await asyncio.to_thread(
+        get_relational_data().query_cache.count_prior_asks, client_id, question_norm
+    )

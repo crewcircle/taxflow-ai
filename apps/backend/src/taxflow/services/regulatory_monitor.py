@@ -6,13 +6,12 @@ import xml.etree.ElementTree as ET
 
 import httpx
 
-from taxflow.db import get_pg_conn
+from taxflow.adapters.scrapers import AUSTLII_FEEDS, austlii_feed_url
+from taxflow.providers import get_relational_data
 
-FEEDS = [
-    # (feed_url, source, alert_type)
-    ("https://www.austlii.edu.au/cgi-bin/rssdisp.cgi?db=/au/cases/cth/FCA&count=20", "fca", "new_ruling"),
-    ("https://www.austlii.edu.au/cgi-bin/rssdisp.cgi?db=/au/cases/cth/AATA&count=20", "aata", "new_ruling"),
-]
+# Number of RSS items to request per feed for a monitor poll (shallow — we only
+# want recently published items, not a deep backfill).
+FEED_ITEM_COUNT = 20
 
 USER_AGENT = "TaxFlowAI/1.0 (regulatory monitor; contact: crewcircle@zohomail.com.au)"
 
@@ -21,7 +20,9 @@ async def check_feeds() -> int:
     """Fetch all feeds, insert unseen items into regulatory_alerts. Returns new-alert count."""
     items: list[dict] = []
     async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=30, follow_redirects=True) as client:
-        for feed_url, source, alert_type in FEEDS:
+        for feed in AUSTLII_FEEDS:
+            feed_url = austlii_feed_url(feed["db"], FEED_ITEM_COUNT)
+            source, alert_type = feed["source"], feed["alert_type"]
             try:
                 response = await client.get(feed_url)
                 root = ET.fromstring(response.text)
@@ -37,24 +38,7 @@ async def check_feeds() -> int:
     if not items:
         return 0
 
-    def _insert() -> int:
-        with get_pg_conn() as conn:
-            cur = conn.cursor()
-            inserted = 0
-            for item in items:
-                cur.execute("SELECT 1 FROM regulatory_alerts WHERE url = %s", (item["url"],))
-                if cur.fetchone():
-                    continue
-                cur.execute(
-                    "INSERT INTO regulatory_alerts (source, alert_type, title, url) VALUES (%s, %s, %s, %s)",
-                    (item["source"], item["alert_type"], item["title"], item["url"]),
-                )
-                inserted += 1
-            conn.commit()
-            cur.close()
-            return inserted
-
-    return await asyncio.to_thread(_insert)
+    return await asyncio.to_thread(get_relational_data().regulatory_alerts.insert_unseen, items)
 
 
 def scheduled_monitor() -> None:

@@ -23,16 +23,15 @@ def test_feedback_rejects_query_from_another_client(client):
 
     fake_client = {"id": "client-1", "email": "a@b.com.au"}
     mock_db = MagicMock()
-    # Ownership check returns no rows -> the query belongs to another client.
-    ownership = mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute
-    ownership.return_value.data = []
+    # Ownership check returns None -> the query belongs to another client.
+    mock_db.queries.get_for_client.return_value = None
 
     _override(fake_client, mock_db)
     try:
         resp = client.post("/query/other-clients-query/feedback", json={"rating": "up"})
         assert resp.status_code == 404
         # No feedback row must be inserted for a foreign query.
-        mock_db.table.return_value.insert.assert_not_called()
+        mock_db.query_feedback.insert.assert_not_called()
     finally:
         app.dependency_overrides.clear()
 
@@ -42,10 +41,8 @@ def test_feedback_accepts_own_query(client):
 
     fake_client = {"id": "client-1", "email": "a@b.com.au"}
     mock_db = MagicMock()
-    mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
-        {"id": "q1"}
-    ]
-    mock_db.table.return_value.insert.return_value.execute.return_value.data = [{"id": "fb1"}]
+    mock_db.queries.get_for_client.return_value = {"id": "q1"}
+    mock_db.query_feedback.insert.return_value = {"id": "fb1"}
 
     _override(fake_client, mock_db)
     try:
@@ -69,7 +66,28 @@ def test_feedback_rejects_bad_rating(client):
         app.dependency_overrides.clear()
 
 
-# --- Task C5: the stream path persists model/confidence/tokens/cache tokens ---
+# --- Task A6: the SSE stream drives the compiled graph via astream ------------
+#
+# LangGraph (>=1.2,<2) with stream_mode=["custom","values"] yields (mode, chunk)
+# TUPLES: "custom" carries the generate node's {"token": ...} writer events, and
+# "values" carries a full state snapshot on every update. The stream helpers
+# below mimic that exact tuple shape.
+
+
+def _values(**overrides):
+    """A full-state `values` snapshot with sensible defaults for a stream run."""
+    state = {
+        "answer": "",
+        "citations": [],
+        "confidence": 0.0,
+        "routed_tier": "haiku",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+    state.update(overrides)
+    return state
 
 
 @pytest.mark.asyncio
@@ -80,35 +98,32 @@ async def test_stream_persists_metrics():
 
     captured_update = {}
     mock_db = MagicMock()
-    mock_db.table.return_value.insert.return_value.execute.return_value.data = [{"id": "query-1"}]
+    mock_db.queries.insert.return_value = {"id": "query-1"}
+    mock_db.queries.update.side_effect = lambda cid, qid, payload: captured_update.update(payload)
 
-    def capture_update(payload):
-        captured_update.update(payload)
-        return mock_db.table.return_value
+    async def fake_astream(initial_state, stream_mode=None):
+        assert stream_mode == ["custom", "values"]
+        yield ("custom", {"token": "hello "})
+        yield ("custom", {"token": "world [1]"})
+        # Final snapshot: verify skipped -> no verification/caveat/corrected_meta.
+        yield (
+            "values",
+            _values(
+                answer="hello world [1]",
+                citations=[{"citation": "x"}],
+                confidence=0.9,
+                routed_tier="sonnet",
+                input_tokens=100,
+                output_tokens=50,
+                cache_read_input_tokens=40,
+                cache_creation_input_tokens=10,
+            ),
+        )
 
-    mock_db.table.return_value.update.side_effect = capture_update
-
-    async def fake_stream(question, client_id, embedding=None, client=None, session_id=None):
-        yield {"type": "token", "text": "hello "}
-        yield {
-            "type": "final",
-            "citations": [{"citation": "x"}],
-            "answer": "hello world [1]",
-            "confidence": 0.9,
-            "model_used": "sonnet",
-            "chunks_retrieved": 5,
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "cache_read_input_tokens": 40,
-            "cache_creation_input_tokens": 10,
-        }
-
-    with patch.object(q, "get_supabase_client", return_value=mock_db), patch.object(
+    with patch.object(
         q, "embed", new=AsyncMock(return_value=[0.0] * 1536)
     ), patch.object(q, "increment_usage", new=AsyncMock()), patch.object(
-        q.agent, "run_stream", side_effect=fake_stream
-    ), patch.object(
-        q.verify_mod, "should_verify", return_value=False
+        q.research_graph, "astream", new=fake_astream
     ), patch.object(
         q.answer_cache, "store_answer", new=AsyncMock()
     ), patch.object(
@@ -116,8 +131,7 @@ async def test_stream_persists_metrics():
     ), patch.object(
         q.answer_cache, "count_prior_asks", new=AsyncMock(return_value=0)
     ):
-        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client)
-        # Drain the SSE generator.
+        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client, db=mock_db)
         chunks = [c async for c in response.body_iterator]
 
     assert captured_update["model_used"] == "sonnet"
@@ -127,14 +141,21 @@ async def test_stream_persists_metrics():
     assert captured_update["cache_read_input_tokens"] == 40
     assert captured_update["cache_creation_input_tokens"] == 10
     assert captured_update["wall_time_ms"] is not None
-    assert any("verification" in c for c in chunks)
+
+    # Contract order (no correction): token* -> final(once) -> verification ->
+    # trace -> repeat_count -> [DONE].
+    types = [_event_type(c) for c in chunks]
+    assert types.count("final") == 1
+    assert types == ["token", "token", "final", "verification", "trace", "repeat_count", None]
+    assert chunks[-1] == "data: [DONE]\n\n"
 
 
 @pytest.mark.asyncio
 async def test_stream_correction_swaps_metadata_and_emits_event():
-    """Stream path: a corrective pass replaces the answer, emits a `correction`
-    SSE event, and persists the corrective (Sonnet) metadata — not the streamed
-    first-pass values (should-fix #1 + #2)."""
+    """Stream path: BOTH verify and a corrective pass run — the graph's final
+    state carries the corrected answer + caveat + corrected_meta. The router
+    emits `final`(once) then `correction`, and persists the corrective (Sonnet)
+    metadata — not the streamed first-pass values (Task A6)."""
     import json
 
     import taxflow.routers.query as q
@@ -144,59 +165,66 @@ async def test_stream_correction_swaps_metadata_and_emits_event():
     captured_update = {}
     store_calls = []
     mock_db = MagicMock()
-    mock_db.table.return_value.insert.return_value.execute.return_value.data = [{"id": "query-1"}]
+    mock_db.queries.insert.return_value = {"id": "query-1"}
+    mock_db.queries.update.side_effect = lambda cid, qid, payload: captured_update.update(payload)
 
-    def capture_update(payload):
-        captured_update.update(payload)
-        return mock_db.table.return_value
-
-    mock_db.table.return_value.update.side_effect = capture_update
-
-    async def fake_stream(question, client_id, embedding=None, client=None, session_id=None):
-        yield {"type": "token", "text": "first pass "}
-        yield {
-            "type": "final",
-            "citations": [{"citation": "x"}],
-            "answer": "first pass answer [1]",
-            "confidence": 0.3,
-            "model_used": "haiku",
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "cache_read_input_tokens": 40,
-            "cache_creation_input_tokens": 10,
-        }
-
-    corrected = {
-        "answer": "Corrected answer [1]",
-        "citations": [{"citation": "y"}],
-        "confidence": 0.85,
-        "model_used": "sonnet",
-        "input_tokens": 300,
-        "output_tokens": 120,
-        "cache_read_input_tokens": 200,
-        "cache_creation_input_tokens": 0,
-    }
     verification = {"overall_status": "needs_correction", "issues": [{"severity": "critical"}]}
+
+    async def fake_astream(initial_state, stream_mode=None):
+        assert stream_mode == ["custom", "values"]
+        yield ("custom", {"token": "first "})
+        yield ("custom", {"token": "pass answer [1]"})
+        # First-pass snapshot right after generate (before verify/corrective).
+        yield (
+            "values",
+            _values(
+                answer="first pass answer [1]",
+                citations=[{"citation": "x"}],
+                confidence=0.3,
+                routed_tier="haiku",
+                input_tokens=100,
+                output_tokens=50,
+                cache_read_input_tokens=40,
+                cache_creation_input_tokens=10,
+            ),
+        )
+        # Final snapshot after verify + one corrective pass. The graph OVERWRITES
+        # answer/citations/confidence in state with the corrected pass, so this
+        # snapshot carries the corrected values — the `final` event must NOT use
+        # them (it must use the first-pass snapshot captured above).
+        yield (
+            "values",
+            _values(
+                answer="Corrected answer [1]",
+                citations=[{"citation": "y"}],
+                confidence=0.85,
+                routed_tier="haiku",
+                verification=verification,
+                caveat="Caveat: review claim 1.",
+                corrected_meta={
+                    "answer": "Corrected answer [1]",
+                    "citations": [{"citation": "y"}],
+                    "confidence": 0.85,
+                    "model_used": "sonnet",
+                    "input_tokens": 300,
+                    "output_tokens": 120,
+                    "cache_read_input_tokens": 200,
+                    "cache_creation_input_tokens": 0,
+                },
+                input_tokens=100,
+                output_tokens=50,
+                cache_read_input_tokens=40,
+                cache_creation_input_tokens=10,
+            ),
+        )
 
     async def store_answer(*args, **kwargs):
         store_calls.append(args)
 
-    with patch.object(q, "get_supabase_client", return_value=mock_db), patch.object(
+    with patch.object(
         q, "embed", new=AsyncMock(return_value=[0.0] * 1536)
     ), patch.object(q, "increment_usage", new=AsyncMock()), patch.object(
-        q.agent, "run_stream", side_effect=fake_stream
-    ), patch.object(
-        q.verify_mod, "should_verify", return_value=True
-    ), patch.object(
-        q.verify_mod, "verify_model_for", return_value="haiku"
-    ), patch.object(
-        q.verify_mod, "needs_correction", return_value=True
-    ), patch.object(
-        q.verify_mod, "build_caveat", return_value="Caveat: review claim 1."
-    ), patch.object(
-        q.verifier, "run", new=AsyncMock(return_value=verification)
-    ), patch.object(
-        q.agent, "regenerate_with_feedback", new=AsyncMock(return_value=corrected)
+        q.research_graph, "astream", new=fake_astream
     ), patch.object(
         q.answer_cache, "store_answer", new=AsyncMock(side_effect=store_answer)
     ), patch.object(
@@ -204,7 +232,7 @@ async def test_stream_correction_swaps_metadata_and_emits_event():
     ), patch.object(
         q.answer_cache, "count_prior_asks", new=AsyncMock(return_value=0)
     ):
-        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client)
+        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client, db=mock_db)
         chunks = [c async for c in response.body_iterator]
 
     # Persisted metadata reflects the corrective (Sonnet) pass, not the first pass.
@@ -214,13 +242,41 @@ async def test_stream_correction_swaps_metadata_and_emits_event():
     assert captured_update["output_tokens"] == 120
     assert captured_update["cache_read_input_tokens"] == 200
     assert "Corrected answer [1]" in captured_update["final_answer"]
+    assert captured_update["verification_result"] == verification
 
-    # A `correction` event carries the authoritative corrected answer + caveat.
-    correction_chunks = [c for c in chunks if '"type": "correction"' in c]
-    assert len(correction_chunks) == 1
-    payload = json.loads(correction_chunks[0].removeprefix("data: ").strip())
+    # Contract order with both verify + correction:
+    # token* -> final(once) -> correction -> verification -> trace ->
+    # repeat_count -> [DONE].
+    types = [_event_type(c) for c in chunks]
+    assert types.count("final") == 1
+    assert types == [
+        "token",
+        "token",
+        "final",
+        "correction",
+        "verification",
+        "trace",
+        "repeat_count",
+        None,
+    ]
+
+    # The `final` event must carry the FIRST-pass values — model (haiku),
+    # citations and confidence from the snapshot right after generate — NOT the
+    # corrected values the graph later wrote into state (BLOCKING fix).
+    final_chunk = next(c for c in chunks if _event_type(c) == "final")
+    final_payload = json.loads(final_chunk.removeprefix("data: ").strip())
+    assert final_payload["model_used"] == "haiku"
+    assert final_payload["confidence"] == 0.3
+    assert final_payload["citations"] == [{"citation": "x"}]
+
+    # A `correction` event carries the authoritative corrected answer + citations
+    # + caveat.
+    correction_chunk = next(c for c in chunks if _event_type(c) == "correction")
+    payload = json.loads(correction_chunk.removeprefix("data: ").strip())
     assert "Corrected answer [1]" in payload["answer"]
+    assert payload["citations"] == [{"citation": "y"}]
     assert payload["caveat"] == "Caveat: review claim 1."
+    assert payload["model_used"] == "sonnet"
 
     # A needs_correction answer must NEVER be cached (B3 _safe_to_cache gate).
     assert store_calls == []
@@ -229,14 +285,14 @@ async def test_stream_correction_swaps_metadata_and_emits_event():
 @pytest.mark.asyncio
 async def test_stream_cache_hit_skips_embed_and_generation():
     """Stream path: a cache hit must serve the stored answer WITHOUT calling the
-    paid OpenAI embed or Anthropic generation, and emit cached: true (review #2)."""
+    paid OpenAI embed or the research graph, and emit cached: true (Task B3)."""
     import json
 
     import taxflow.routers.query as q
 
     fake_client = {"id": "client-1", "email": "a@b.com.au"}
     mock_db = MagicMock()
-    mock_db.table.return_value.insert.return_value.execute.return_value.data = [{"id": "cached-query-1"}]
+    mock_db.queries.insert.return_value = {"id": "cached-query-1"}
 
     cached = {
         "answer": "Cached answer [1]",
@@ -246,21 +302,23 @@ async def test_stream_cache_hit_skips_embed_and_generation():
     }
 
     embed_mock = AsyncMock(return_value=[0.0] * 1536)
-    run_stream_mock = MagicMock()
+    astream_mock = MagicMock()
 
-    with patch.object(q, "get_supabase_client", return_value=mock_db), patch.object(
+    with patch.object(
         q, "embed", new=embed_mock
     ), patch.object(q, "increment_usage", new=AsyncMock()), patch.object(
-        q.agent, "run_stream", new=run_stream_mock
+        q.research_graph, "astream", new=astream_mock
     ), patch.object(
         q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=cached)
+    ), patch.object(
+        q.answer_cache, "count_prior_asks", new=AsyncMock(return_value=0)
     ):
-        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client)
+        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client, db=mock_db)
         chunks = [c async for c in response.body_iterator]
 
     # No paid work on a cache hit.
     embed_mock.assert_not_awaited()
-    run_stream_mock.assert_not_called()
+    astream_mock.assert_not_called()
 
     # The cached answer is streamed and the final event marks it cached.
     joined = "".join(chunks)
@@ -270,3 +328,141 @@ async def test_stream_cache_hit_skips_embed_and_generation():
     assert payload["cached"] is True
     assert payload["model_used"] == "cache"
     assert chunks[-1] == "data: [DONE]\n\n"
+
+
+@pytest.mark.asyncio
+async def test_stream_session_id_bypasses_cache():
+    """A session_id must bypass the answer-cache read/write on the stream path."""
+    import taxflow.routers.query as q
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au"}
+    mock_db = MagicMock()
+    mock_db.queries.insert.return_value = {"id": "query-1"}
+
+    async def fake_astream(initial_state, stream_mode=None):
+        assert initial_state["session_id"] == "sess-1"
+        yield ("custom", {"token": "hi [1]"})
+        yield (
+            "values",
+            _values(answer="hi [1]", citations=[{"citation": "x"}], confidence=0.9),
+        )
+
+    get_cache_mock = AsyncMock(return_value=None)
+    store_mock = AsyncMock()
+
+    with patch.object(
+        q, "embed", new=AsyncMock(return_value=[0.0] * 1536)
+    ), patch.object(q, "increment_usage", new=AsyncMock()), patch.object(
+        q.research_graph, "astream", new=fake_astream
+    ), patch.object(
+        q.answer_cache, "get_cached_answer", new=get_cache_mock
+    ), patch.object(
+        q.answer_cache, "store_answer", new=store_mock
+    ), patch.object(
+        q.answer_cache, "count_prior_asks", new=AsyncMock(return_value=0)
+    ):
+        response = await q.stream_query(
+            question="q", client=fake_client, _trial=fake_client, db=mock_db, session_id="sess-1"
+        )
+        _ = [c async for c in response.body_iterator]
+
+    # Session-scoped: cache neither read nor written.
+    get_cache_mock.assert_not_awaited()
+    store_mock.assert_not_awaited()
+
+
+# --- Task A6: real compiled graph yields (mode, chunk) tuples -----------------
+
+
+@pytest.mark.asyncio
+async def test_compiled_graph_astream_yields_mode_chunk_tuples():
+    """Pin the LangGraph (>=1.2,<2) multi-mode contract the router depends on:
+    astream(stream_mode=["custom","values"]) yields (mode, chunk) 2-tuples, with
+    the generate node emitting {"token": ...} custom events and the first values
+    snapshot carrying the first-pass answer (before verification appears)."""
+    from types import SimpleNamespace
+
+    import taxflow.services.agents.graph as g
+
+    class _Usage:
+        input_tokens = 1
+        output_tokens = 1
+        cache_read_input_tokens = 0
+        cache_creation_input_tokens = 0
+
+    class _Chunk:
+        def __init__(self, text="", done=False, usage=None):
+            self.text = text
+            self.done = done
+            self.usage = usage
+
+    async def fake_llm_stream(**kwargs):
+        yield _Chunk("hi ", False)
+        yield _Chunk("there [1]", False)
+        yield _Chunk("", True, _Usage())
+
+    with patch.object(
+        g.research_agent, "_build_steering", new=AsyncMock(return_value=("", None))
+    ), patch.object(
+        g.research_agent,
+        "_retrieve_context",
+        new=AsyncMock(return_value=([{"id": 1, "citation": "x", "source_type": "ruling", "score": 1.0}], {"num_chunks": 1, "top_score": 1.0})),
+    ), patch.object(
+        g.research_agent, "_build_context_string", return_value="ctx"
+    ), patch.object(
+        g.research_agent, "_user_content", return_value="uc"
+    ), patch.object(
+        g.research_agent, "_parse_citations", return_value=[{"citation": "x"}]
+    ), patch.object(
+        g.research_agent, "_estimate_confidence", return_value=0.9
+    ), patch.object(
+        g, "_system_blocks", return_value=[]
+    ), patch.object(
+        g, "route_model", return_value="haiku"
+    ), patch.object(
+        g, "should_verify", return_value=False
+    ), patch.object(
+        g.providers, "resolve_model", return_value="m"
+    ), patch.object(
+        g.research_agent, "_llm", SimpleNamespace(stream=fake_llm_stream)
+    ):
+        initial = {
+            "question": "q",
+            "client": None,
+            "client_id": "c",
+            "session_id": None,
+            "embedding": None,
+            "streaming": True,
+            "corrective_count": 0,
+            "re_retrieved": False,
+        }
+        items = [
+            item
+            async for item in g.research_graph.astream(
+                initial, stream_mode=["custom", "values"]
+            )
+        ]
+
+    # Every yielded item is a (mode, chunk) 2-tuple.
+    assert all(isinstance(item, tuple) and len(item) == 2 for item in items)
+    modes = {item[0] for item in items}
+    assert modes <= {"custom", "values"}
+
+    custom = [item[1] for item in items if item[0] == "custom"]
+    assert custom == [{"token": "hi "}, {"token": "there [1]"}]
+
+    # The last values snapshot is the final state with the assembled answer.
+    values = [item[1] for item in items if item[0] == "values"]
+    assert values[-1]["answer"] == "hi there [1]"
+    # verify was skipped -> no verification key in the final state.
+    assert values[-1].get("verification") is None
+
+
+def _event_type(chunk: str):
+    """Return the SSE event `type` for a data chunk, or None for [DONE]."""
+    import json
+
+    payload = chunk.removeprefix("data: ").strip()
+    if payload == "[DONE]":
+        return None
+    return json.loads(payload).get("type")

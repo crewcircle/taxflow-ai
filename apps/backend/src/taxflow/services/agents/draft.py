@@ -1,10 +1,9 @@
 import json
 import re
 
-from anthropic import AsyncAnthropic
-
+from taxflow import providers
 from taxflow.config import settings
-from taxflow.db import get_supabase_client
+from taxflow.providers import get_relational_data
 
 REQUIRED_SECTIONS = [
     "SUMMARY",
@@ -26,15 +25,12 @@ AMERICANISMS = {
 
 
 class DraftAgent:
-    def __init__(self) -> None:
-        self._client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    def __init__(self, llm=None) -> None:
+        # LLMPort injected (Task A5); defaults to the configured provider.
+        self._llm = llm if llm is not None else providers.get_llm()
 
     def _load_voice_sample(self, client_id: str) -> str:
-        sb = get_supabase_client()
-        result = sb.table("clients").select("voice_sample").eq("id", client_id).execute()
-        if result.data and result.data[0].get("voice_sample"):
-            return result.data[0]["voice_sample"]
-        return ""
+        return get_relational_data().clients.get_voice_sample(client_id) or ""
 
     def _americanism_fix(self, text: str) -> str:
         for us, au in AMERICANISMS.items():
@@ -45,14 +41,14 @@ class DraftAgent:
         return [s for s in REQUIRED_SECTIONS if s in draft.upper()]
 
     async def _generate(self, system: str, user: str) -> str:
-        response = await self._client.messages.create(
+        result = await self._llm.generate(
+            messages=[{"role": "user", "content": user}],
+            system=system,
             model=settings.ANTHROPIC_HAIKU_MODEL,
             max_tokens=2000,
             temperature=0.1,
-            system=system,
-            messages=[{"role": "user", "content": user}],
         )
-        return "".join(block.text for block in response.content if block.type == "text")
+        return result.text
 
     async def run(self, research_result: dict, original_question: str, client_id: str) -> dict:
         voice_sample = self._load_voice_sample(client_id)
