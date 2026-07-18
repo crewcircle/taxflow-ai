@@ -429,6 +429,46 @@ class ResearchAgent:
         cutoff = space if space > 0 else max_len
         return content[:cutoff].rstrip(",;: ") + "…"
 
+    def _build_trace(
+        self,
+        chunks: list[dict],
+        citations: list[dict],
+        source_type_hint: list[str] | None,
+        routed: str,
+        stats: dict,
+        confidence: float,
+    ) -> dict:
+        """Answer-flow transparency: capture what retrieval actually returned and
+        what generation actually did, so a "why this answer?" UI can show it
+        without re-deriving it. Additive only - every existing caller/field is
+        unaffected by this.
+        """
+        cited = {c["citation"] for c in citations}
+        candidates = [
+            {
+                "n": i + 1,
+                "citation": chunk["citation"],
+                "source_type": chunk.get("source_type"),
+                "is_firm_knowledge": chunk["citation"].startswith("Firm knowledge:"),
+                "score": round(chunk.get("score", 0.0), 4),
+                "cited_in_answer": chunk["citation"] in cited,
+            }
+            for i, chunk in enumerate(chunks)
+        ]
+        return {
+            "retrieval": {
+                "chunks_considered": len(chunks),
+                "source_type_hint": source_type_hint,
+                "candidates": candidates,
+            },
+            "generation": {
+                "model": routed,
+                "confidence": confidence,
+                "input_tokens": stats.get("input_tokens"),
+                "output_tokens": stats.get("output_tokens"),
+            },
+        }
+
     def _parse_citations(self, answer: str, chunks: list[dict]) -> list[dict]:
         cited_numbers = {int(n) for n in CITATION_PATTERN.findall(answer)}
         citations = []
@@ -527,12 +567,14 @@ class ResearchAgent:
         embedding: list[float] | None,
         client: dict | None,
         session_id: str | None,
-    ) -> tuple[str, str, list[dict], dict]:
+    ) -> tuple[str, str, list[dict], dict, list[str] | None]:
         """Shared front half of every generation path: build the advisory steering
         block + source_type hint, retrieve the merged context, and render the
-        context string. Returns (context, steering, chunks, signals). run(),
-        run_stream() and regenerate_with_feedback() all start here so profile
-        injection, session memory and embedding threading stay in one place.
+        context string. Returns (context, steering, chunks, signals,
+        source_type_hint) - the hint is threaded back out so callers can record
+        it on the answer-flow trace. run(), run_stream() and
+        regenerate_with_feedback() all start here so profile injection, session
+        memory and embedding threading stay in one place.
         """
         steering, source_type_hint = await self._build_steering(
             question, client_id, client, session_id
@@ -541,7 +583,7 @@ class ResearchAgent:
             question, client_id, embedding=embedding, source_type_hint=source_type_hint
         )
         context = self._build_context_string(chunks)
-        return context, steering, chunks, signals
+        return context, steering, chunks, signals, source_type_hint
 
     @staticmethod
     def _model_for(routed: str) -> str:
@@ -557,7 +599,7 @@ class ResearchAgent:
         session_id: str | None = None,
     ) -> dict:
         start = time.monotonic()
-        context, steering, chunks, signals = await self._prepare(
+        context, steering, chunks, signals, source_type_hint = await self._prepare(
             question, client_id, embedding, client, session_id
         )
 
@@ -581,6 +623,7 @@ class ResearchAgent:
             "cache_read_input_tokens": stats["cache_read_input_tokens"],
             "cache_creation_input_tokens": stats["cache_creation_input_tokens"],
             "wall_time_ms": int((time.monotonic() - start) * 1000),
+            "trace": self._build_trace(chunks, citations, source_type_hint, routed, stats, confidence),
         }
 
     async def run_stream(
@@ -610,7 +653,7 @@ class ResearchAgent:
         and source_type soft-boost hint used by run() are applied here, so the
         interactive stream path is personalised identically to the batch path.
         """
-        context, steering, chunks, signals = await self._prepare(
+        context, steering, chunks, signals, source_type_hint = await self._prepare(
             question, client_id, embedding, client, session_id
         )
 
@@ -636,6 +679,11 @@ class ResearchAgent:
         citations = self._parse_citations(answer, chunks)
         confidence = self._estimate_confidence(answer, chunks, citations)
 
+        stats = {
+            "input_tokens": getattr(usage, "input_tokens", 0) if usage else 0,
+            "output_tokens": getattr(usage, "output_tokens", 0) if usage else 0,
+        }
+
         # Task C5: surface model/confidence/token metrics on the final event so the
         # SSE route can persist them on the queries row (parity with POST /query).
         yield {
@@ -645,10 +693,11 @@ class ResearchAgent:
             "confidence": confidence,
             "model_used": routed,
             "chunks_retrieved": len(chunks),
-            "input_tokens": getattr(usage, "input_tokens", 0) if usage else 0,
-            "output_tokens": getattr(usage, "output_tokens", 0) if usage else 0,
+            "input_tokens": stats["input_tokens"],
+            "output_tokens": stats["output_tokens"],
             "cache_read_input_tokens": (getattr(usage, "cache_read_input_tokens", 0) or 0) if usage else 0,
             "cache_creation_input_tokens": (getattr(usage, "cache_creation_input_tokens", 0) or 0) if usage else 0,
+            "trace": self._build_trace(chunks, citations, source_type_hint, routed, stats, confidence),
         }
 
     async def regenerate_with_feedback(
@@ -670,7 +719,7 @@ class ResearchAgent:
         The corrective pass reuses the same advisory profile/session steering and
         source_type soft-boost hint (Tasks D1/D2/D3) so the retry stays personalised.
         """
-        context, steering, chunks, _signals = await self._prepare(
+        context, steering, chunks, _signals, source_type_hint = await self._prepare(
             question, client_id, embedding, client, session_id
         )
 
@@ -702,4 +751,5 @@ class ResearchAgent:
             "output_tokens": stats["output_tokens"],
             "cache_read_input_tokens": stats["cache_read_input_tokens"],
             "cache_creation_input_tokens": stats["cache_creation_input_tokens"],
+            "trace": self._build_trace(chunks, citations, source_type_hint, "sonnet", stats, confidence),
         }

@@ -103,6 +103,32 @@ async def _maybe_verify(
     return answer, citations, verification, caveat, None
 
 
+def _build_final_trace(
+    trace: dict | None,
+    verification: dict | None,
+    corrected: dict | None,
+) -> dict:
+    """Combine the agent's retrieval/generation trace with the verify (+ optional
+    corrective regeneration) stage into the single record persisted on the
+    queries row and shown in the "why this answer?" UI. `trace` is None for a
+    cache hit (no pipeline actually ran)."""
+    if trace is None:
+        return {"retrieval": None, "generation": {"model": "cache"}, "verification": None}
+    result = {"retrieval": trace["retrieval"], "generation": trace["generation"]}
+    if verification is None:
+        result["verification"] = {"ran": False}
+    else:
+        result["verification"] = {
+            "ran": True,
+            "status": verification.get("overall_status"),
+            "issue_count": len(verification.get("issues", [])),
+            "corrective_pass": verification.get("corrective_pass", False),
+        }
+    if corrected is not None:
+        result["corrective_generation"] = corrected["trace"]["generation"]
+    return result
+
+
 def _safe_to_cache(verification: dict | None) -> bool:
     """B3 cache-safety gate.
 
@@ -175,6 +201,7 @@ async def submit_query(
             "model_used": cached["model_used"],
             "cached": True,
             "repeat_count": repeat_count,
+            "trace": _build_final_trace(None, None, None),
         }
 
     # Auth (get_current_client) and the trial gate (check_trial_gate) run as
@@ -241,6 +268,7 @@ async def submit_query(
         # generation's — otherwise metrics/cost reporting would mislabel a
         # Sonnet-corrected answer as the first-pass model.
         meta = corrected or result
+        trace = _build_final_trace(result.get("trace"), verification, corrected)
 
         update = {
             "status": "completed",
@@ -254,6 +282,7 @@ async def submit_query(
             "cache_creation_input_tokens": meta.get("cache_creation_input_tokens"),
             "wall_time_ms": int((time.time() - start) * 1000),
             "completed_at": "now()",
+            "trace": trace,
         }
         if verification is not None:
             update["verification_result"] = verification
@@ -285,6 +314,7 @@ async def submit_query(
             "confidence": meta["confidence"],
             "model_used": meta["model_used"],
             "repeat_count": repeat_count,
+            "trace": trace,
         }
 
     except Exception as e:
@@ -312,6 +342,7 @@ def _persist_cached_query(
                 "model_used": "cache",
                 "wall_time_ms": int((time.time() - start) * 1000),
                 "completed_at": "now()",
+                "trace": _build_final_trace(None, None, None),
                 **(extra or {}),
             }
         )
@@ -398,6 +429,7 @@ async def stream_query(
                 + "\n\n"
             )
             yield f"data: {json.dumps({'type': 'verification', 'overall_status': 'not_verified', 'issues': []})}\n\n"
+            yield f"data: {json.dumps({'type': 'trace', **_build_final_trace(None, None, None)})}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(cached_stream(), media_type="text/event-stream")
@@ -496,6 +528,8 @@ async def stream_query(
         # marks this row 'completed', so it never counts itself.
         repeat_count = await answer_cache.count_prior_asks(client["id"], question)
 
+        trace = _build_final_trace(final_meta.get("trace"), verification, corrected)
+
         # Task C5: persist model_used/confidence/tokens/wall_time on the stream
         # path (previously only POST /query stored these), plus the B1 cache
         # tokens on both paths.
@@ -511,6 +545,7 @@ async def stream_query(
             "cache_creation_input_tokens": cache_creation,
             "wall_time_ms": int((time.time() - start) * 1000),
             "completed_at": "now()",
+            "trace": trace,
         }
         if verification is not None:
             update["verification_result"] = verification
@@ -554,6 +589,7 @@ async def stream_query(
 
         verification_event = verification or {"overall_status": "not_verified", "issues": []}
         yield f"data: {json.dumps({'type': 'verification', **verification_event})}\n\n"
+        yield f"data: {json.dumps({'type': 'trace', **trace})}\n\n"
         yield f"data: {json.dumps({'type': 'repeat_count', 'count': repeat_count})}\n\n"
 
         yield "data: [DONE]\n\n"

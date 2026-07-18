@@ -26,6 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHistorySidebar";
 import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
+import { AnswerTracePanel, type AnswerTrace } from "@/components/AnswerTracePanel";
 import { cn } from "@/lib/utils";
 
 interface DocumentTemplate {
@@ -261,6 +262,7 @@ export default function QueryPage() {
   const [verifying, setVerifying] = useState(false);
   const [verification, setVerification] = useState<Verification | null>(null);
   const [verificationExpanded, setVerificationExpanded] = useState(false);
+  const [trace, setTrace] = useState<AnswerTrace | null>(null);
   const [repeatCount, setRepeatCount] = useState(0);
   const [copied, setCopied] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(true);
@@ -314,6 +316,7 @@ export default function QueryPage() {
     setVerification(null);
     setVerifying(false);
     setVerificationExpanded(false);
+    setTrace(null);
     setRepeatCount(0);
     setSavedDocId(null);
     setDocType("advice_memo");
@@ -344,6 +347,9 @@ export default function QueryPage() {
       setSessionId(data.session_id ?? crypto.randomUUID());
       if (data.verification_result?.overall_status) {
         setVerification(data.verification_result);
+      }
+      if (data.trace) {
+        setTrace(data.trace);
       }
     } catch {
       setError("Could not load this question");
@@ -418,6 +424,10 @@ export default function QueryPage() {
             overall_status?: Verification["overall_status"];
             issues?: VerificationIssue[];
             count?: number;
+            retrieval?: AnswerTrace["retrieval"];
+            generation?: AnswerTrace["generation"];
+            verification?: AnswerTrace["verification"];
+            corrective_generation?: AnswerTrace["corrective_generation"];
           } = JSON.parse(event.data);
 
           if (parsed.type === "token" && parsed.text) {
@@ -457,6 +467,13 @@ export default function QueryPage() {
             loadHistory();
           } else if (parsed.type === "repeat_count") {
             setRepeatCount(parsed.count ?? 0);
+          } else if (parsed.type === "trace" && parsed.generation) {
+            setTrace({
+              retrieval: parsed.retrieval ?? null,
+              generation: parsed.generation,
+              verification: parsed.verification ?? null,
+              corrective_generation: parsed.corrective_generation,
+            });
           }
         };
         source.onerror = () => {
@@ -602,6 +619,8 @@ export default function QueryPage() {
               )}
 
               <AnswerWithCitationLinks text={result.answer} />
+
+              {trace && <AnswerTracePanel trace={trace} />}
 
               <FirmKnowledgeSuggestion
                 repeatCount={repeatCount}

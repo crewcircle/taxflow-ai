@@ -15,6 +15,13 @@ RUN pip install uv --no-cache-dir
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --no-dev --frozen
 
+# Playwright's Chromium is only needed for the legislation.gov.au scraper
+# (an Angular SPA the public OData API doesn't serve document bytes for), run
+# out-of-band via the ingest job, not per API request. --with-deps pulls in
+# its own apt packages, which is a real memory/build-time cost on the small
+# production droplet (already needed a swapfile just for image builds).
+RUN uv run playwright install --with-deps chromium
+
 # Copy application code
 COPY src/ ./src/
 

@@ -1,6 +1,7 @@
 import asyncio
 import re
 
+import psycopg2
 import tiktoken
 
 from taxflow.config import settings
