@@ -113,6 +113,8 @@ async def test_stream_persists_metrics():
         q.answer_cache, "store_answer", new=AsyncMock()
     ), patch.object(
         q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=None)
+    ), patch.object(
+        q.answer_cache, "count_prior_asks", new=AsyncMock(return_value=0)
     ):
         response = await q.stream_query(question="q", client=fake_client, _trial=fake_client)
         # Drain the SSE generator.
@@ -199,6 +201,8 @@ async def test_stream_correction_swaps_metadata_and_emits_event():
         q.answer_cache, "store_answer", new=AsyncMock(side_effect=store_answer)
     ), patch.object(
         q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=None)
+    ), patch.object(
+        q.answer_cache, "count_prior_asks", new=AsyncMock(return_value=0)
     ):
         response = await q.stream_query(question="q", client=fake_client, _trial=fake_client)
         chunks = [c async for c in response.body_iterator]

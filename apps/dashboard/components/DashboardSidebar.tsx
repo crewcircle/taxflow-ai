@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Settings } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { DashboardNavLink } from "@/components/DashboardNavLink";
+import { RegulatoryBellLink } from "@/components/RegulatoryBellLink";
 import { SignOutButton } from "@/components/SignOutButton";
 import { Separator } from "@/components/ui/separator";
 
@@ -12,9 +14,19 @@ interface NavItem {
   icon: React.ReactNode;
 }
 
+function humanizeType(type: string): string {
+  return type.replace(/_/g, " ");
+}
+
 const STORAGE_KEY = "taxflow_nav_collapsed";
 
-export function DashboardSidebar({ navLinks }: { navLinks: NavItem[] }) {
+interface DashboardSidebarProps {
+  navLinks: NavItem[];
+  businessName: string;
+  businessType: string;
+}
+
+export function DashboardSidebar({ navLinks, businessName, businessType }: DashboardSidebarProps) {
   // Collapsed by default - only expand if the user previously expanded it.
   const [collapsed, setCollapsed] = useState(true);
 
@@ -46,6 +58,18 @@ export function DashboardSidebar({ navLinks }: { navLinks: NavItem[] }) {
         ))}
       </nav>
       <Separator className="my-2" />
+      {businessName && !collapsed && (
+        <div className="mb-1 px-3 py-1">
+          <p className="truncate text-sm font-medium text-foreground">{businessName}</p>
+          <Badge variant="outline" className="mt-1 text-[10px]">
+            {humanizeType(businessType)}
+          </Badge>
+        </div>
+      )}
+      <RegulatoryBellLink collapsed={collapsed} />
+      <DashboardNavLink href="/dashboard/settings" icon={<Settings className="size-4" />} collapsed={collapsed}>
+        Settings
+      </DashboardNavLink>
       <SignOutButton collapsed={collapsed} />
       <button
         type="button"

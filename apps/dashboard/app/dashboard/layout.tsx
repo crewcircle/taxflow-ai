@@ -1,21 +1,19 @@
 import { redirect } from "next/navigation";
 import {
-  Bell,
   BookOpen,
   FileText,
+  MessageSquareText,
   ScrollText,
-  Settings,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { DashboardSidebar } from "@/components/DashboardSidebar";
 
 const NAV_LINKS = [
-  { href: "/dashboard/ato-response", label: "ATO correspondence", icon: ScrollText },
-  { href: "/dashboard/regulatory", label: "Regulatory updates", icon: Bell },
+  { href: "/dashboard/query", label: "Ask TaxFlow", icon: MessageSquareText },
   { href: "/dashboard/documents", label: "Documents", icon: FileText },
+  { href: "/dashboard/ato-response", label: "ATO correspondence", icon: ScrollText },
   { href: "/dashboard/knowledge", label: "Firm knowledge", icon: BookOpen },
-  { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
 export default async function DashboardLayout({
@@ -72,7 +70,7 @@ export default async function DashboardLayout({
         demoDescription={demoDescription}
       />
       <div className="flex flex-1 overflow-hidden">
-        <DashboardSidebar navLinks={navLinks} />
+        <DashboardSidebar navLinks={navLinks} businessName={businessName} businessType={businessType} />
         <main className="min-w-0 flex-1 overflow-y-auto p-6">{children}</main>
       </div>
     </div>

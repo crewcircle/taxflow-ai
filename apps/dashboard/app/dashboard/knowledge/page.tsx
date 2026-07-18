@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Upload } from "lucide-react";
+import { ChevronDown, ChevronUp, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -13,11 +13,19 @@ interface KnowledgeRow {
   created_at: string;
 }
 
+interface KnowledgeDetail extends KnowledgeRow {
+  content: string;
+}
+
 export default function KnowledgePage() {
   const [items, setItems] = useState<KnowledgeRow[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<KnowledgeDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   function load() {
     fetch("/api/firm-knowledge")
@@ -27,6 +35,23 @@ export default function KnowledgePage() {
   }
 
   useEffect(load, []);
+
+  async function toggleExpand(id: string) {
+    if (expandedId === id) {
+      setExpandedId(null);
+      setDetail(null);
+      return;
+    }
+    setExpandedId(id);
+    setDetail(null);
+    setDetailLoading(true);
+    try {
+      const response = await fetch(`/api/firm-knowledge/${id}`);
+      if (response.ok) setDetail(await response.json());
+    } finally {
+      setDetailLoading(false);
+    }
+  }
 
   async function handleUpload() {
     const file = fileInput.current?.files?.[0];
@@ -79,16 +104,45 @@ export default function KnowledgePage() {
       ) : (
         <ul className="divide-y divide-border rounded-lg border border-border text-sm">
           {items.map((item) => (
-            <li key={item.id} className="flex items-center justify-between px-4 py-2">
-              <div>
-                <p className="font-medium">{item.file_name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {item.file_type.toUpperCase()} · used in {item.usage_count} answers
-                </p>
+            <li key={item.id}>
+              <div className="flex w-full items-center justify-between gap-3 px-4 py-2 hover:bg-muted">
+                <button
+                  type="button"
+                  onClick={() => toggleExpand(item.id)}
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{item.file_name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {item.file_type.toUpperCase()} · used in {item.usage_count} answers
+                    </p>
+                  </div>
+                  {expandedId === item.id ? (
+                    <ChevronUp className="size-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+                  )}
+                </button>
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="shrink-0 text-destructive"
+                  onClick={() => handleDelete(item.id)}
+                >
+                  Remove
+                </Button>
               </div>
-              <Button variant="link" size="sm" className="text-destructive" onClick={() => handleDelete(item.id)}>
-                Remove
-              </Button>
+              {expandedId === item.id && (
+                <div className="border-t border-border bg-muted/30 px-4 py-3">
+                  {detailLoading ? (
+                    <p className="text-xs text-muted-foreground">Loading...</p>
+                  ) : (
+                    <p className="max-h-80 overflow-y-auto whitespace-pre-wrap text-sm text-foreground">
+                      {detail?.content ?? "Could not load this document."}
+                    </p>
+                  )}
+                </div>
+              )}
             </li>
           ))}
         </ul>

@@ -132,3 +132,35 @@ async def store_answer(client_id: str, question: str, result: dict) -> None:
     version = await get_knowledge_version()
     question_norm = normalise_question(question)
     await asyncio.to_thread(_store_sync, client_id, question_norm, version, result)
+
+
+def _count_prior_asks_sync(client_id: str, question_norm: str) -> int:
+    with get_pg_conn() as conn:
+        with conn:
+            cur = conn.cursor()
+            cur.execute(
+                r"""
+                SELECT COUNT(*) FROM queries
+                WHERE client_id = %s
+                  AND status = 'completed'
+                  AND btrim(regexp_replace(lower(btrim(question)), '\s+', ' ', 'g'), E' \t\n?.!') = %s
+                """,
+                (client_id, question_norm),
+            )
+            row = cur.fetchone()
+            cur.close()
+            return int(row[0]) if row else 0
+
+
+async def count_prior_asks(client_id: str, question: str) -> int:
+    """Count this client's already-completed queries with the same normalised
+    question text (Firm Knowledge suggestion trigger: prompt to save an
+    answer once a client has asked essentially the same thing before).
+
+    Mirrors normalise_question's logic in SQL (lowercase, collapse whitespace,
+    strip surrounding punctuation) so a match here is a genuine repeat, not a
+    formatting difference. Called before the current query's row is marked
+    'completed', so it never counts itself.
+    """
+    question_norm = normalise_question(question)
+    return await asyncio.to_thread(_count_prior_asks_sync, client_id, question_norm)

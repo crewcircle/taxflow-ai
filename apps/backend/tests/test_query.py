@@ -24,6 +24,8 @@ def test_submit_query_returns_answer(client):
     ), patch.object(
         query_module.answer_cache, "store_answer", new=AsyncMock()
     ), patch.object(
+        query_module.answer_cache, "count_prior_asks", new=AsyncMock(return_value=0)
+    ), patch.object(
         query_module.verify_mod, "should_verify", return_value=False
     ):
         mock_embed.return_value = [0.0] * 1536

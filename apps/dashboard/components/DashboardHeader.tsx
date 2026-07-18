@@ -1,6 +1,5 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
 import { Logo } from "@/components/Logo";
 import { OnboardingTour } from "@/components/OnboardingTour";
 import { DemoPersonaSwitcher } from "@/components/DemoPersonaSwitcher";
@@ -11,10 +10,6 @@ interface DashboardHeaderProps {
   isDemo: boolean;
   demoTagline: string | null;
   demoDescription: string | null;
-}
-
-function humanizeType(type: string): string {
-  return type.replace(/_/g, " ");
 }
 
 export function DashboardHeader({
@@ -28,24 +23,16 @@ export function DashboardHeader({
     <header className="relative flex h-16 shrink-0 items-center justify-between border-b border-border px-4">
       <Logo href="/dashboard" />
 
-      {businessName && (
-        <div className={`flex items-center gap-3 ${isDemo ? "pr-16" : ""}`} data-tour="identity-strip">
-          <span className="flex items-center gap-2 text-sm">
-            <span className="font-medium text-foreground">{businessName}</span>
-            <Badge variant="outline" className="text-[10px]">
-              {humanizeType(businessType)}
-            </Badge>
-          </span>
-          {isDemo && (
-            <OnboardingTour
-              businessName={businessName}
-              businessType={businessType}
-              demoTagline={demoTagline}
-              demoDescription={demoDescription}
-              isDemo={isDemo}
-            />
-          )}
-          {isDemo && <DemoPersonaSwitcher currentType={businessType} />}
+      {businessName && isDemo && (
+        <div className="flex items-center gap-3 pr-16" data-tour="identity-strip">
+          <OnboardingTour
+            businessName={businessName}
+            businessType={businessType}
+            demoTagline={demoTagline}
+            demoDescription={demoDescription}
+            isDemo={isDemo}
+          />
+          <DemoPersonaSwitcher currentType={businessType} />
         </div>
       )}
 

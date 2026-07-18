@@ -6,6 +6,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   AlertTriangle,
+  BookOpen,
   CheckCircle2,
   PanelLeftClose,
   PanelLeftOpen,
@@ -94,6 +95,87 @@ function AnswerWithCitationLinks({ text }: { text: string }) {
   );
 }
 
+interface FirmKnowledgeSuggestionProps {
+  repeatCount: number;
+  defaultTitle: string;
+  content: string;
+  onSaved: () => void;
+}
+
+// Shown after an answer completes when the client has asked essentially the
+// same question before (backend-computed repeat_count) - a signal this
+// answer is worth keeping as reusable firm guidance rather than re-deriving
+// it from scratch next time.
+function FirmKnowledgeSuggestion({ repeatCount, defaultTitle, content, onSaved }: FirmKnowledgeSuggestionProps) {
+  const [dismissed, setDismissed] = useState(false);
+  const [title, setTitle] = useState(defaultTitle);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (dismissed || repeatCount < 1) return null;
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/firm-knowledge/from-text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title.trim() || defaultTitle, content }),
+      });
+      if (!response.ok) throw new Error("Failed");
+      setSaved(true);
+      onSaved();
+    } catch {
+      setError("Could not save to Firm Knowledge - please try again");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (saved) {
+    return (
+      <Card className="border-accent/30 bg-accent/5">
+        <CardContent className="flex items-center gap-2 py-3 text-sm text-foreground">
+          <BookOpen className="size-4 text-accent" />
+          Saved to Firm Knowledge.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="border-accent/30 bg-accent/5">
+      <CardContent className="space-y-2 py-3">
+        <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <BookOpen className="size-4 text-accent" />
+          You&apos;ve asked something like this {repeatCount === 1 ? "once" : `${repeatCount} times`} before.
+        </p>
+        <p className="text-sm text-muted-foreground">Save this answer to Firm Knowledge for next time?</p>
+        {editing && (
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} className="h-8 max-w-md text-sm" />
+        )}
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        <div className="flex flex-wrap gap-2 pt-1">
+          <Button size="sm" disabled={saving} onClick={handleSave}>
+            {saving ? "Saving..." : "Save to Firm Knowledge"}
+          </Button>
+          {!editing && (
+            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+              Edit title
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => setDismissed(true)}>
+            Not now
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function VerificationBadge({ verification }: { verification: Verification }) {
   if (verification.overall_status === "verified") {
     return (
@@ -133,6 +215,7 @@ export default function QueryPage() {
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [verifying, setVerifying] = useState(false);
   const [verification, setVerification] = useState<Verification | null>(null);
+  const [repeatCount, setRepeatCount] = useState(0);
   const [copied, setCopied] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(true);
@@ -164,22 +247,27 @@ export default function QueryPage() {
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    fetch("/api/documents")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((d: unknown[]) => setDocumentCount(d.length))
-      .catch(() => {});
+  const loadFirmKnowledge = useCallback(() => {
     fetch("/api/firm-knowledge")
       .then((r) => (r.ok ? r.json() : []))
       .then(setFirmKnowledge)
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    fetch("/api/documents")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((d: unknown[]) => setDocumentCount(d.length))
+      .catch(() => {});
+    loadFirmKnowledge();
+  }, [loadFirmKnowledge]);
+
   function resetPane() {
     setResult(null);
     setStreamedAnswer("");
     setVerification(null);
     setVerifying(false);
+    setRepeatCount(0);
     setSavedDocId(null);
     setDocType("advice_memo");
     setError(null);
@@ -277,6 +365,7 @@ export default function QueryPage() {
             model_used?: string | null;
             overall_status?: Verification["overall_status"];
             issues?: VerificationIssue[];
+            count?: number;
           } = JSON.parse(event.data);
 
           if (parsed.type === "token" && parsed.text) {
@@ -313,6 +402,8 @@ export default function QueryPage() {
               issues: parsed.issues ?? [],
             });
             loadHistory();
+          } else if (parsed.type === "repeat_count") {
+            setRepeatCount(parsed.count ?? 0);
           }
         };
         source.onerror = () => {
@@ -462,6 +553,13 @@ export default function QueryPage() {
           {result && (
             <div className="space-y-4">
               <AnswerWithCitationLinks text={result.answer} />
+
+              <FirmKnowledgeSuggestion
+                repeatCount={repeatCount}
+                defaultTitle={question.slice(0, 80) || "Saved answer"}
+                content={result.answer}
+                onSaved={loadFirmKnowledge}
+              />
 
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" size="sm" onClick={handleCopy}>

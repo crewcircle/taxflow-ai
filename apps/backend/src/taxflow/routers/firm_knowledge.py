@@ -1,10 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.services.knowledge.embedder import embed
 
 router = APIRouter(prefix="/firm-knowledge", tags=["firm-knowledge"])
+
+
+class FromTextRequest(BaseModel):
+    title: str
+    content: str
 
 
 @router.get("")
@@ -17,6 +23,49 @@ async def list_firm_knowledge(client=Depends(get_current_client), db=Depends(get
         .execute()
     )
     return result.data
+
+
+@router.get("/{knowledge_id}")
+async def get_firm_knowledge(knowledge_id: str, client=Depends(get_current_client), db=Depends(get_db)):
+    result = (
+        db.table("firm_knowledge")
+        .select("id, file_name, file_type, content, usage_count, created_at")
+        .eq("id", knowledge_id)
+        .eq("client_id", client["id"])
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Not found")
+    return result.data[0]
+
+
+@router.post("/from-text")
+async def create_firm_knowledge_from_text(
+    body: FromTextRequest, client=Depends(get_current_client), db=Depends(get_db)
+):
+    """Save a research answer (or other free text) directly as a Firm Knowledge
+    entry, bypassing the file-upload path - used by the "save this answer"
+    suggestion prompt shown after a client asks a repeated question."""
+    title = body.title.strip() or "Untitled note"
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Content cannot be empty")
+
+    embedding = await embed(content)
+    result = (
+        db.table("firm_knowledge")
+        .insert(
+            {
+                "client_id": client["id"],
+                "file_name": title,
+                "file_type": "note",
+                "content": content,
+                "embedding": embedding,
+            }
+        )
+        .execute()
+    )
+    return {"id": result.data[0]["id"], "file_name": title}
 
 
 @router.post("/upload")

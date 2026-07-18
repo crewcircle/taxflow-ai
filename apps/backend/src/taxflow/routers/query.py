@@ -159,6 +159,10 @@ async def submit_query(
         else await answer_cache.get_cached_answer(client["id"], body.question)
     )
     if cached is not None:
+        # A cache hit means this exact question already has a completed row,
+        # so count first and persist the new row after (mirrors the
+        # count-before-completed ordering used on the non-cached path).
+        repeat_count = await answer_cache.count_prior_asks(client["id"], body.question)
         query_id = await asyncio.to_thread(
             _persist_cached_query, db, client, body.question, body.module, cached, start
         )
@@ -170,6 +174,7 @@ async def submit_query(
             "confidence": cached["confidence"],
             "model_used": cached["model_used"],
             "cached": True,
+            "repeat_count": repeat_count,
         }
 
     # Auth (get_current_client) and the trial gate (check_trial_gate) run as
@@ -226,6 +231,11 @@ async def submit_query(
         )
         stored_answer = f"{answer}\n\n{caveat}" if caveat else answer
 
+        # Firm Knowledge suggestion trigger: how many times has this client
+        # already asked essentially this question? Counted before the update
+        # below marks this row 'completed', so it never counts itself.
+        repeat_count = await answer_cache.count_prior_asks(client["id"], body.question)
+
         # When a corrective pass regenerated the answer, its metadata (Sonnet
         # model, confidence, token/cache-token counts) replaces the original
         # generation's — otherwise metrics/cost reporting would mislabel a
@@ -274,6 +284,7 @@ async def submit_query(
             "citations": citations,
             "confidence": meta["confidence"],
             "model_used": meta["model_used"],
+            "repeat_count": repeat_count,
         }
 
     except Exception as e:
@@ -481,6 +492,10 @@ async def stream_query(
             else final_meta.get("cache_creation_input_tokens")
         )
 
+        # Firm Knowledge suggestion trigger: count before the update below
+        # marks this row 'completed', so it never counts itself.
+        repeat_count = await answer_cache.count_prior_asks(client["id"], question)
+
         # Task C5: persist model_used/confidence/tokens/wall_time on the stream
         # path (previously only POST /query stored these), plus the B1 cache
         # tokens on both paths.
@@ -539,6 +554,8 @@ async def stream_query(
 
         verification_event = verification or {"overall_status": "not_verified", "issues": []}
         yield f"data: {json.dumps({'type': 'verification', **verification_event})}\n\n"
+        yield f"data: {json.dumps({'type': 'repeat_count', 'count': repeat_count})}\n\n"
+
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
