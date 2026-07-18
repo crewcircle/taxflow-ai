@@ -1,5 +1,6 @@
+import re
+
 from bs4 import BeautifulSoup
-from playwright.async_api import Browser, async_playwright
 
 from taxflow.services.knowledge.scraper_base import ScraperBase
 
@@ -20,31 +21,30 @@ ACTS = [
     ("C2004A04402", "Superannuation Guarantee (Administration) Act 1992", "SGA Act"),
 ]
 
+_VOLUME_HREF = re.compile(
+    r"https://www\.legislation\.gov\.au/[^\"'\s]+/text/original/epub/OEBPS/document_(\d+)/document_\d+\.html"
+)
+
 
 class LegislationScraper(ScraperBase):
-    """legislation.gov.au is an Angular SPA - the act text is rendered client-side
-    from api.prod.legislation.gov.au, whose document-file endpoint doesn't serve
-    document bytes publicly (confirmed by direct API testing). A plain httpx GET
-    only ever returns the empty SPA shell, so this scraper renders each page with
-    a real (headless) browser instead and reads the DOM after it settles.
+    """legislation.gov.au's Angular app is server-side rendered (confirmed live:
+    a plain GET to /{titleId}/latest/text returns the fully populated page,
+    `ng-server-context="ssr"` in the markup), so no headless browser is needed
+    here at all - a first attempt at this used Playwright because a plain GET
+    against a STALE registerId returned a client-only "could not be loaded"
+    error shell, which looked like an SPA-rendering problem but wasn't one.
 
-    The compiled Act text itself isn't in the top-level page: the app fetches an
-    EPUB client-side and mounts it in a second frame at a blob: URL (confirmed by
-    inspecting page.frames() live), so fetch_document_content reads that frame's
-    body text, not the outer page's.
-
-    One Chromium instance is shared across every Act in a run_delta() call
-    (opened lazily on first use, closed in aclose()) rather than launched per
-    document - launching a browser process is expensive and ingest.py already
-    calls aclose() exactly once per scraper instance per run.
+    A large Act's compiled text isn't on that page either, though: it's split
+    across N per-volume EPUB documents (ITAA 1936 has 7, ITAA 1997 has 12),
+    each linked from the page as a plain static XHTML file. This scraper reads
+    those links off the page and concatenates every volume in order - reading
+    only the first volume (an earlier version of this scraper effectively did,
+    via a single-frame grab) silently dropped everything after it; for ITAA
+    1936 that cut off Division 6 (sections 95-102) entirely, which lives in
+    volume 2.
     """
 
     source_name = "legislation"
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._playwright = None
-        self._browser: Browser | None = None
 
     async def fetch_document_list(self) -> list[dict]:
         return [
@@ -58,53 +58,37 @@ class LegislationScraper(ScraperBase):
             for comp_id, title, citation in ACTS
         ]
 
-    async def _ensure_browser(self) -> Browser:
-        if self._browser is None:
-            self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(headless=True)
-        return self._browser
-
-    async def fetch_document_content(self, url: str) -> str:
-        browser = await self._ensure_browser()
-        page = await browser.new_page()
-        try:
-            await page.goto(url, wait_until="networkidle", timeout=60_000)
-            if "could not be loaded" in await page.evaluate("document.body.innerText"):
-                return ""  # stale/invalid titleId - nothing to scrape
-            # The compiled text loads into a second frame (a blob: URL the app
-            # creates client-side from a fetched EPUB) after the outer page's
-            # networkidle fires, so poll for that frame to appear.
-            epub_frame = None
-            for _ in range(30):
-                frames = [f for f in page.frames if f.url.startswith("blob:")]
-                if frames:
-                    epub_frame = frames[0]
-                    break
-                await page.wait_for_timeout(1000)
-            if epub_frame is None:
-                return ""
-            try:
-                await epub_frame.wait_for_function(
-                    "document.body.innerText.length > 3000", timeout=20_000
-                )
-            except Exception:  # noqa: BLE001 - fall through to the length guard below
-                pass
-            html = await epub_frame.content()
-        finally:
-            await page.close()
-
+    def _extract_text(self, html: str) -> str:
         soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["nav", "header", "footer", "script", "style", "aside"]):
             tag.decompose()
         main = soup.find("main") or soup.find("article") or soup.body or soup
-        text = main.get_text(separator="\n", strip=True)
-        if len(text) < 3000:
-            return ""  # didn't actually get the compiled text - skip rather than ingest junk
-        return text
+        return main.get_text(separator="\n", strip=True)
 
-    async def aclose(self) -> None:
-        if self._browser is not None:
-            await self._browser.close()
-        if self._playwright is not None:
-            await self._playwright.stop()
-        await super().aclose()
+    async def fetch_document_content(self, url: str) -> str:
+        response = await self._get(url)
+        html = response.text
+        if "could not be loaded" in html:
+            return ""  # stale/invalid titleId - nothing to scrape
+
+        # Dedup by volume number and order 1..N (the page can link the same
+        # volume more than once, e.g. from both the TOC and a "downloads" list).
+        seen: dict[int, str] = {}
+        for match in _VOLUME_HREF.finditer(html):
+            seen.setdefault(int(match.group(1)), match.group(0))
+        volume_urls = [seen[n] for n in sorted(seen)]
+
+        if not volume_urls:
+            # Small Acts may render their full text directly on this page with
+            # no per-volume split - fall back to whatever's here.
+            text = self._extract_text(html)
+            return text if len(text) >= 3000 else ""
+
+        parts = []
+        for vol_url in volume_urls:
+            vol_response = await self._get(vol_url)
+            parts.append(self._extract_text(vol_response.text))
+        text = "\n\n".join(parts)
+        if len(text) < 3000:
+            return ""  # didn't actually get compiled text - skip rather than ingest junk
+        return text
