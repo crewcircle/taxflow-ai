@@ -8,30 +8,29 @@ import {
   AlertTriangle,
   BookOpen,
   CheckCircle2,
+  Copy,
+  FileDown,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Sparkles,
+  User,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHistorySidebar";
 import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
+import { cn } from "@/lib/utils";
 
 interface DocumentTemplate {
   type: string;
   label: string;
-}
-
-interface FirmKnowledgeRow {
-  id: string;
-  file_name: string;
-  created_at: string;
 }
 
 interface VerificationIssue {
@@ -50,6 +49,7 @@ interface QueryResult {
   citations: SourceCitation[];
   model_used: string | null;
   query_id: string | null;
+  askedQuestion: string;
 }
 
 const MAX_CHARS = 2000;
@@ -99,14 +99,13 @@ interface FirmKnowledgeSuggestionProps {
   repeatCount: number;
   defaultTitle: string;
   content: string;
-  onSaved: () => void;
 }
 
 // Shown after an answer completes when the client has asked essentially the
 // same question before (backend-computed repeat_count) - a signal this
 // answer is worth keeping as reusable firm guidance rather than re-deriving
 // it from scratch next time.
-function FirmKnowledgeSuggestion({ repeatCount, defaultTitle, content, onSaved }: FirmKnowledgeSuggestionProps) {
+function FirmKnowledgeSuggestion({ repeatCount, defaultTitle, content }: FirmKnowledgeSuggestionProps) {
   const [dismissed, setDismissed] = useState(false);
   const [title, setTitle] = useState(defaultTitle);
   const [editing, setEditing] = useState(false);
@@ -127,7 +126,6 @@ function FirmKnowledgeSuggestion({ repeatCount, defaultTitle, content, onSaved }
       });
       if (!response.ok) throw new Error("Failed");
       setSaved(true);
-      onSaved();
     } catch {
       setError("Could not save to Firm Knowledge - please try again");
     } finally {
@@ -176,7 +174,15 @@ function FirmKnowledgeSuggestion({ repeatCount, defaultTitle, content, onSaved }
   );
 }
 
-function VerificationBadge({ verification }: { verification: Verification }) {
+function VerificationBadge({
+  verification,
+  expanded,
+  onToggle,
+}: {
+  verification: Verification;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   if (verification.overall_status === "verified") {
     return (
       <Badge variant="outline" className="gap-1 border-green-600/30 text-green-700">
@@ -194,10 +200,49 @@ function VerificationBadge({ verification }: { verification: Verification }) {
       : `${verification.issues.length} note${verification.issues.length === 1 ? "" : "s"}`;
 
   return (
-    <Badge variant="outline" className="gap-1 border-amber-600/30 bg-amber-50 text-amber-800">
-      <AlertTriangle className="size-3" />
-      {label}
-    </Badge>
+    <button type="button" onClick={onToggle}>
+      <Badge
+        variant="outline"
+        className="gap-1 border-amber-600/30 bg-amber-50 text-amber-800 hover:bg-amber-100"
+      >
+        <AlertTriangle className="size-3" />
+        {label}
+        {expanded ? " (hide details)" : " (click for details)"}
+      </Badge>
+    </button>
+  );
+}
+
+// Explains what "needs review" means: which specific claims were flagged and
+// why, so clicking the badge is never a dead end.
+function VerificationIssuesPanel({ issues }: { issues: VerificationIssue[] }) {
+  return (
+    <Card className="border-amber-600/30 bg-amber-50/60">
+      <CardContent className="space-y-3 py-3">
+        <p className="text-sm font-medium text-amber-900">
+          The verification pass checked this answer against the cited sources and flagged the following:
+        </p>
+        <ul className="space-y-2">
+          {issues.map((issue, i) => (
+            <li key={i} className="rounded-md border border-amber-600/20 bg-background p-2 text-sm">
+              <Badge
+                variant="outline"
+                className={cn(
+                  "mb-1 text-[10px] uppercase",
+                  issue.severity === "critical"
+                    ? "border-destructive/30 text-destructive"
+                    : "border-amber-600/30 text-amber-800"
+                )}
+              >
+                {issue.severity}
+              </Badge>
+              <p className="font-medium text-foreground">&ldquo;{issue.claim}&rdquo;</p>
+              <p className="text-muted-foreground">{issue.issue}</p>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -215,19 +260,19 @@ export default function QueryPage() {
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [verifying, setVerifying] = useState(false);
   const [verification, setVerification] = useState<Verification | null>(null);
+  const [verificationExpanded, setVerificationExpanded] = useState(false);
   const [repeatCount, setRepeatCount] = useState(0);
   const [copied, setCopied] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(true);
+  const [historyHighlighted, setHistoryHighlighted] = useState(false);
 
   const [history, setHistory] = useState<QueryListItem[]>([]);
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [docType, setDocType] = useState("advice_memo");
   const [savingDoc, setSavingDoc] = useState(false);
   const [savedDocId, setSavedDocId] = useState<string | null>(null);
-
-  const [documentCount, setDocumentCount] = useState(0);
-  const [firmKnowledge, setFirmKnowledge] = useState<FirmKnowledgeRow[]>([]);
+  const [highlightedHistoryId, setHighlightedHistoryId] = useState<string | null>(null);
 
   const hasAutoLoaded = useRef(false);
 
@@ -240,6 +285,22 @@ export default function QueryPage() {
 
   useEffect(loadHistory, [loadHistory]);
 
+  // Header "Questions asked" link deep-links here with ?focus=history so it can
+  // open the history sidebar (or just flash it if already open) from any page.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("focus") !== "history") return;
+    window.history.replaceState(null, "", window.location.pathname);
+    const openTimer = setTimeout(() => {
+      setHistoryOpen(true);
+      setHistoryHighlighted(true);
+    }, 0);
+    const clearTimer = setTimeout(() => setHistoryHighlighted(false), 1500);
+    return () => {
+      clearTimeout(openTimer);
+      clearTimeout(clearTimer);
+    };
+  }, []);
+
   useEffect(() => {
     fetch("/api/documents/templates")
       .then((r) => (r.ok ? r.json() : []))
@@ -247,26 +308,12 @@ export default function QueryPage() {
       .catch(() => {});
   }, []);
 
-  const loadFirmKnowledge = useCallback(() => {
-    fetch("/api/firm-knowledge")
-      .then((r) => (r.ok ? r.json() : []))
-      .then(setFirmKnowledge)
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    fetch("/api/documents")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((d: unknown[]) => setDocumentCount(d.length))
-      .catch(() => {});
-    loadFirmKnowledge();
-  }, [loadFirmKnowledge]);
-
   function resetPane() {
     setResult(null);
     setStreamedAnswer("");
     setVerification(null);
     setVerifying(false);
+    setVerificationExpanded(false);
     setRepeatCount(0);
     setSavedDocId(null);
     setDocType("advice_memo");
@@ -289,6 +336,7 @@ export default function QueryPage() {
         citations: data.citations ?? [],
         model_used: data.model_used,
         query_id: data.id ?? item.id,
+        askedQuestion: data.question ?? item.question,
       });
       // Continue the restored conversation: reuse its session_id so a typed
       // follow-up folds into that session's context rather than starting a new
@@ -333,6 +381,10 @@ export default function QueryPage() {
   async function handleSubmit() {
     setLoading(true);
     resetPane();
+    // Snapshot the question text now - the textarea stays editable for a
+    // follow-up while this streams, and the result must stay tied to what
+    // was actually asked, not whatever the box holds when the stream ends.
+    const askedQuestion = question;
 
     try {
       const gate = await fetch("/api/query/stream?question=", { method: "HEAD" }).catch(() => null);
@@ -341,7 +393,7 @@ export default function QueryPage() {
         return;
       }
 
-      const streamUrl = `/api/query/stream?question=${encodeURIComponent(question)}${
+      const streamUrl = `/api/query/stream?question=${encodeURIComponent(askedQuestion)}${
         clientRef.trim() ? `&client_ref=${encodeURIComponent(clientRef.trim())}` : ""
       }&session_id=${encodeURIComponent(sessionId)}`;
       const source = new EventSource(streamUrl);
@@ -381,6 +433,7 @@ export default function QueryPage() {
               citations,
               model_used: parsed.model_used ?? null,
               query_id: parsed.query_id ?? null,
+              askedQuestion,
             });
             setVerifying(true);
           } else if (parsed.type === "correction") {
@@ -393,7 +446,7 @@ export default function QueryPage() {
             setResult((prev) =>
               prev
                 ? { ...prev, answer, citations, model_used: parsed.model_used ?? prev.model_used }
-                : { answer, citations, model_used: parsed.model_used ?? null, query_id: null },
+                : { answer, citations, model_used: parsed.model_used ?? null, query_id: null, askedQuestion },
             );
           } else if (parsed.type === "verification") {
             setVerifying(false);
@@ -435,7 +488,7 @@ export default function QueryPage() {
         body: JSON.stringify({
           query_id: result.query_id,
           document_type: docType,
-          title: question.slice(0, 80),
+          title: result.askedQuestion.slice(0, 80),
           content_md: result.answer,
           client_ref: clientRef.trim() || null,
         }),
@@ -461,7 +514,18 @@ export default function QueryPage() {
   return (
     <div className="flex h-[calc(100vh-8rem)] min-h-[420px] w-full min-w-0 overflow-hidden rounded-xl border border-border">
       {historyOpen && (
-        <QueryHistorySidebar history={history} onSelect={handleSelectHistory} onNewQuestion={handleNewQuestion} />
+        <div
+          className={
+            historyHighlighted ? "ring-2 ring-accent ring-inset transition-shadow duration-300" : "transition-shadow duration-300"
+          }
+        >
+          <QueryHistorySidebar
+            history={history}
+            onSelect={handleSelectHistory}
+            onNewQuestion={handleNewQuestion}
+            highlightedId={highlightedHistoryId}
+          />
+        </div>
       )}
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -482,7 +546,13 @@ export default function QueryPage() {
                 Verifying...
               </Badge>
             )}
-            {verification && <VerificationBadge verification={verification} />}
+            {verification && (
+              <VerificationBadge
+                verification={verification}
+                expanded={verificationExpanded}
+                onToggle={() => setVerificationExpanded((v) => !v)}
+              />
+            )}
           </div>
           <Button variant="ghost" size="sm" onClick={() => setSourcesOpen((v) => !v)}>
             {sourcesOpen ? "Hide sources" : "Show sources"}
@@ -491,49 +561,17 @@ export default function QueryPage() {
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-6">
-          <div className="grid grid-cols-3 gap-3">
-            <button
-              type="button"
-              onClick={() => setHistoryOpen(true)}
-              className="text-left transition hover:opacity-80"
-            >
-              <Card>
-                <CardHeader className="pb-0">
-                  <p className="text-xs text-muted-foreground">Questions asked</p>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-xl font-semibold">{history.length}</p>
-                </CardContent>
-              </Card>
-            </button>
-            <Link href="/dashboard/documents" className="transition hover:opacity-80">
-              <Card>
-                <CardHeader className="pb-0">
-                  <p className="text-xs text-muted-foreground">Documents generated</p>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-xl font-semibold">{documentCount}</p>
-                </CardContent>
-              </Card>
-            </Link>
-            <Link href="/dashboard/knowledge" className="transition hover:opacity-80">
-              <Card>
-                <CardHeader className="pb-0">
-                  <p className="text-xs text-muted-foreground">Firm knowledge on file</p>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-xl font-semibold">{firmKnowledge.length}</p>
-                </CardContent>
-              </Card>
-            </Link>
-          </div>
-
           {topicTags.length > 0 && (
             <div className="flex flex-wrap gap-1.5" data-tour="suggested-question">
               {topicTags.map(([tag, id]) => (
                 <button
                   key={tag}
-                  onClick={() => handleSelectHistory(id)}
+                  onClick={() => {
+                    setHistoryOpen(true);
+                    setHighlightedHistoryId(id);
+                    setTimeout(() => setHighlightedHistoryId(null), 2000);
+                    handleSelectHistory(id);
+                  }}
                   className="rounded-full border border-border bg-background px-3 py-1 text-xs text-foreground hover:border-accent hover:text-accent"
                 >
                   {tag}
@@ -552,27 +590,43 @@ export default function QueryPage() {
 
           {result && (
             <div className="space-y-4">
+              {result.askedQuestion && (
+                <p className="text-sm text-muted-foreground">
+                  <span className="font-medium text-foreground">You asked: </span>
+                  {result.askedQuestion}
+                </p>
+              )}
+
+              {verificationExpanded && verification && verification.issues.length > 0 && (
+                <VerificationIssuesPanel issues={verification.issues} />
+              )}
+
               <AnswerWithCitationLinks text={result.answer} />
 
               <FirmKnowledgeSuggestion
                 repeatCount={repeatCount}
-                defaultTitle={question.slice(0, 80) || "Saved answer"}
+                defaultTitle={result.askedQuestion.slice(0, 80) || "Saved answer"}
                 content={result.answer}
-                onSaved={loadFirmKnowledge}
               />
 
-              <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={handleCopy}>
-                  {copied ? "Copied!" : "Copy"}
-                </Button>
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/40 p-2">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="secondary" size="sm" onClick={handleCopy}>
+                      <Copy className="size-3.5" />
+                      {copied ? "Copied!" : "Copy"}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Copy the full answer text to your clipboard</TooltipContent>
+                </Tooltip>
                 {savedDocId ? (
-                  <Button asChild variant="outline" size="sm">
+                  <Button asChild variant="secondary" size="sm">
                     <Link href="/dashboard/documents">View saved document →</Link>
                   </Button>
                 ) : (
                   <>
                     <Select value={docType} onValueChange={setDocType}>
-                      <SelectTrigger size="sm" className="w-[220px]">
+                      <SelectTrigger size="sm" className="w-[220px]" title="Document format to save this answer as">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -583,9 +637,15 @@ export default function QueryPage() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <Button variant="outline" size="sm" disabled={savingDoc} onClick={handleSaveAsDocument}>
-                      {savingDoc ? "Saving..." : "Save as document"}
-                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button variant="secondary" size="sm" disabled={savingDoc} onClick={handleSaveAsDocument}>
+                          <FileDown className="size-3.5" />
+                          {savingDoc ? "Saving..." : "Save as document"}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Save this answer as a document you can find under Documents</TooltipContent>
+                    </Tooltip>
                   </>
                 )}
               </div>
@@ -596,12 +656,20 @@ export default function QueryPage() {
         </div>
 
         <div className="border-t border-border p-4">
-          <Input
-            value={clientRef}
-            onChange={(e) => setClientRef(e.target.value)}
-            placeholder="Client (optional)"
-            className="mb-2 h-8 max-w-xs text-xs"
-          />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="relative mb-2 max-w-xs">
+                <User className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={clientRef}
+                  onChange={(e) => setClientRef(e.target.value)}
+                  placeholder="Client (optional)"
+                  className="h-8 border-accent/30 bg-accent/5 pl-7 text-xs"
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>Tag this question with a client name so you can filter your question history by client</TooltipContent>
+          </Tooltip>
           <Textarea
             data-tour="question-textarea"
             value={question}

@@ -3,6 +3,7 @@
 import { Logo } from "@/components/Logo";
 import { OnboardingTour } from "@/components/OnboardingTour";
 import { DemoPersonaSwitcher } from "@/components/DemoPersonaSwitcher";
+import { HeaderStats } from "@/components/HeaderStats";
 
 interface DashboardHeaderProps {
   businessName: string;
@@ -22,6 +23,8 @@ export function DashboardHeader({
   return (
     <header className="relative flex h-16 shrink-0 items-center justify-between border-b border-border px-4">
       <Logo href="/dashboard" />
+
+      <HeaderStats />
 
       {businessName && isDemo && (
         <div className="flex items-center gap-3 pr-16" data-tour="identity-strip">
