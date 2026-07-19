@@ -10,6 +10,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _cmap(chunks):
+    """Positional citation_map (one entry per chunk in render order), matching
+    the flag-off _build_context_string contract."""
+    return [
+        {
+            "citation": c["citation"],
+            "source_url": c.get("source_url"),
+            "parent_key": c.get("parent_key"),
+            "chunks": [c],
+        }
+        for c in chunks
+    ]
+
+
 def _firm_chunk(cid, citation):
     return {
         "id": cid,
@@ -48,7 +62,7 @@ async def test_cited_firm_chunk_triggers_increment_usage():
 
     with patch.object(
         agent, "_prepare",
-        new=AsyncMock(return_value=("ctx", "", chunks, {"num_chunks": 2}, None, 0)),
+        new=AsyncMock(return_value=("ctx", "", chunks, {"num_chunks": 2}, None, 0, _cmap(chunks))),
     ), patch.object(
         agent, "_generate",
         new=AsyncMock(return_value=("Answer [1][2]", {"input_tokens": 1, "output_tokens": 1})),
@@ -79,7 +93,7 @@ async def test_non_cited_firm_chunk_does_not_increment():
 
     with patch.object(
         agent, "_prepare",
-        new=AsyncMock(return_value=("ctx", "", chunks, {"num_chunks": 2}, None, 0)),
+        new=AsyncMock(return_value=("ctx", "", chunks, {"num_chunks": 2}, None, 0, _cmap(chunks))),
     ), patch.object(
         agent, "_generate",
         new=AsyncMock(return_value=("Answer [1]", {"input_tokens": 1, "output_tokens": 1})),

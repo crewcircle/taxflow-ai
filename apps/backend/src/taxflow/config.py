@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP_TOKENS: int = 64
     OPENAI_API_KEY: str = ""
 
+    # --- Structure-aware / hierarchical chunking (Workstream C) ---------------
+    # When enabled, ingest splits AU-tax documents on logical units (Part/
+    # Division/Section/subsection, numbered ruling paragraphs) with heading
+    # breadcrumbs, storing each child chunk alongside its full parent-unit text.
+    # When on, retrieval may expand a retrieved child to its parent unit at
+    # answer time. Both flags default False = today's exact flat behaviour.
+    HIERARCHICAL_CHUNKING_ENABLED: bool = False
+    PARENT_EXPANSION_ENABLED: bool = False
+
     # Postgres connection pool (per uvicorn worker; see db.py). maxconn is sized
     # so 2 workers (~2 x 8 = 16 connections) stay under Supabase's connection cap.
     POOL_MIN_CONN: int = 1
@@ -176,6 +185,13 @@ class Settings(BaseSettings):
     # Each coupled subsystem is chosen by a provider knob so the concrete vendor
     # adapter is swappable via config, not code. Defaults reproduce today's stack.
     LLM_PROVIDER: str = "anthropic"
+    # Optional LiteLLM base URL + keys for routing generation to an OpenAI-
+    # compatible gateway (e.g. OpenCode). Empty LLM_API_BASE => Anthropic default
+    # (OpenCode strictly opt-in). Key-resolution precedence lives in
+    # providers.get_llm() and is documented in docs/model-routing.md.
+    LLM_API_BASE: str = ""
+    LLM_API_KEY: str = ""
+    OPENCODE_API_KEY: str = ""
     EMBEDDING_PROVIDER: str = "openai"
     RELATIONAL_PROVIDER: str = "postgres"
     AUTH_PROVIDER: str = "supabase"
@@ -201,6 +217,14 @@ class Settings(BaseSettings):
     MODEL_TIER_MAP: dict[str, str] = {
         "haiku": "anthropic/claude-haiku-4-5",
         "sonnet": "anthropic/claude-sonnet-4-6",
+        # Named per-agent tiers (all Anthropic today; concrete OpenCode IDs are
+        # set per-deployment in Doppler). resolve_model() also falls back through
+        # _TIER_ALIAS so an agent tier still resolves when omitted here.
+        "draft": "anthropic/claude-haiku-4-5",
+        "verify": "anthropic/claude-haiku-4-5",
+        "rerank": "anthropic/claude-haiku-4-5",
+        "classify": "anthropic/claude-haiku-4-5",
+        "verify_strong": "anthropic/claude-sonnet-4-6",
     }
 
     # Tokenizer used for chunk sizing (was hard-coded tiktoken cl100k_base).
@@ -237,6 +261,30 @@ class Settings(BaseSettings):
     # a partner approves (embeds into firm_knowledge) or rejects it. Also gates
     # the cited-firm-chunk usage_count increment on the answer flow.
     LEARNING_LOOP_ENABLED: bool = True
+
+    # --- Eval harness (Workstream B) -----------------------------------------
+    # The LLM-as-judge resolves its model through providers.resolve_model, same
+    # as every production call-site, so it follows the model-routing invariant
+    # (Workstream A) — EVAL_JUDGE_TIER is a TIER name, never a bare model string.
+    EVAL_JUDGE_TIER: str = "sonnet"
+    # Per-tier token pricing in USD per 1M tokens. `input`/`output` are the base
+    # rates; `cache_read`/`cache_creation` cover Anthropic prompt-cache pricing
+    # (cache reads are ~10% of input, cache writes ~125%). Used by cost.run_cost.
+    EVAL_MODEL_PRICING: dict[str, dict[str, float]] = {
+        "haiku": {"input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_creation": 1.25},
+        "sonnet": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_creation": 3.75},
+    }
+    # k used for recall@k / nDCG@k in the eval harness (mirrors retrieval depth).
+    EVAL_RECALL_K: int = RETRIEVAL_TOP_K
+    # Regression tolerance (absolute metric delta) below which a run-over-run
+    # change is treated as noise rather than a regression.
+    EVAL_REGRESSION_TOLERANCE: float = 0.05
+    # Eval-only: when True, ResearchAgent.run() echoes the EXACT rendered context
+    # string it generated from back on the result (``eval_context``) so the
+    # LLM-as-judge grades against the sources the answer actually saw — not a
+    # re-derived candidate list. Default False keeps production output unchanged;
+    # only the paid eval runner flips it on.
+    EVAL_CAPTURE_CONTEXT: bool = False
 
     # Object storage (S3-compatible / Cloudflare R2). Moved out of os.environ in
     # services/storage/r2.py into config. Empty defaults preserve the graceful

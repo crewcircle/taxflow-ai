@@ -23,7 +23,6 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from taxflow import providers
-from taxflow.config import settings
 from taxflow.providers import get_relational_data
 from taxflow.services.agents.draft import DraftAgent
 
@@ -100,7 +99,7 @@ async def draft_client_letter(state: DocumentState) -> dict:
         result = await providers.get_llm().generate(
             messages=[{"role": "user", "content": user}],
             system=system,
-            model=settings.ANTHROPIC_HAIKU_MODEL,
+            model=providers.resolve_model("draft"),
             max_tokens=2000,
             temperature=0.1,
         )

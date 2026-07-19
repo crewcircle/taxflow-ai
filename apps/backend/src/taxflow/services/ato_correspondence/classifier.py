@@ -1,7 +1,6 @@
 import json
 
 from taxflow import providers
-from taxflow.config import settings
 from taxflow.ports.llm import StructuredParseError
 from taxflow.services.prompt_cache import cacheable_system
 
@@ -46,7 +45,7 @@ class ATOLetterClassifier:
             result = await providers.get_llm().generate_structured(
                 messages=[{"role": "user", "content": extracted_text}],
                 system=system_param,
-                model=settings.ANTHROPIC_HAIKU_MODEL,
+                model=providers.resolve_model("classify"),
                 output_model=LetterClassification,
                 max_tokens=500,
                 temperature=0,
@@ -62,7 +61,7 @@ class ATOLetterClassifier:
         response = await providers.get_llm().generate(
             messages=[{"role": "user", "content": extracted_text}],
             system=system_param,
-            model=settings.ANTHROPIC_HAIKU_MODEL,
+            model=providers.resolve_model("classify"),
             max_tokens=500,
             temperature=0,
         )

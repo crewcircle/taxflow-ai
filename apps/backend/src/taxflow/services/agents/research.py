@@ -563,33 +563,139 @@ class ResearchAgent:
             hit["score"] = float(hit["score"]) * settings.ENGAGEMENT_CHUNK_WEIGHT
         return hits
 
-    def _build_context_string(self, chunks: list[dict]) -> str:
+    def _build_context_string(self, chunks: list[dict]) -> tuple[str, list[dict]]:
+        """Render the retrieved chunks into the numbered source block AND return
+        a ``citation_map`` (one entry per rendered ``[i]`` block, in render
+        order). ``_parse_citations`` maps ``[N]`` -> ``citation_map[N-1]``, so a
+        model's ``[N]`` always resolves to the source it actually saw.
+
+        Flag OFF (default): one rendered block per chunk in order — byte-for-byte
+        the current context string, and ``citation_map`` is one entry per chunk
+        (identical to today's positional resolution).
+
+        Flag ON (``PARENT_EXPANSION_ENABLED``): for each retrieved chunk that has
+        ``parent_content``, render the full parent unit instead of the child,
+        de-duplicated by ``(source_url, parent_key)`` so children of one parent
+        collapse into ONE rendered block + ONE ``citation_map`` entry. Chunks
+        with no parent (legacy/flat) keep child content. Rendering is prefixed
+        with ``heading_path`` when present and composes with the historical
+        prefix. Once expanding a parent would exceed the char budget we fall back
+        to child content for the remaining chunks.
+        """
+        if settings.PARENT_EXPANSION_ENABLED:
+            return self._build_context_string_expanded(chunks)
+        return self._build_context_string_flat(chunks)
+
+    def _historical_prefix(self, chunk: dict) -> str:
+        """The ``[HISTORICAL — ...]`` prefix for a superseded chunk (or "")."""
+        if not chunk.get("is_historical"):
+            return ""
+        superseded_by = chunk.get("superseded_by")
+        if superseded_by:
+            return (
+                f"[HISTORICAL — superseded by {superseded_by}, "
+                "do not treat as current law] "
+            )
+        return "[HISTORICAL — superseded, do not treat as current law] "
+
+    @staticmethod
+    def _citation_entry(chunk: dict) -> dict:
+        """One ``citation_map`` entry for a rendered block (its first underlying
+        chunk supplies excerpt/url in ``_parse_citations``)."""
+        return {
+            "citation": chunk["citation"],
+            "source_url": chunk.get("source_url"),
+            "parent_key": chunk.get("parent_key"),
+            "chunks": [chunk],
+        }
+
+    @staticmethod
+    def _render_block(
+        i: int, hist_prefix: str, heading_prefix: str, citation: str, source_url, content: str
+    ) -> str:
+        return (
+            f"[{i}] {hist_prefix}{heading_prefix}Citation: {citation}\n"
+            f"Source: {source_url}\n"
+            f"Content: {content}\n---"
+        )
+
+    def _build_context_string_flat(self, chunks: list[dict]) -> tuple[str, list[dict]]:
         parts = []
+        citation_map: list[dict] = []
         for i, chunk in enumerate(chunks, start=1):
             # Historical / superseded sources (Task B3): prefix a loud label so
             # the model treats them as "how the position changed", never as
             # current law. Authoritative chunks render exactly as before.
-            prefix = ""
-            if chunk.get("is_historical"):
-                superseded_by = chunk.get("superseded_by")
-                if superseded_by:
-                    prefix = (
-                        f"[HISTORICAL — superseded by {superseded_by}, "
-                        "do not treat as current law] "
-                    )
-                else:
-                    prefix = (
-                        "[HISTORICAL — superseded, do not treat as current law] "
-                    )
+            prefix = self._historical_prefix(chunk)
             parts.append(
-                f"[{i}] {prefix}Citation: {chunk['citation']}\n"
-                f"Source: {chunk['source_url']}\n"
-                f"Content: {chunk['content']}\n---"
+                self._render_block(
+                    i, prefix, "", chunk["citation"], chunk["source_url"], chunk["content"]
+                )
             )
+            citation_map.append(self._citation_entry(chunk))
         context = "\n".join(parts)
         # Rough token truncation (4 chars ~= 1 token)
         max_chars = CONTEXT_TOKEN_LIMIT * 4
-        return context[:max_chars]
+        return context[:max_chars], citation_map
+
+    def _build_context_string_expanded(self, chunks: list[dict]) -> tuple[str, list[dict]]:
+        max_chars = CONTEXT_TOKEN_LIMIT * 4
+        parts: list[str] = []
+        citation_map: list[dict] = []
+        # De-dup index: (source_url, parent_key) -> position in citation_map.
+        seen_parents: dict[tuple, int] = {}
+        cumulative = 0
+        budget_hit = False
+
+        for chunk in chunks:
+            parent_content = chunk.get("parent_content")
+            parent_key = chunk.get("parent_key")
+            source_url = chunk.get("source_url")
+            heading_path = chunk.get("heading_path")
+            hist_prefix = self._historical_prefix(chunk)
+            heading_prefix = f"{heading_path}\n" if heading_path else ""
+
+            has_parent = bool(parent_content and parent_key)
+            if has_parent:
+                dedup_key = (source_url, parent_key)
+                # Dedup FIRST, before the budget gate: an already-rendered parent
+                # must always collapse into its existing citation index, even if a
+                # later large parent has since tripped ``budget_hit``. Otherwise a
+                # second child of that parent would render as a spurious new block.
+                if dedup_key in seen_parents:
+                    citation_map[seen_parents[dedup_key]]["chunks"].append(chunk)
+                    continue
+                if not budget_hit:
+                    block_len = len(f"{hist_prefix}{heading_prefix}Content: {parent_content}")
+                    if cumulative + block_len > max_chars:
+                        # Expanding this parent would blow the budget: fall back to
+                        # child content for THIS and all remaining chunks.
+                        budget_hit = True
+                    else:
+                        idx = len(citation_map)
+                        seen_parents[dedup_key] = idx
+                        parts.append(
+                            self._render_block(
+                                idx + 1, hist_prefix, heading_prefix,
+                                chunk["citation"], source_url, parent_content,
+                            )
+                        )
+                        citation_map.append(self._citation_entry(chunk))
+                        cumulative += block_len
+                        continue
+
+            # Child content (no parent, or budget hit): one rendered block.
+            parts.append(
+                self._render_block(
+                    len(citation_map) + 1, hist_prefix, heading_prefix,
+                    chunk["citation"], source_url, chunk.get("content", ""),
+                )
+            )
+            citation_map.append(self._citation_entry(chunk))
+            cumulative += len(chunk.get("content", ""))
+
+        context = "\n".join(parts)
+        return context[:max_chars], citation_map
 
     def _user_content(self, question: str, context: str, steering: str = "") -> str:
         """Assemble the user message.
@@ -660,6 +766,7 @@ class ResearchAgent:
         session: dict | None = None,
         knowledge_as_of: str | None = None,
         firm_knowledge_used: list[str] | None = None,
+        citation_map: list[dict] | None = None,
     ) -> dict:
         """Answer-flow transparency: capture what retrieval actually returned and
         what generation actually did, so a "why this answer?" UI can show it
@@ -691,11 +798,36 @@ class ResearchAgent:
             }
             for i, chunk in enumerate(chunks)
         ]
+        # Rendered source list (Workstream C, Task C3): one entry per rendered
+        # ``[i]`` block, in render order, so the eval harness can validate a
+        # ``[N]`` marker against what the model actually saw (correct under
+        # parent-expansion, where several candidates collapse into fewer rendered
+        # blocks). Flag-off, this is one entry per chunk = the candidate list
+        # one-to-one. Falls back to the candidate list when no map is supplied.
+        if citation_map is not None:
+            rendered_sources = [
+                {
+                    "n": idx + 1,
+                    "citation": entry["citation"],
+                    "source_url": entry.get("source_url"),
+                }
+                for idx, entry in enumerate(citation_map)
+            ]
+        else:
+            rendered_sources = [
+                {
+                    "n": i + 1,
+                    "citation": chunk["citation"],
+                    "source_url": chunk.get("source_url"),
+                }
+                for i, chunk in enumerate(chunks)
+            ]
         trace: dict = {
             "retrieval": {
                 "chunks_considered": len(chunks),
                 "source_type_hint": source_type_hint,
                 "candidates": candidates,
+                "rendered_sources": rendered_sources,
                 # B fills knowledge_as_of/historical_pool_size; C fills
                 # firm_knowledge_used. A defaults every one it owns the shape of.
                 "knowledge_as_of": knowledge_as_of,
@@ -719,17 +851,28 @@ class ResearchAgent:
             trace["session"] = session
         return trace
 
-    def _parse_citations(self, answer: str, chunks: list[dict]) -> list[dict]:
+    def _parse_citations(self, answer: str, citation_map: list[dict]) -> list[dict]:
+        """Resolve the answer's ``[N]`` markers against the ``citation_map``
+        returned by ``_build_context_string`` (one entry per rendered block, in
+        render order), so ``[N]`` -> ``citation_map[N-1]``.
+
+        Under parent-expansion several child chunks collapse into one rendered
+        block/entry, so this maps to what the model actually saw rather than the
+        raw candidate list position. Flag off, ``citation_map`` is one entry per
+        chunk in order = today's positional resolution. The excerpt/url come from
+        the entry's first underlying chunk (the parent's own citation).
+        """
         cited_numbers = {int(n) for n in CITATION_PATTERN.findall(answer)}
         citations = []
         for n in sorted(cited_numbers):
-            if 1 <= n <= len(chunks):
-                chunk = chunks[n - 1]
+            if 1 <= n <= len(citation_map):
+                entry = citation_map[n - 1]
+                chunk = entry["chunks"][0]
                 last_scraped_at = chunk.get("last_scraped_at")
                 citations.append(
                     {
-                        "citation": chunk["citation"],
-                        "url": chunk["source_url"],
+                        "citation": entry["citation"],
+                        "url": entry["source_url"],
                         "excerpt": self._trim_excerpt(chunk["content"]),
                         "source_object_key": chunk.get("source_object_key"),
                         "last_scraped_at": last_scraped_at.isoformat() if last_scraped_at else None,
@@ -843,6 +986,7 @@ class ResearchAgent:
         client_id: str,
         prior_turns_used: int,
         client_ref: str | None,
+        citation_map: list[dict] | None = None,
     ) -> dict:
         """Assemble the answer-flow trace shared by ``run`` and
         ``regenerate_with_feedback`` (Task B3 + C6).
@@ -871,6 +1015,7 @@ class ResearchAgent:
             session=session_fragment,
             knowledge_as_of=knowledge_as_of,
             firm_knowledge_used=firm_used or None,
+            citation_map=citation_map,
         )
 
     async def _load_session_history(self, client_id: str, session_id: str) -> list[dict]:
@@ -959,13 +1104,15 @@ class ResearchAgent:
         session_id: str | None,
         pool_scale: int = 1,
         client_ref: str | None = None,
-    ) -> tuple[str, str, list[dict], dict, list[str] | None, int]:
+    ) -> tuple[str, str, list[dict], dict, list[str] | None, int, list[dict]]:
         """Shared front half of every generation path: build the advisory steering
         block + source_type hint, retrieve the merged context, and render the
         context string. Returns (context, steering, chunks, signals,
-        source_type_hint, prior_turns_used) - the hint is threaded back out so
-        callers can record it on the answer-flow trace, and prior_turns_used (Task
-        C6) so callers can populate trace.session. run() and
+        source_type_hint, prior_turns_used, citation_map) - the hint is threaded
+        back out so callers can record it on the answer-flow trace,
+        prior_turns_used (Task C6) so callers can populate trace.session, and the
+        citation_map (Workstream C) so ``_parse_citations`` resolves ``[N]``
+        against the rendered blocks (correct under parent-expansion). run() and
         regenerate_with_feedback() both start here so profile injection, session
         memory and embedding threading stay in one place.
 
@@ -983,13 +1130,21 @@ class ResearchAgent:
             pool_scale=pool_scale,
             client_ref=client_ref,
         )
-        context = self._build_context_string(chunks)
-        return context, steering, chunks, signals, source_type_hint, prior_turns_used
+        context, citation_map = self._build_context_string(chunks)
+        return (
+            context,
+            steering,
+            chunks,
+            signals,
+            source_type_hint,
+            prior_turns_used,
+            citation_map,
+        )
 
     @staticmethod
     def _model_for(routed: str) -> str:
         """Map a route_model() decision ("haiku"/"sonnet") to the configured model id."""
-        return settings.ANTHROPIC_SONNET_MODEL if routed == "sonnet" else settings.ANTHROPIC_HAIKU_MODEL
+        return providers.resolve_model(routed)
 
     async def run(
         self,
@@ -1001,7 +1156,7 @@ class ResearchAgent:
         client_ref: str | None = None,
     ) -> dict:
         start = time.monotonic()
-        context, steering, chunks, signals, source_type_hint, prior_turns_used = (
+        context, steering, chunks, signals, source_type_hint, prior_turns_used, citation_map = (
             await self._prepare(
                 question, client_id, embedding, client, session_id,
                 client_ref=client_ref,
@@ -1014,7 +1169,7 @@ class ResearchAgent:
         model = self._model_for(routed)
 
         answer, stats = await self._generate(question, context, model, steering=steering)
-        citations = self._parse_citations(answer, chunks)
+        citations = self._parse_citations(answer, citation_map)
         confidence = self._estimate_confidence(answer, chunks, citations)
 
         # Task C5: bump usage_count for the CITED firm chunks (best-effort) and
@@ -1023,7 +1178,7 @@ class ResearchAgent:
             client_id, self._cited_firm_ids(citations, chunks)
         )
 
-        return {
+        result = {
             "answer": answer,
             "citations": citations,
             "confidence": confidence,
@@ -1042,8 +1197,15 @@ class ResearchAgent:
                 client_id=client_id,
                 prior_turns_used=prior_turns_used,
                 client_ref=client_ref,
+                citation_map=citation_map,
             ),
         }
+        # Eval-only (default off): echo the EXACT rendered context the answer was
+        # generated from, so the LLM-as-judge grades against the real sources
+        # rather than a re-derived candidate list. Never emitted in production.
+        if settings.EVAL_CAPTURE_CONTEXT:
+            result["eval_context"] = context
+        return result
 
     async def regenerate_with_feedback(
         self,
@@ -1075,7 +1237,7 @@ class ResearchAgent:
         """
         widened = widen and settings.REVIEWER_WIDEN_ENABLED
         pool_scale = 2 if widened else 1
-        context, steering, chunks, _signals, source_type_hint, prior_turns_used = (
+        context, steering, chunks, _signals, source_type_hint, prior_turns_used, citation_map = (
             await self._prepare(
                 question, client_id, embedding, client, session_id,
                 pool_scale=pool_scale, client_ref=client_ref,
@@ -1097,9 +1259,9 @@ class ResearchAgent:
         )
 
         answer, stats = await self._generate(
-            question, corrective_context, settings.ANTHROPIC_SONNET_MODEL, steering=steering
+            question, corrective_context, providers.resolve_model("sonnet"), steering=steering
         )
-        citations = self._parse_citations(answer, chunks)
+        citations = self._parse_citations(answer, citation_map)
         confidence = self._estimate_confidence(answer, chunks, citations)
         re_retrieval = (
             {"fired": True, "reason": "reviewer_flag"} if widened else {"fired": False}
@@ -1123,5 +1285,6 @@ class ResearchAgent:
                 client_id=client_id,
                 prior_turns_used=prior_turns_used,
                 client_ref=client_ref,
+                citation_map=citation_map,
             ),
         }

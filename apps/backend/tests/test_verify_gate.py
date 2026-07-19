@@ -34,21 +34,25 @@ def test_should_verify_fires_on_insufficient_phrase():
 
 
 def test_verify_model_defaults_to_haiku(monkeypatch):
-    monkeypatch.setattr(settings, "VERIFY_MODEL", "claude-haiku-4-5")
+    from taxflow import providers
+
     # Low confidence but has citations and no insufficient phrase -> not severe.
     model = verify_mod.verify_model_for(0.3, [{"citation": "x"}], "answer [1]")
-    assert model == "claude-haiku-4-5"
+    assert model == providers.resolve_model("verify")
 
 
 def test_verify_model_escalates_to_sonnet_when_severe(monkeypatch):
-    monkeypatch.setattr(settings, "ANTHROPIC_SONNET_MODEL", "claude-sonnet-4-6")
-    # No citations -> severe -> Sonnet.
-    assert verify_mod.verify_model_for(0.3, [], "answer") == "claude-sonnet-4-6"
+    from taxflow import providers
+
+    # No citations -> severe -> verify_strong tier.
+    assert verify_mod.verify_model_for(0.3, [], "answer") == providers.resolve_model(
+        "verify_strong"
+    )
 
 
 @pytest.mark.asyncio
 async def test_verify_run_uses_default_model(monkeypatch):
-    monkeypatch.setattr(settings, "VERIFY_MODEL", "claude-haiku-4-5")
+    from taxflow import providers
     from taxflow.services.agents.models import VerificationResult
 
     fake_llm = MagicMock()
@@ -59,7 +63,9 @@ async def test_verify_run_uses_default_model(monkeypatch):
 
     agent = VerifyAgent()
     result = await agent.run(draft="d", citations=[], question="q")
-    assert fake_llm.generate_structured.await_args.kwargs["model"] == "claude-haiku-4-5"
+    assert fake_llm.generate_structured.await_args.kwargs["model"] == providers.resolve_model(
+        "verify"
+    )
     # Dict bridge: callers keep receiving dict-shaped verification data.
     assert isinstance(result, dict)
     assert result["overall_status"] == "verified"
