@@ -87,6 +87,31 @@ async def list_queries(client=Depends(get_current_client), db=Depends(get_db)):
     return await asyncio.to_thread(db.queries.list_recent, client["id"], 50)
 
 
+class SessionLabelRequest(BaseModel):
+    label: str
+
+
+@router.get("/sessions")
+async def list_sessions(client=Depends(get_current_client), db=Depends(get_db)):
+    """Labels for this client's named conversation threads - unlabelled
+    sessions simply aren't in this list, the sidebar falls back to the first
+    question's text for those."""
+    return await asyncio.to_thread(db.query_sessions.list_for_client, client["id"])
+
+
+@router.patch("/sessions/{session_id}")
+async def rename_session(
+    session_id: str,
+    body: SessionLabelRequest,
+    client=Depends(get_current_client),
+    db=Depends(get_db),
+):
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="Label cannot be empty")
+    return await asyncio.to_thread(db.query_sessions.upsert_label, client["id"], session_id, label)
+
+
 @router.post("")
 async def submit_query(
     body: QueryRequest,

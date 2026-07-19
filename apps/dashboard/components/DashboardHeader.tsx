@@ -1,9 +1,10 @@
 "use client";
 
+import Link from "next/link";
+import { Network } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { OnboardingTour } from "@/components/OnboardingTour";
 import { DemoPersonaSwitcher } from "@/components/DemoPersonaSwitcher";
-import { HeaderStats } from "@/components/HeaderStats";
 
 interface DashboardHeaderProps {
   businessName: string;
@@ -24,7 +25,13 @@ export function DashboardHeader({
     <header className="relative flex h-16 shrink-0 items-center justify-between border-b border-border px-4">
       <Logo href="/dashboard" />
 
-      <HeaderStats />
+      <Link
+        href="/dashboard/knowledge-base"
+        className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <Network className="size-3.5" />
+        TaxFlow&apos;s Reference Library
+      </Link>
 
       {businessName && isDemo && (
         <div className="flex items-center gap-3 pr-16" data-tour="identity-strip">

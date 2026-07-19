@@ -18,6 +18,7 @@ export interface QueryListItem {
   client_ref: string | null;
   context_note: string | null;
   topic_tag: string | null;
+  session_id: string | null;
   created_at: string;
 }
 
@@ -29,6 +30,39 @@ interface QueryHistorySidebarProps {
   // Set briefly (e.g. from a topic-tag click) to scroll to and highlight one
   // specific item without hiding the rest of the list.
   highlightedId?: string | null;
+  // session_id -> label, for sessions the user has renamed. Sessions with no
+  // entry here fall back to their first question's text.
+  sessionLabels?: Record<string, string>;
+}
+
+type HistoryRow =
+  | { type: "single"; item: QueryListItem }
+  | { type: "session"; sessionId: string; label: string; items: QueryListItem[] };
+
+// Multi-turn sessions (same session_id on more than one question) render as
+// one sub-group under their label; single-turn sessions render exactly as
+// before, so the common case has no visual change.
+function groupBySession(items: QueryListItem[], sessionLabels: Record<string, string>): HistoryRow[] {
+  const rows: HistoryRow[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (item.session_id) {
+      if (seen.has(item.session_id)) continue;
+      const sessionItems = items.filter((i) => i.session_id === item.session_id);
+      if (sessionItems.length > 1) {
+        seen.add(item.session_id);
+        rows.push({
+          type: "session",
+          sessionId: item.session_id,
+          label: sessionLabels[item.session_id] ?? sessionItems[sessionItems.length - 1].question,
+          items: sessionItems,
+        });
+        continue;
+      }
+    }
+    rows.push({ type: "single", item });
+  }
+  return rows;
 }
 
 function groupByRecency(history: QueryListItem[]) {
@@ -63,6 +97,7 @@ export function QueryHistorySidebar({
   onNewQuestion,
   onHide,
   highlightedId,
+  sessionLabels = {},
 }: QueryHistorySidebarProps) {
   const [clientFilter, setClientFilter] = useState("");
   // Highlight matches instead of hiding non-matches, so filtering by client
@@ -107,7 +142,7 @@ export function QueryHistorySidebar({
           <TooltipTrigger asChild>
             <Button size="sm" className="w-full gap-1.5" onClick={onNewQuestion}>
               <Plus className="size-4" />
-              New question
+              New engagement
             </Button>
           </TooltipTrigger>
           <TooltipContent>Start a fresh conversation - clears the current answer and starts a new session</TooltipContent>
@@ -140,34 +175,77 @@ export function QueryHistorySidebar({
               {group.label}
             </p>
             <div className="space-y-0.5">
-              {group.items.map((item) => {
-                const isHighlighted = item.id === highlightedId || matchedIds?.has(item.id);
-                const isDimmed = matchedIds !== null && !matchedIds.has(item.id);
-                return (
-                  <button
-                    key={item.id}
-                    ref={(el) => {
-                      if (el) itemRefs.current.set(item.id, el);
-                      else itemRefs.current.delete(item.id);
-                    }}
-                    onClick={() => onSelect(item.id)}
-                    className={cn(
-                      "flex w-full items-start gap-2 rounded-lg border-l-2 border-transparent px-2 py-2 text-left text-sm transition-all",
-                      "text-foreground hover:bg-muted",
-                      isHighlighted && "border-accent bg-accent/10",
-                      isDimmed && "opacity-40"
-                    )}
-                  >
-                    <MessageSquare className="mt-0.5 size-3.5 shrink-0 opacity-60" />
-                    <span className="flex-1 space-y-1">
-                      <span className="line-clamp-2 block leading-snug">{item.question}</span>
-                      {item.client_ref && (
-                        <Badge variant="outline" className="text-[9px]">
-                          {item.client_ref}
-                        </Badge>
+              {groupBySession(group.items, sessionLabels).map((row) => {
+                if (row.type === "single") {
+                  const item = row.item;
+                  const isHighlighted = item.id === highlightedId || matchedIds?.has(item.id);
+                  const isDimmed = matchedIds !== null && !matchedIds.has(item.id);
+                  return (
+                    <button
+                      key={item.id}
+                      ref={(el) => {
+                        if (el) itemRefs.current.set(item.id, el);
+                        else itemRefs.current.delete(item.id);
+                      }}
+                      onClick={() => onSelect(item.id)}
+                      className={cn(
+                        "flex w-full items-start gap-2 rounded-lg border-l-2 border-transparent px-2 py-2 text-left text-sm transition-all",
+                        "text-foreground hover:bg-muted",
+                        isHighlighted && "border-accent bg-accent/10",
+                        isDimmed && "opacity-40"
                       )}
-                    </span>
-                  </button>
+                    >
+                      <MessageSquare className="mt-0.5 size-3.5 shrink-0 opacity-60" />
+                      <span className="flex-1 space-y-1">
+                        <span className="line-clamp-2 block leading-snug">{item.question}</span>
+                        {item.client_ref && (
+                          <Badge variant="outline" className="text-[9px]">
+                            {item.client_ref}
+                          </Badge>
+                        )}
+                      </span>
+                    </button>
+                  );
+                }
+
+                return (
+                  <div key={row.sessionId} className="mb-1">
+                    <p className="line-clamp-1 px-2 py-1 text-[11px] font-medium text-muted-foreground">
+                      {row.label}
+                    </p>
+                    <div className="space-y-0.5 border-l border-border pl-2">
+                      {row.items.map((item) => {
+                        const isHighlighted = item.id === highlightedId || matchedIds?.has(item.id);
+                        const isDimmed = matchedIds !== null && !matchedIds.has(item.id);
+                        return (
+                          <button
+                            key={item.id}
+                            ref={(el) => {
+                              if (el) itemRefs.current.set(item.id, el);
+                              else itemRefs.current.delete(item.id);
+                            }}
+                            onClick={() => onSelect(item.id)}
+                            className={cn(
+                              "flex w-full items-start gap-2 rounded-lg border-l-2 border-transparent px-2 py-1.5 text-left text-sm transition-all",
+                              "text-foreground hover:bg-muted",
+                              isHighlighted && "border-accent bg-accent/10",
+                              isDimmed && "opacity-40"
+                            )}
+                          >
+                            <MessageSquare className="mt-0.5 size-3.5 shrink-0 opacity-60" />
+                            <span className="flex-1 space-y-1">
+                              <span className="line-clamp-2 block leading-snug">{item.question}</span>
+                              {item.client_ref && (
+                                <Badge variant="outline" className="text-[9px]">
+                                  {item.client_ref}
+                                </Badge>
+                              )}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 );
               })}
             </div>

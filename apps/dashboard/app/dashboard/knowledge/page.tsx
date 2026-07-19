@@ -82,10 +82,10 @@ export default function KnowledgePage() {
   return (
     <div className="max-w-2xl space-y-6">
       <div>
-        <h1 className="text-xl font-semibold">Firm Knowledge</h1>
+        <h1 className="text-xl font-semibold">Our Firm&apos;s Precedents</h1>
         <p className="text-sm text-muted-foreground">
           Upload your firm&apos;s own precedents, templates, or internal guidance. Research
-          answers blend these in alongside the AU tax knowledge base.
+          answers blend these in alongside TaxFlow&apos;s Reference Library.
         </p>
       </div>
 
@@ -152,7 +152,7 @@ export default function KnowledgePage() {
                       Remove
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>Permanently removes this from Firm Knowledge - it will no longer be used in research answers</TooltipContent>
+                  <TooltipContent>Permanently removes this from Our Firm&apos;s Precedents - it will no longer be used in research answers</TooltipContent>
                 </Tooltip>
               </div>
               {expandedId === item.id && (

@@ -56,6 +56,11 @@ const HUB_COLOR = "#1d3557";
 // a fixed cron schedule, not something the API needs to round-trip.
 const NEXT_INGEST_NOTE = "Sources are re-checked automatically every day at 2am Sydney time.";
 
+// Known jurisdiction gaps in the state revenue ruling ingest (see state_revenue.py) -
+// surfaced explicitly here rather than left silent, so the coverage this page implies
+// stays honest about what it doesn't have yet.
+const KNOWN_COVERAGE_GAPS = ["SA", "QLD"];
+
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-AU", { year: "numeric", month: "short", day: "numeric" });
 }
@@ -226,7 +231,7 @@ export default function KnowledgeBasePage() {
         <div className="flex items-center gap-2">
           <Network className="size-4 text-muted-foreground" />
           <span className="text-sm font-semibold text-foreground">
-            TaxFlow Knowledge Base
+            TaxFlow&apos;s Reference Library
             {documents && (
               <span className="ml-2 font-normal text-muted-foreground">
                 {documents.length} sources
@@ -304,7 +309,9 @@ export default function KnowledgeBasePage() {
       </div>
 
       <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/30 px-4 py-1.5 text-[11px] text-muted-foreground">
-        <span>{NEXT_INGEST_NOTE}</span>
+        <span>
+          {NEXT_INGEST_NOTE} Not yet covered: {KNOWN_COVERAGE_GAPS.join(", ")} state rulings.
+        </span>
         {oldestRefresh && <span>Oldest source last refreshed {formatDate(oldestRefresh)}</span>}
       </div>
 

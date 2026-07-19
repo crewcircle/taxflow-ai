@@ -211,7 +211,7 @@ class QueriesRepo:
             """
             SELECT id, question, status, model_used, confidence_score,
                    verification_result, client_ref, context_note, topic_tag,
-                   created_at
+                   session_id, created_at
             FROM queries
             WHERE client_id = %s
             ORDER BY created_at DESC
@@ -373,6 +373,28 @@ class FirmClientsRepo:
         return _fetchall(
             "SELECT id, name FROM firm_clients WHERE client_id = %s ORDER BY name LIMIT 200",
             (client_id,),
+        )
+
+
+# --- query_sessions ------------------------------------------------------------
+class QuerySessionsRepo:
+    def list_for_client(self, client_id: str) -> list[dict]:
+        return _fetchall(
+            "SELECT session_id, label FROM query_sessions WHERE client_id = %s",
+            (client_id,),
+        )
+
+    def upsert_label(self, client_id: str, session_id: str, label: str) -> dict:
+        return _execute(
+            """
+            INSERT INTO query_sessions (session_id, client_id, label)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (session_id) DO UPDATE
+                SET label = EXCLUDED.label, updated_at = now()
+            RETURNING session_id, label
+            """,
+            (session_id, client_id, label),
+            returning=True,
         )
 
 
@@ -696,6 +718,7 @@ class Repositories:
         self.query_feedback = QueryFeedbackRepo()
         self.documents = DocumentsRepo()
         self.firm_clients = FirmClientsRepo()
+        self.query_sessions = QuerySessionsRepo()
         self.firm_knowledge = FirmKnowledgeRepo()
         self.regulatory_alerts = RegulatoryAlertsRepo()
         self.contact = ContactRepo()

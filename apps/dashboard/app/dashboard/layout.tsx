@@ -3,7 +3,6 @@ import {
   BookOpen,
   FileText,
   MessageSquareText,
-  Network,
   ScrollText,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
@@ -15,8 +14,7 @@ const NAV_LINKS = [
   { href: "/dashboard/query", label: "Ask TaxFlow", icon: MessageSquareText },
   { href: "/dashboard/documents", label: "Documents", icon: FileText },
   { href: "/dashboard/ato-response", label: "ATO correspondence", icon: ScrollText },
-  { href: "/dashboard/knowledge", label: "Firm knowledge", icon: BookOpen },
-  { href: "/dashboard/knowledge-base", label: "TaxFlow knowledge base", icon: Network },
+  { href: "/dashboard/knowledge", label: "Our Firm's Precedents", icon: BookOpen },
 ];
 
 export default async function DashboardLayout({

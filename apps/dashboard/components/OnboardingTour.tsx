@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { relativeTime, useLastQueryWalkthrough } from "@/lib/useLastQueryWalkthrough";
+import { useLastQueryWalkthrough } from "@/lib/useLastQueryWalkthrough";
 
 interface OnboardingTourProps {
   businessName: string;
@@ -74,8 +74,7 @@ export function OnboardingTour({
   const [open, setOpen] = useState(false);
   const [forceOpenRequested, setForceOpenRequested] = useState(false);
   const [step, setStep] = useState(0);
-  const { load, loading, lastQuery, issueExample, noQueries, firstIssue, distinctCitations } =
-    useLastQueryWalkthrough();
+  const { load, issueExample, firstIssue, distinctCitations } = useLastQueryWalkthrough();
 
   // Auto-open once per persona per session. This reacts to `pathname` rather
   // than only checking it at mount, because the demo-login flow does a
@@ -120,22 +119,6 @@ export function OnboardingTour({
           </p>
           {demoDescription && <p className="text-muted-foreground">{demoDescription}</p>}
           {demoTagline && <p className="font-medium text-foreground">{demoTagline}</p>}
-        </>
-      ),
-    },
-    {
-      selector: '[data-tour="suggested-question"]',
-      title: "A real question they asked",
-      body: (
-        <>
-          {loading && <p className="text-muted-foreground">Loading...</p>}
-          {!loading && noQueries && <p className="text-muted-foreground">This firm hasn&apos;t asked a question yet.</p>}
-          {!loading && lastQuery && (
-            <p className="text-muted-foreground">
-              Each tag is a real question {businessName} has already asked TaxFlow - like this one, asked{" "}
-              {relativeTime(lastQuery.created_at)}. Click a tag to load its question back into the ask box.
-            </p>
-          )}
         </>
       ),
     },

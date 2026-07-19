@@ -10,7 +10,7 @@ import {
   CheckCircle2,
   Copy,
   FileDown,
-  Sparkles,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -404,6 +404,9 @@ export default function QueryPage() {
   const [historyHighlighted, setHistoryHighlighted] = useState(false);
 
   const [history, setHistory] = useState<QueryListItem[]>([]);
+  // session_id -> label, for engagements the user has renamed (Task #15).
+  const [sessionLabels, setSessionLabels] = useState<Record<string, string>>({});
+  const [editingLabel, setEditingLabel] = useState(false);
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [docType, setDocType] = useState("advice_memo");
   const [savingDoc, setSavingDoc] = useState(false);
@@ -420,6 +423,34 @@ export default function QueryPage() {
   }, []);
 
   useEffect(loadHistory, [loadHistory]);
+
+  const loadSessionLabels = useCallback(() => {
+    fetch("/api/query/sessions")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: { session_id: string; label: string | null }[]) => {
+        const labels: Record<string, string> = {};
+        for (const row of rows) if (row.label) labels[row.session_id] = row.label;
+        setSessionLabels(labels);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(loadSessionLabels, [loadSessionLabels]);
+
+  async function saveSessionLabel(label: string) {
+    const trimmed = label.trim();
+    if (!trimmed) {
+      setEditingLabel(false);
+      return;
+    }
+    setSessionLabels((prev) => ({ ...prev, [sessionId]: trimmed }));
+    setEditingLabel(false);
+    await fetch(`/api/query/sessions/${sessionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: trimmed }),
+    }).catch(() => {});
+  }
 
   // Header "Questions asked" link deep-links here with ?focus=history so it can
   // open the history sidebar (or just flash it if already open) from any page.
@@ -674,7 +705,7 @@ export default function QueryPage() {
   }
 
   const displayedCitations = result?.citations ?? [];
-  const hasBadges = result?.model_used === "sonnet" || verifying || Boolean(verification);
+  const hasBadges = verifying || Boolean(verification);
 
   return (
     <div className="flex h-[calc(100vh-8rem)] min-h-[420px] w-full min-w-0 overflow-hidden rounded-xl border border-border">
@@ -690,6 +721,7 @@ export default function QueryPage() {
             onNewQuestion={handleNewQuestion}
             onHide={() => setHistoryOpen(false)}
             highlightedId={highlightedHistoryId}
+            sessionLabels={sessionLabels}
           />
         </div>
       ) : (
@@ -698,14 +730,34 @@ export default function QueryPage() {
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <div className="flex-1 space-y-4 overflow-y-auto p-6">
+          {result && (
+            <div className="flex items-center gap-1.5">
+              {editingLabel ? (
+                <Input
+                  autoFocus
+                  defaultValue={sessionLabels[sessionId] ?? result.askedQuestion.slice(0, 80)}
+                  onBlur={(e) => saveSessionLabel(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                    if (e.key === "Escape") setEditingLabel(false);
+                  }}
+                  className="h-7 max-w-sm text-xs"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setEditingLabel(true)}
+                  className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                >
+                  {sessionLabels[sessionId] ?? result.askedQuestion.slice(0, 80)}
+                  <Pencil className="size-3 opacity-60" />
+                </button>
+              )}
+            </div>
+          )}
+
           {hasBadges && (
             <div className="flex flex-wrap items-center gap-2">
-              {result?.model_used === "sonnet" && (
-                <Badge variant="outline" className="gap-1 border-accent/30 text-accent">
-                  <Sparkles className="size-3" />
-                  Enhanced model
-                </Badge>
-              )}
               {verifying && (
                 <Badge variant="outline" className="text-muted-foreground">
                   Verifying...
