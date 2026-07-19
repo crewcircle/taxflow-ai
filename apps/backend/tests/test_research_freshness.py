@@ -36,7 +36,7 @@ def test_context_string_labels_historical_with_superseded_by():
             "superseded_by": "TR 2024/1",
         }
     ]
-    ctx = agent._build_context_string(chunks)
+    ctx, _cmap = agent._build_context_string(chunks)
     assert (
         "[HISTORICAL — superseded by TR 2024/1, do not treat as current law] "
         in ctx
@@ -57,7 +57,7 @@ def test_context_string_labels_historical_without_superseded_by():
             "superseded_by": None,
         }
     ]
-    ctx = agent._build_context_string(chunks)
+    ctx, _cmap = agent._build_context_string(chunks)
     assert "[HISTORICAL — superseded, do not treat as current law] " in ctx
     # The lineage variant must NOT appear when superseded_by is None.
     assert "superseded by" not in ctx
@@ -72,7 +72,7 @@ def test_context_string_current_chunk_unlabelled():
             "content": "current position",
         }
     ]
-    ctx = agent._build_context_string(chunks)
+    ctx, _cmap = agent._build_context_string(chunks)
     assert "HISTORICAL" not in ctx
     # Authoritative chunks render exactly as before: "[1] Citation: ...".
     assert ctx.startswith("[1] Citation: TR 2024/1")

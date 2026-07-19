@@ -817,8 +817,9 @@ class KnowledgeIngestRepo:
                     INSERT INTO knowledge_chunks
                         (source_type, source_url, source_title, citation, content, embedding,
                          chunk_index, token_count, effective_date, source_object_key, jurisdiction,
-                         topic, last_scraped_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                         topic, heading_path, section_ref, chunk_level, parent_key, parent_content,
+                         last_scraped_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                     ON CONFLICT (source_url, chunk_index) DO UPDATE SET
                         content = EXCLUDED.content,
                         embedding = EXCLUDED.embedding,
@@ -826,6 +827,11 @@ class KnowledgeIngestRepo:
                         source_object_key = EXCLUDED.source_object_key,
                         jurisdiction = EXCLUDED.jurisdiction,
                         topic = EXCLUDED.topic,
+                        heading_path = EXCLUDED.heading_path,
+                        section_ref = EXCLUDED.section_ref,
+                        chunk_level = EXCLUDED.chunk_level,
+                        parent_key = EXCLUDED.parent_key,
+                        parent_content = EXCLUDED.parent_content,
                         last_scraped_at = now()
                     """,
                     row,
@@ -908,6 +914,51 @@ class KnowledgeIngestRepo:
             LEFT JOIN citation_counts cc ON cc.citation = kc.citation
             GROUP BY kc.citation
             ORDER BY kc.citation
+            """
+        )
+
+    def delete_by_source_url(self, source_url: str) -> int:
+        """Delete every chunk row for one ``source_url``. Returns the row count.
+
+        Used by the re-chunk backfill (Task C4): hierarchical chunking produces a
+        different chunk count than the flat path, so a plain
+        ``ON CONFLICT (source_url, chunk_index)`` re-upsert would leave stale
+        high-index flat rows behind. Delete-before-reinsert clears the old rows
+        first so only the freshly-produced hierarchical chunks remain.
+        """
+        with get_pg_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "DELETE FROM knowledge_chunks WHERE source_url = %s",
+                (source_url,),
+            )
+            count = cur.rowcount
+            conn.commit()
+            cur.close()
+            return count
+
+    def list_ingested_sources(self) -> list[dict]:
+        """One row per distinct ``source_url`` with the fields ``process_document``
+        needs to rebuild ``metadata`` during the Task C4 re-chunk backfill.
+
+        The aggregates pick a single representative value per source_url (all
+        chunks of one document share these), matching the keys the pipeline reads
+        from ``metadata`` (``url`` maps from ``source_url``).
+        """
+        return _fetchall(
+            """
+            SELECT
+                source_url,
+                min(source_type) AS source_type,
+                min(source_title) AS title,
+                min(citation) AS citation,
+                min(effective_date) AS effective_date,
+                min(jurisdiction) AS jurisdiction,
+                min(source_object_key) AS source_object_key
+            FROM knowledge_chunks
+            WHERE source_url IS NOT NULL
+            GROUP BY source_url
+            ORDER BY source_url
             """
         )
 

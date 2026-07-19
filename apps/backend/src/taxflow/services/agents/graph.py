@@ -188,7 +188,7 @@ async def generate(state: AgentState) -> dict:
     question = state["question"]
     model = providers.resolve_model(state["routed_tier"])
 
-    context = research_agent._build_context_string(chunks)
+    context, citation_map = research_agent._build_context_string(chunks)
     messages = [
         {"role": "user", "content": research_agent._user_content(question, context, steering)}
     ]
@@ -222,7 +222,7 @@ async def generate(state: AgentState) -> dict:
                 usage = chunk.usage
         answer = "".join(parts)
 
-    citations = research_agent._parse_citations(answer, chunks)
+    citations = research_agent._parse_citations(answer, citation_map)
     confidence = research_agent._estimate_confidence(answer, chunks, citations)
     stats = {
         "input_tokens": usage.input_tokens if usage else 0,
@@ -270,6 +270,7 @@ async def generate(state: AgentState) -> dict:
         session=session_fragment,
         knowledge_as_of=knowledge_as_of,
         firm_knowledge_used=firm_used or None,
+        citation_map=citation_map,
     )
     return {
         "answer": answer,

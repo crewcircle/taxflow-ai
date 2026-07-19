@@ -46,6 +46,9 @@ async def test_semantic_search_sets_probes_and_uses_cosine():
     assert "<=>" in second_sql
     assert "last_scraped_at" in second_sql
     assert "source_type" in second_sql
+    # Hierarchical-chunking columns (Workstream C).
+    for col in ("heading_path", "parent_content", "chunk_level", "parent_key"):
+        assert col in second_sql
 
 
 @pytest.mark.asyncio
@@ -60,6 +63,9 @@ async def test_text_search_uses_fts_columns():
     assert "ts_rank" in sql
     assert "last_scraped_at" in sql
     assert "source_type" in sql
+    # Hierarchical-chunking columns (Workstream C).
+    for col in ("heading_path", "parent_content", "chunk_level", "parent_key"):
+        assert col in sql
 
 
 @pytest.mark.asyncio
@@ -80,6 +86,9 @@ async def test_historical_search_scopes_to_superseded_and_sets_probes():
     assert "superseded_by" in second_sql
     assert "<=>" in second_sql
     assert "knowledge_chunks" in second_sql
+    # Hierarchical-chunking columns (Workstream C).
+    for col in ("heading_path", "parent_content", "chunk_level", "parent_key"):
+        assert col in second_sql
 
 
 @pytest.mark.asyncio

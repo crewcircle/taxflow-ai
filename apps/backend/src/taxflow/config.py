@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP_TOKENS: int = 64
     OPENAI_API_KEY: str = ""
 
+    # --- Structure-aware / hierarchical chunking (Workstream C) ---------------
+    # When enabled, ingest splits AU-tax documents on logical units (Part/
+    # Division/Section/subsection, numbered ruling paragraphs) with heading
+    # breadcrumbs, storing each child chunk alongside its full parent-unit text.
+    # When on, retrieval may expand a retrieved child to its parent unit at
+    # answer time. Both flags default False = today's exact flat behaviour.
+    HIERARCHICAL_CHUNKING_ENABLED: bool = False
+    PARENT_EXPANSION_ENABLED: bool = False
+
     # Postgres connection pool (per uvicorn worker; see db.py). maxconn is sized
     # so 2 workers (~2 x 8 = 16 connections) stay under Supabase's connection cap.
     POOL_MIN_CONN: int = 1
