@@ -102,12 +102,22 @@ def test_raw_pool_access_confined() -> None:
 
 def test_no_hardcoded_model_ids_outside_adapters() -> None:
     """Model IDs must resolve through ``providers.resolve_model(tier)`` (Workstream
-    A): no service/router code may reference the raw ``settings.ANTHROPIC_HAIKU_MODEL``
-    / ``ANTHROPIC_SONNET_MODEL`` / ``VERIFY_MODEL`` fields. ``config.py`` (definitions)
-    and ``providers.py`` (legacy fallback) are the only allowed references."""
+    A): no service/router code may reference a raw ``settings.ANTHROPIC_HAIKU_MODEL``
+    / ``ANTHROPIC_SONNET_MODEL`` / ``VERIFY_MODEL`` field OR a hardcoded literal
+    model/provider ID (``anthropic/...``, ``openai/...``, bare ``claude-*``,
+    ``gpt-*``). ``config.py`` (tier-map + legacy field definitions), ``providers.py``
+    (legacy fallback), and ``adapters/`` (the one place allowed to know concrete
+    vendor strings) are exempt."""
     allowed = {"config.py", "providers.py"}
-    pattern = r"settings\.(ANTHROPIC_HAIKU_MODEL|ANTHROPIC_SONNET_MODEL|VERIFY_MODEL)\b"
-    rx = re.compile(pattern)
+    patterns = [
+        # raw settings fields that hold concrete model IDs
+        r"settings\.(ANTHROPIC_HAIKU_MODEL|ANTHROPIC_SONNET_MODEL|VERIFY_MODEL)\b",
+        # provider-prefixed LiteLLM routes, e.g. "anthropic/claude-...", "openai/gpt-..."
+        r"""["'](?:anthropic|openai)/[\w.\-]+["']""",
+        # bare vendor model IDs, e.g. "claude-haiku-4-5", "gpt-4o"
+        r"""["'](?:claude|gpt)-[\w.\-]+["']""",
+    ]
+    rxs = [re.compile(p) for p in patterns]
     offenders: list[str] = []
     for path in _py_files_outside_adapters():
         if str(path.relative_to(SRC)) in allowed:
@@ -118,12 +128,13 @@ def test_no_hardcoded_model_ids_outside_adapters() -> None:
                 continue
             if "``" in line or line.count('"') >= 4:
                 continue
-            if rx.search(line):
+            if any(rx.search(line) for rx in rxs):
                 offenders.append(f"{path.relative_to(SRC)}:{i}  {stripped}")
     assert not offenders, (
         "Model IDs must resolve through providers.resolve_model(tier); raw "
-        "settings.ANTHROPIC_*_MODEL/VERIFY_MODEL is only allowed in config.py + "
-        "providers.py. Found:\n" + "\n".join(offenders)
+        "settings.ANTHROPIC_*_MODEL/VERIFY_MODEL fields and hardcoded literal model "
+        "IDs (anthropic/..., openai/..., claude-*, gpt-*) are only allowed in "
+        "config.py, providers.py, and adapters/. Found:\n" + "\n".join(offenders)
     )
 
 
