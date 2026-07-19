@@ -43,14 +43,13 @@ def resolve_model(tier: str) -> str:
       3. the legacy ``ANTHROPIC_*_MODEL`` fields (prefixing bare Claude IDs),
       4. the ``tier`` string verbatim (treated as an explicit model string).
     """
-    mapped = settings.MODEL_TIER_MAP.get(tier)
-    if mapped:
-        return mapped
     alias = _TIER_ALIAS.get(tier)
-    if alias:
-        aliased = settings.MODEL_TIER_MAP.get(alias)
-        if aliased:
-            return aliased
+    # Try the tier itself, then its base-tier alias, against the configured map.
+    # ``.get(None)`` is a safe no-op when ``tier`` has no alias.
+    for key in (tier, alias):
+        mapped = settings.MODEL_TIER_MAP.get(key)
+        if mapped:
+            return mapped
     legacy = {
         "haiku": settings.ANTHROPIC_HAIKU_MODEL,
         "sonnet": settings.ANTHROPIC_SONNET_MODEL,
