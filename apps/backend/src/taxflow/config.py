@@ -238,6 +238,24 @@ class Settings(BaseSettings):
     # the cited-firm-chunk usage_count increment on the answer flow.
     LEARNING_LOOP_ENABLED: bool = True
 
+    # --- Eval harness (Workstream B) -----------------------------------------
+    # The LLM-as-judge resolves its model through providers.resolve_model, same
+    # as every production call-site, so it follows the model-routing invariant
+    # (Workstream A) — EVAL_JUDGE_TIER is a TIER name, never a bare model string.
+    EVAL_JUDGE_TIER: str = "sonnet"
+    # Per-tier token pricing in USD per 1M tokens. `input`/`output` are the base
+    # rates; `cache_read`/`cache_creation` cover Anthropic prompt-cache pricing
+    # (cache reads are ~10% of input, cache writes ~125%). Used by cost.run_cost.
+    EVAL_MODEL_PRICING: dict[str, dict[str, float]] = {
+        "haiku": {"input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_creation": 1.25},
+        "sonnet": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_creation": 3.75},
+    }
+    # k used for recall@k / nDCG@k in the eval harness (mirrors retrieval depth).
+    EVAL_RECALL_K: int = RETRIEVAL_TOP_K
+    # Regression tolerance (absolute metric delta) below which a run-over-run
+    # change is treated as noise rather than a regression.
+    EVAL_REGRESSION_TOLERANCE: float = 0.05
+
     # Object storage (S3-compatible / Cloudflare R2). Moved out of os.environ in
     # services/storage/r2.py into config. Empty defaults preserve the graceful
     # "storage unconfigured -> None" degradation.

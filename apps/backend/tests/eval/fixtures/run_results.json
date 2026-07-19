@@ -1,0 +1,75 @@
+{
+  "clean_result": {
+    "answer": "Under Division 8 a deduction is allowed [1]. The active asset test applies [2].",
+    "citations": [
+      {"citation": "ITAA 1997 s.8-1", "url": "https://example/a"},
+      {"citation": "TR 2007/2", "url": "https://example/b"}
+    ],
+    "trace": {
+      "retrieval": {
+        "rendered_sources": [
+          {"citation": "ITAA 1997 s.8-1", "source_url": "https://example/a"},
+          {"citation": "TR 2007/2", "source_url": "https://example/b"}
+        ],
+        "candidates": [
+          {"n": 1, "citation": "ITAA 1997 s.8-1"},
+          {"n": 2, "citation": "TR 2007/2"}
+        ]
+      }
+    }
+  },
+
+  "fabricated_and_unmatched_result": {
+    "answer": "The rate is 47% [1] and the test is met [2], see also [5].",
+    "citations": [
+      {"citation": "FBT Assessment Act", "url": "https://example/a"},
+      {"citation": "Made-up ruling XYZ", "url": "https://example/z"}
+    ],
+    "trace": {
+      "retrieval": {
+        "rendered_sources": [
+          {"citation": "FBT Assessment Act", "source_url": "https://example/a"},
+          {"citation": "TD 94/19", "source_url": "https://example/c"}
+        ]
+      }
+    }
+  },
+
+  "parent_expansion_result": {
+    "answer": "First point [1]. Second point [2]. Third point [3].",
+    "citations": [
+      {"citation": "ITAA 1997 Div 152", "url": "https://example/a"},
+      {"citation": "TR 2007/2", "url": "https://example/b"}
+    ],
+    "trace": {
+      "retrieval": {
+        "rendered_sources": [
+          {"citation": "ITAA 1997 Div 152", "source_url": "https://example/a"},
+          {"citation": "TR 2007/2", "source_url": "https://example/b"}
+        ],
+        "candidates": [
+          {"n": 1, "citation": "ITAA 1997 Div 152 s.152-10"},
+          {"n": 2, "citation": "ITAA 1997 Div 152 s.152-35"},
+          {"n": 3, "citation": "TR 2007/2"}
+        ]
+      }
+    }
+  },
+
+  "legacy_result": {
+    "answer": "See [1] and [2], and a stray [4].",
+    "citations": [
+      {"citation": "ITAA 1936 s.97", "url": "https://example/a"},
+      {"citation": "ITAA 1936 s.99A", "url": "https://example/b"}
+    ],
+    "trace": {
+      "retrieval": {
+        "candidates": [
+          {"n": 1, "citation": "ITAA 1936 s.97"},
+          {"n": 2, "citation": "ITAA 1936 s.99A"},
+          {"n": 3, "citation": "TR 92/18"}
+        ]
+      }
+    }
+  }
+}
