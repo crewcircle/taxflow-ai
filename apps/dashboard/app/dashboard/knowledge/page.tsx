@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -18,6 +19,28 @@ interface KnowledgeDetail extends KnowledgeRow {
   content: string;
 }
 
+interface Suggestion {
+  id: string;
+  title: string;
+  content: string;
+  reason: string | null;
+  status: string;
+  source_query_id: string | null;
+  source_document_id: string | null;
+  created_at: string;
+}
+
+// Human-readable label for where a suggestion came from (backend `reason` value).
+const REASON_LABELS: Record<string, string> = {
+  thumbs_up: "Approved research answer",
+  saved_memo: "Saved advice memo",
+};
+
+function reasonLabel(reason: string | null): string {
+  if (!reason) return "Suggestion";
+  return REASON_LABELS[reason] ?? reason;
+}
+
 export default function KnowledgePage() {
   const [items, setItems] = useState<KnowledgeRow[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -28,6 +51,10 @@ export default function KnowledgePage() {
   const [detail, setDetail] = useState<KnowledgeDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [expandedSuggestionId, setExpandedSuggestionId] = useState<string | null>(null);
+  const [decidingId, setDecidingId] = useState<string | null>(null);
+
   function load() {
     fetch("/api/firm-knowledge")
       .then((r) => (r.ok ? r.json() : []))
@@ -35,7 +62,33 @@ export default function KnowledgePage() {
       .catch(() => {});
   }
 
-  useEffect(load, []);
+  function loadSuggestions() {
+    fetch("/api/firm-knowledge/suggestions?status=pending")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => setSuggestions(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }
+
+  useEffect(() => {
+    load();
+    loadSuggestions();
+  }, []);
+
+  async function decideSuggestion(id: string, action: "approve" | "reject") {
+    setDecidingId(id);
+    try {
+      const response = await fetch(`/api/firm-knowledge/suggestions/${id}/${action}`, {
+        method: "POST",
+      });
+      if (!response.ok) return;
+      // Approved suggestions become firm knowledge items; refresh both lists so
+      // the approved note shows up above and drops out of the pending list.
+      loadSuggestions();
+      if (action === "approve") load();
+    } finally {
+      setDecidingId(null);
+    }
+  }
 
   async function toggleExpand(id: string) {
     if (expandedId === id) {
@@ -109,6 +162,87 @@ export default function KnowledgePage() {
           {error && <p className="text-sm text-destructive">{error}</p>}
         </CardContent>
       </Card>
+
+      {suggestions.length > 0 && (
+        <div className="space-y-3">
+          <div>
+            <h2 className="text-base font-semibold">Suggestions</h2>
+            <p className="text-sm text-muted-foreground">
+              Pending suggestions from approved research answers and saved memos. Approve to add
+              them to Firm Knowledge, or reject to dismiss.
+            </p>
+          </div>
+          <ul className="divide-y divide-border rounded-lg border border-border text-sm">
+            {suggestions.map((suggestion) => (
+              <li key={suggestion.id}>
+                <div className="flex w-full items-start justify-between gap-3 px-4 py-3">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedSuggestionId(
+                        expandedSuggestionId === suggestion.id ? null : suggestion.id
+                      )
+                    }
+                    className="flex min-w-0 flex-1 items-start gap-3 text-left"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <p className="truncate font-medium">{suggestion.title}</p>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="secondary">{reasonLabel(suggestion.reason)}</Badge>
+                      </div>
+                      <p className="line-clamp-2 text-xs text-muted-foreground">
+                        {suggestion.content}
+                      </p>
+                    </div>
+                    {expandedSuggestionId === suggestion.id ? (
+                      <ChevronUp className="size-4 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+                    )}
+                  </button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          size="sm"
+                          disabled={decidingId === suggestion.id}
+                          onClick={() => decideSuggestion(suggestion.id, "approve")}
+                        >
+                          Approve
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Adds this to Firm Knowledge so it is used in future research answers
+                      </TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="link"
+                          size="sm"
+                          className="text-destructive"
+                          disabled={decidingId === suggestion.id}
+                          onClick={() => decideSuggestion(suggestion.id, "reject")}
+                        >
+                          Reject
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Dismisses this suggestion without saving it</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </div>
+                {expandedSuggestionId === suggestion.id && (
+                  <div className="border-t border-border bg-muted/30 px-4 py-3">
+                    <p className="max-h-80 overflow-y-auto whitespace-pre-wrap text-sm text-foreground">
+                      {suggestion.content}
+                    </p>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {items.length === 0 ? (
         <p className="text-sm text-muted-foreground">No documents uploaded yet.</p>

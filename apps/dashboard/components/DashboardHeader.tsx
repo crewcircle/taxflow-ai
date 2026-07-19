@@ -5,6 +5,7 @@ import { Network } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { OnboardingTour } from "@/components/OnboardingTour";
 import { DemoPersonaSwitcher } from "@/components/DemoPersonaSwitcher";
+import { NotificationBell } from "@/components/NotificationBell";
 
 interface DashboardHeaderProps {
   businessName: string;
@@ -33,18 +34,22 @@ export function DashboardHeader({
         TaxFlow&apos;s Reference Library
       </Link>
 
-      {businessName && isDemo && (
-        <div className="flex items-center gap-3 pr-16" data-tour="identity-strip">
-          <OnboardingTour
-            businessName={businessName}
-            businessType={businessType}
-            demoTagline={demoTagline}
-            demoDescription={demoDescription}
-            isDemo={isDemo}
-          />
-          <DemoPersonaSwitcher currentType={businessType} />
-        </div>
-      )}
+      <div className="flex items-center gap-2 pr-16">
+        <NotificationBell />
+
+        {businessName && isDemo && (
+          <div className="flex items-center gap-3" data-tour="identity-strip">
+            <OnboardingTour
+              businessName={businessName}
+              businessType={businessType}
+              demoTagline={demoTagline}
+              demoDescription={demoDescription}
+              isDemo={isDemo}
+            />
+            <DemoPersonaSwitcher currentType={businessType} />
+          </div>
+        )}
+      </div>
 
       {isDemo && (
         <div className="pointer-events-none absolute right-0 top-0 h-20 w-20 overflow-hidden">

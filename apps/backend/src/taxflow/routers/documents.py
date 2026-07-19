@@ -4,10 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from taxflow.config import settings
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.providers import get_document_renderer
 from taxflow.services.agents.document_graph import document_graph
+from taxflow.services.knowledge.embedder import embed
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -21,6 +23,16 @@ TEMPLATE_REGISTRY = {
     "engagement_letter": "Client engagement letter",
     "payg_variation": "PAYG withholding variation request",
     "fbt_declaration": "FBT declaration",
+}
+
+# Task C4: the approved client-facing document types whose content is embedded
+# on save into engagement_context (per the plan's Decisions section — there is
+# no client_letter type in the engagement-context set).
+ENGAGEMENT_CONTEXT_TYPES = {
+    "advice_memo",
+    "objection_letter",
+    "ato_response",
+    "engagement_letter",
 }
 
 
@@ -96,6 +108,50 @@ async def generate_document(
             "client_ref": body.client_ref,
         },
     )
+
+    # Task C4: approved client-facing document types are embedded on save into
+    # the engagement_context store so future research queries scoped to the SAME
+    # client_ref can retrieve prior memos as advisory context. Wrapped in a broad
+    # try/except (like the firm_clients.upsert above) so an embed/insert failure
+    # never blocks the document save — the document row is already persisted.
+    if body.document_type in ENGAGEMENT_CONTEXT_TYPES and settings.ENGAGEMENT_CONTEXT_ENABLED:
+        try:
+            embedding = await embed(content_md)
+            await asyncio.to_thread(
+                db.engagement_context.insert,
+                {
+                    "client_id": client["id"],
+                    "client_ref": body.client_ref,
+                    "document_id": result["id"],
+                    "document_type": body.document_type,
+                    "title": body.title,
+                    "content": content_md,
+                    "embedding": embedding,
+                },
+            )
+        except Exception:  # noqa: BLE001 - never block saving the document
+            pass
+
+    # Task C5: saving an advice_memo also creates a PENDING knowledge_suggestion
+    # (approval-gated learning loop). This is additive to the C4 engagement
+    # context insert above: the auto-embedded memo stays out of the authoritative
+    # firm_knowledge store until a partner explicitly approves the suggestion.
+    # Best-effort — a suggestion failure never blocks the already-saved document.
+    if body.document_type == "advice_memo" and settings.LEARNING_LOOP_ENABLED:
+        try:
+            await asyncio.to_thread(
+                db.knowledge_suggestions.insert,
+                {
+                    "client_id": client["id"],
+                    "source_document_id": result["id"],
+                    "title": body.title,
+                    "content": content_md,
+                    "reason": "saved_memo",
+                },
+            )
+        except Exception:  # noqa: BLE001 - never block saving the document
+            pass
+
     return result
 
 

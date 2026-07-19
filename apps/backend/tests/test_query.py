@@ -1,5 +1,177 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from taxflow.routers.query import _build_final_trace
+
+
+# --- A1: _build_final_trace assembly semantics -------------------------------
+
+
+def test_build_final_trace_cache_hit():
+    """(a) Cache hit → retrieval null, no re_retrieval, no passes block."""
+    result = _build_final_trace(None, None, None)
+    assert result["retrieval"] is None
+    assert result["generation"] == {"model": "cache"}
+    assert result["verification"] is None
+    assert "re_retrieval" not in result
+    assert "passes" not in result
+
+
+def test_build_final_trace_verify_only_no_passes():
+    """(b) Verify-only (no corrective pass) → verification.ran, no passes,
+    re_retrieval omitted."""
+    trace = {
+        "retrieval": {"chunks_considered": 3, "candidates": []},
+        "generation": {"model": "haiku", "confidence": 0.9},
+    }
+    verification = {"overall_status": "verified", "issues": []}
+    result = _build_final_trace(trace, verification, None)
+    assert result["retrieval"] == trace["retrieval"]
+    assert result["generation"] == trace["generation"]
+    assert result["verification"]["ran"] is True
+    assert result["verification"]["status"] == "verified"
+    assert "passes" not in result
+    assert "re_retrieval" not in result
+    assert "corrective_generation" not in result
+
+
+def test_build_final_trace_corrective_and_re_retrieval():
+    """(c) Corrective pass + re-retrieval → passes.changed True with DISTINCT
+    first-pass vs corrected model/confidence, re_retrieval.fired True."""
+    trace = {
+        "retrieval": {"chunks_considered": 5, "candidates": []},
+        # Top-level generation describes the FINAL (corrected) answer.
+        "generation": {"model": "sonnet", "confidence": 0.85},
+    }
+    verification = {"overall_status": "needs_correction", "issues": [{"severity": "critical"}]}
+    corrected = {"trace": {"generation": {"model": "sonnet", "confidence": 0.85}}}
+    # First-pass snapshot: distinct model + confidence from the corrected pass.
+    first_pass = {"model": "haiku", "confidence": 0.3}
+
+    result = _build_final_trace(
+        trace,
+        verification,
+        corrected,
+        re_retrieved=True,
+        first_pass=first_pass,
+    )
+
+    assert result["passes"]["changed"] is True
+    assert result["passes"]["first_pass"] == {"model": "haiku", "confidence": 0.3}
+    assert result["passes"]["corrected"] == {"model": "sonnet", "confidence": 0.85}
+    # first-pass and corrected must be distinct.
+    assert result["passes"]["first_pass"] != result["passes"]["corrected"]
+    assert result["corrective_generation"] == corrected["trace"]["generation"]
+    assert result["re_retrieval"]["fired"] is True
+    # No explicit reason supplied → defaults to weak_signal.
+    assert result["re_retrieval"]["reason"] == "weak_signal"
+    assert result["re_retrieval"]["detail"] is None
+
+
+def test_build_final_trace_re_retrieval_custom_reason():
+    """A supplied re_reason/re_detail is threaded onto the re_retrieval block."""
+    trace = {
+        "retrieval": {"chunks_considered": 2, "candidates": []},
+        "generation": {"model": "sonnet", "confidence": 0.7},
+    }
+    result = _build_final_trace(
+        trace,
+        None,
+        None,
+        re_retrieved=True,
+        re_reason="reviewer_flag",
+        re_detail="verifier flagged a gap",
+    )
+    assert result["re_retrieval"] == {
+        "fired": True,
+        "reason": "reviewer_flag",
+        "detail": "verifier flagged a gap",
+    }
+    # A re-retrieval without a corrective pass still has no passes block.
+    assert "passes" not in result
+
+
+def test_build_final_trace_reviewer_flag_reason_flows_through():
+    """C6: the reviewer-driven corrective widen's re_reason=="reviewer_flag" is
+    threaded onto trace.re_retrieval (the inline corrective pass path)."""
+    trace = {
+        "retrieval": {"chunks_considered": 5, "candidates": []},
+        "generation": {"model": "sonnet", "confidence": 0.85},
+    }
+    result = _build_final_trace(
+        trace,
+        {"overall_status": "needs_correction", "issues": [{"severity": "critical"}]},
+        {"trace": {"generation": {"model": "sonnet", "confidence": 0.85}}},
+        re_retrieved=True,
+        re_reason="reviewer_flag",
+        first_pass={"model": "haiku", "confidence": 0.3},
+    )
+    assert result["re_retrieval"]["fired"] is True
+    assert result["re_retrieval"]["reason"] == "reviewer_flag"
+
+
+def test_build_final_trace_preserves_firm_and_session_blocks():
+    """The combiner must NOT drop the agent's additive top-level firm/session
+    blocks. Includes a combined B+C firm fragment (B: firm_items/firm_items_used,
+    C: profile_applied/voice_applied/usage_trend) — ALL keys must survive."""
+    trace = {
+        "retrieval": {"chunks_considered": 4, "candidates": []},
+        "generation": {"model": "haiku", "confidence": 0.8},
+        "firm": {
+            # B-owned fragment.
+            "firm_items": [{"citation": "Firm knowledge: memo", "cited_in_answer": True}],
+            "firm_items_used": 1,
+            # C-owned fragment.
+            "profile_applied": True,
+            "voice_applied": True,
+            "profile_summary": "SMSF specialist in VIC",
+            "usage_trend": {"quarter_count": 3, "prior_count": 1},
+        },
+        "session": {
+            "prior_turns_used": 2,
+            "engagement_memos_used": 1,
+            "client_ref": "ACME-2026",
+        },
+    }
+    result = _build_final_trace(trace, {"overall_status": "verified", "issues": []}, None)
+
+    # Both additive blocks survive intact.
+    assert result["firm"] == trace["firm"]
+    assert result["session"] == trace["session"]
+    # Every merged firm key (B + C) is preserved — neither side dropped.
+    assert result["firm"]["firm_items_used"] == 1
+    assert result["firm"]["firm_items"] == trace["firm"]["firm_items"]
+    assert result["firm"]["profile_applied"] is True
+    assert result["firm"]["usage_trend"] == {"quarter_count": 3, "prior_count": 1}
+    # Top-level retrieval/generation still describe the final answer.
+    assert result["retrieval"] == trace["retrieval"]
+    assert result["generation"] == trace["generation"]
+    assert result["verification"]["ran"] is True
+
+
+def test_build_final_trace_preserves_firm_session_through_corrective_pass():
+    """firm/session survive even when a corrective pass adds passes/
+    corrective_generation and a re-retrieval fires."""
+    trace = {
+        "retrieval": {"chunks_considered": 5, "candidates": []},
+        "generation": {"model": "sonnet", "confidence": 0.85},
+        "firm": {"firm_items_used": 2, "profile_applied": True},
+        "session": {"prior_turns_used": 1},
+    }
+    verification = {"overall_status": "needs_correction", "issues": [{"severity": "critical"}]}
+    corrected = {"trace": {"generation": {"model": "sonnet", "confidence": 0.85}}}
+    result = _build_final_trace(
+        trace,
+        verification,
+        corrected,
+        re_retrieved=True,
+        re_reason="reviewer_flag",
+        first_pass={"model": "haiku", "confidence": 0.3},
+    )
+    assert result["firm"] == {"firm_items_used": 2, "profile_applied": True}
+    assert result["session"] == {"prior_turns_used": 1}
+    assert result["passes"]["changed"] is True
+    assert result["re_retrieval"]["fired"] is True
+
 
 def test_submit_query_returns_answer(client):
     fake_client = {"id": "client-1", "email": "a@b.com.au"}

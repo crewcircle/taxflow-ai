@@ -91,7 +91,7 @@ def fake_llm(monkeypatch) -> FakeLLM:
     monkeypatch.setattr(
         graph_mod.research_agent,
         "_build_steering",
-        AsyncMock(return_value=("", None)),
+        AsyncMock(return_value=("", None, 0)),
     )
     return llm
 
@@ -170,6 +170,12 @@ async def test_corrective_pass_runs_once_and_is_not_reverified(
             "citations": [{"citation": "x"}],
             "confidence": 0.8,
             "model_used": "sonnet",
+            "re_retrieved": True,
+            "re_retrieval": {"fired": True, "reason": "reviewer_flag"},
+            "trace": {
+                "retrieval": {"chunks_considered": 8, "candidates": []},
+                "generation": {"model": "sonnet", "confidence": 0.8},
+            },
         }
     )
     monkeypatch.setattr(graph_mod.research_agent, "regenerate_with_feedback", regen)
@@ -179,11 +185,18 @@ async def test_corrective_pass_runs_once_and_is_not_reverified(
     # Corrective pass runs EXACTLY once, and verify runs exactly once (no
     # re-verification of the corrected answer — no edge back to verify).
     regen.assert_awaited_once()
+    # The corrective pass must request the reviewer-driven widen (Task C3).
+    assert regen.await_args.kwargs["widen"] is True
     assert verify_run.await_count == 1
     assert out["corrective_count"] == 1
     assert out["answer"] == "Corrected [1]"
     assert out["caveat"] is not None
     assert out["corrected_meta"]["model_used"] == "sonnet"
+    # The corrected answer's trace REPLACES the top-level trace (stored answer is
+    # the corrected one), and the reviewer widen is threaded into state.
+    assert out["trace"]["generation"] == {"model": "sonnet", "confidence": 0.8}
+    assert out["re_retrieved"] is True
+    assert out["re_reason"] == "reviewer_flag"
 
 
 # --- re_retrieve: at most once, no second generate ---------------------------
@@ -268,3 +281,316 @@ async def test_astream_emits_custom_token_events(monkeypatch, base_state, fake_l
     tokens = [e["token"] for e in events if "token" in e]
     assert tokens  # astream MUST emit at least one custom token event
     assert "".join(tokens).strip() == "Answer [1][2][3][4]"
+
+
+# --- A1: generate node builds the extended canonical trace -------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_trace_extended_candidate_keys_null_safe(
+    monkeypatch, base_state, fake_llm
+):
+    """The generate node's trace carries the extended candidate keys with
+    null-safe defaults when chunks lack the B-owned lifecycle fields, and
+    firm/session are absent when state omits them."""
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(3), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+
+    out = await graph_mod.research_graph.ainvoke(base_state)
+    trace = out["trace"]
+
+    # Every candidate carries the new lifecycle keys defaulted null-safe.
+    assert trace["retrieval"]["candidates"], "expected candidates"
+    for cand in trace["retrieval"]["candidates"]:
+        assert cand["is_superseded"] is False
+        assert cand["superseded_by"] is None
+        assert cand["is_historical"] is False
+        # Existing keys unchanged.
+        assert "n" in cand and "citation" in cand and "cited_in_answer" in cand
+
+    # retrieval-level A-owned defaults.
+    assert trace["retrieval"]["knowledge_as_of"] is None
+    assert trace["retrieval"]["historical_pool_size"] == 0
+    assert trace["retrieval"]["firm_knowledge_used"] is None
+
+    # firm/session omitted from state → absent from the trace (never empty dicts).
+    assert "firm" not in trace
+    assert "session" not in trace
+
+
+@pytest.mark.asyncio
+async def test_generate_trace_emits_firm_session_when_present(
+    monkeypatch, base_state, fake_llm
+):
+    """When state supplies non-empty firm/session fragments and a
+    knowledge_as_of stamp, the generate node threads them onto the trace."""
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(3), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+
+    base_state["firm"] = {"firm_items_used": 2}
+    base_state["session"] = {"prior_turns_used": 1}
+    base_state["knowledge_as_of"] = "2026-01-15"
+
+    out = await graph_mod.research_graph.ainvoke(base_state)
+    trace = out["trace"]
+
+    assert trace["firm"] == {"firm_items_used": 2}
+    assert trace["session"] == {"prior_turns_used": 1}
+    assert trace["retrieval"]["knowledge_as_of"] == "2026-01-15"
+
+
+@pytest.mark.asyncio
+async def test_generate_trace_counts_historical_pool(monkeypatch, base_state, fake_llm):
+    """historical_pool_size counts chunks flagged is_historical; the tagged
+    candidate carries its lifecycle metadata through."""
+    chunks = _chunks(3)
+    chunks[2]["is_historical"] = True
+    chunks[2]["is_superseded"] = True
+    chunks[2]["superseded_by"] = "TR 2024/1"
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(chunks, dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+
+    out = await graph_mod.research_graph.ainvoke(base_state)
+    trace = out["trace"]
+
+    assert trace["retrieval"]["historical_pool_size"] == 1
+    hist = trace["retrieval"]["candidates"][2]
+    assert hist["is_historical"] is True
+    assert hist["is_superseded"] is True
+    assert hist["superseded_by"] == "TR 2024/1"
+
+
+# --- C6: C-owned trace signals (session / firm profile / usage_trend) ---------
+
+
+@pytest.mark.asyncio
+async def test_generate_trace_session_counts_and_client_ref(
+    monkeypatch, base_state, fake_llm
+):
+    """C6: the generate node populates trace.session with the prior-turn count
+    (from build_steering), the engagement-memo count (from the retrieved pool)
+    and the request client_ref — the C-owned trace.session field names."""
+    # Real _build_steering reporting 2 prior turns.
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_build_steering",
+        AsyncMock(return_value=("", None, 2)),
+    )
+    chunks = _chunks(2)
+    chunks.append(
+        {
+            "id": "e1",
+            "citation": "Engagement memo: prior advice",
+            "content": "x",
+            "source_url": "",
+            "score": 0.4,
+        }
+    )
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(chunks, dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+
+    base_state["client_ref"] = "Client A"
+    out = await graph_mod.research_graph.ainvoke(base_state)
+
+    assert out["trace"]["session"] == {
+        "prior_turns_used": 2,
+        "engagement_memos_used": 1,
+        "client_ref": "Client A",
+    }
+
+
+@pytest.mark.asyncio
+async def test_generate_trace_firm_profile_and_usage_trend(
+    monkeypatch, base_state, fake_llm
+):
+    """C6: with a client carrying a profile + firm_style, trace.firm gets the
+    C-owned profile_applied/voice_applied/profile_summary + usage_trend, and the
+    usage_trend comes from FirmKnowledgeRepo.usage_trend via _firm_usage_trend."""
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(3), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_firm_usage_trend",
+        AsyncMock(return_value={"quarter_count": 4, "prior_count": 1}),
+    )
+
+    base_state["client"] = {
+        "business_type": "dental",
+        "state": "QLD",
+        "firm_style": {"tone": "formal"},
+    }
+    out = await graph_mod.research_graph.ainvoke(base_state)
+    firm = out["trace"]["firm"]
+
+    assert firm["profile_applied"] is True
+    assert firm["voice_applied"] is True
+    assert firm["profile_summary"]
+    assert firm["usage_trend"] == {"quarter_count": 4, "prior_count": 1}
+
+
+@pytest.mark.asyncio
+async def test_generate_trace_firm_fragment_merge_keeps_both_sides(
+    monkeypatch, base_state, fake_llm
+):
+    """C6 firm-fragment MERGE: when BOTH the B fragment (firm_items/
+    firm_items_used) and the C fragment (profile_applied/usage_trend) are
+    present, trace.firm carries ALL keys — neither side overwrites the other."""
+    # A firm-knowledge chunk cited in the answer → B fragment is non-empty.
+    chunks = _chunks(3)
+    chunks.append(
+        {
+            "id": "f1",
+            "citation": "Firm knowledge: internal note",
+            "content": "x",
+            "source_url": "",
+            "score": 0.9,
+        }
+    )
+    # The fake LLM cites [1]..[4]; chunk index 4 (the firm chunk) is cited.
+    fake_llm.answer = "Answer [1][2][3][4]"
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(chunks, dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_increment_firm_usage",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_firm_usage_trend",
+        AsyncMock(return_value={"quarter_count": 2, "prior_count": 0}),
+    )
+
+    base_state["client"] = {
+        "business_type": "dental",
+        "state": "QLD",
+        "firm_style": {"tone": "formal"},
+    }
+    out = await graph_mod.research_graph.ainvoke(base_state)
+    firm = out["trace"]["firm"]
+
+    # C-owned keys present.
+    assert firm["profile_applied"] is True
+    assert firm["voice_applied"] is True
+    assert firm["usage_trend"] == {"quarter_count": 2, "prior_count": 0}
+    # B-owned keys present — the merge did not drop them.
+    assert firm["firm_items_used"] == 1
+    assert any(
+        item["citation"] == "Firm knowledge: internal note"
+        for item in firm["firm_items"]
+    )
+
+
+# --- C3: first-pass snapshot + corrected top-level trace (POST/SSE parity) ----
+
+
+def _corrective_setup(monkeypatch, fake_llm):
+    """Wire a needs_correction verdict so the corrective pass runs, returning a
+    corrected answer whose trace describes a DIFFERENT (sonnet) generation than
+    the first (haiku) pass. Shared by the POST and SSE parity tests."""
+    monkeypatch.setattr(settings, "CORRECTIVE_PASS_ENABLED", True)
+    # First-pass answer has no citations → risky → verify fires.
+    fake_llm.answer = "Risky first-pass answer with no citations"
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(6), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(
+        graph_mod.verifier,
+        "run",
+        AsyncMock(
+            return_value={
+                "overall_status": "needs_correction",
+                "issues": [{"claim": "c", "issue": "i"}],
+            }
+        ),
+    )
+    regen = AsyncMock(
+        return_value={
+            "answer": "Corrected answer [1]",
+            "citations": [{"citation": "x"}],
+            "confidence": 0.85,
+            "model_used": "sonnet",
+            "re_retrieved": True,
+            "re_retrieval": {"fired": True, "reason": "reviewer_flag"},
+            "trace": {
+                "retrieval": {"chunks_considered": 12, "candidates": []},
+                "generation": {"model": "sonnet", "confidence": 0.85},
+            },
+        }
+    )
+    monkeypatch.setattr(graph_mod.research_agent, "regenerate_with_feedback", regen)
+    return regen
+
+
+@pytest.mark.asyncio
+async def test_post_first_pass_snapshot_before_correction(monkeypatch, base_state, fake_llm):
+    """POST path (ainvoke): state['first_pass'] captures the ORIGINAL (haiku)
+    generation meta BEFORE the corrective pass overwrites confidence/model, and
+    the top-level trace.generation describes the CORRECTED (sonnet) answer."""
+    _corrective_setup(monkeypatch, fake_llm)
+    base_state["streaming"] = False
+
+    out = await graph_mod.research_graph.ainvoke(base_state)
+
+    # first_pass snapshot holds the ORIGINAL first-pass meta (haiku), even though
+    # state confidence/model were overwritten by the corrective pass.
+    assert out["first_pass"]["model"] == "haiku"
+    first_conf = out["first_pass"]["confidence"]
+    # The corrective pass overwrote the live confidence to the corrected value…
+    assert out["confidence"] == 0.85
+    # …but the snapshot preserved the distinct first-pass confidence.
+    assert first_conf != 0.85
+
+    # Top-level trace describes the CORRECTED answer (the stored answer).
+    assert out["trace"]["generation"] == {"model": "sonnet", "confidence": 0.85}
+
+
+@pytest.mark.asyncio
+async def test_sse_first_pass_snapshot_matches_post(monkeypatch, base_state, fake_llm):
+    """SSE path (astream): the final state carries the SAME first_pass snapshot
+    and corrected top-level trace as the POST path (streaming parity)."""
+    _corrective_setup(monkeypatch, fake_llm)
+    base_state["streaming"] = True
+
+    final = {}
+    async for mode, chunk in graph_mod.research_graph.astream(
+        base_state, stream_mode=["custom", "values"]
+    ):
+        if mode == "values":
+            final = chunk
+
+    # Same contract as POST: first_pass holds the original meta, top-level trace
+    # describes the corrected answer.
+    assert final["first_pass"]["model"] == "haiku"
+    assert final["confidence"] == 0.85
+    assert final["first_pass"]["confidence"] != 0.85
+    assert final["trace"]["generation"] == {"model": "sonnet", "confidence": 0.85}
+    # The reviewer widen fired and is threaded through state on the SSE path too.
+    assert final["re_retrieved"] is True
+    assert final["re_reason"] == "reviewer_flag"

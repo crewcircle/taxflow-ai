@@ -115,5 +115,45 @@ def test_async_job_body_is_awaited(monkeypatch):
 
 def test_distinct_lock_keys_per_job():
     keys = adapter_mod._LOCK_KEYS
-    assert set(keys) == {"kb_ingestion", "regulatory_monitor", "demo_reset"}
-    assert len(set(keys.values())) == 3
+    assert set(keys) == {
+        "kb_ingestion",
+        "regulatory_monitor",
+        "demo_reset",
+        "re_research_drain",
+    }
+    assert len(set(keys.values())) == 4
+
+
+def test_re_research_drain_registered_leader_guarded_on_interval(monkeypatch):
+    """Task C2: the re-research drain is registered as an interval job wrapped in
+    the leader guard, keyed by the re_research_drain lock."""
+    from taxflow.config import settings
+
+    adapter = adapter_mod.APSchedulerAdapter()
+
+    added: list[dict] = []
+
+    def fake_add_job(func, trigger, **kwargs):
+        added.append({"func": func, "trigger": trigger, **kwargs})
+
+    monkeypatch.setattr(adapter._scheduler, "add_job", fake_add_job)
+
+    # Wrap _leader_guard so we can see which job ids were guarded.
+    guarded_ids: list[str] = []
+    real_guard = adapter_mod._leader_guard
+
+    def spy_guard(job_id, func):
+        guarded_ids.append(job_id)
+        return real_guard(job_id, func)
+
+    monkeypatch.setattr(adapter_mod, "_leader_guard", spy_guard)
+
+    adapter._register_jobs()
+
+    drain_job = next(j for j in added if j.get("id") == "re_research_drain")
+    assert drain_job["trigger"] == "interval"
+    assert drain_job["seconds"] == settings.RE_RESEARCH_POLL_SECONDS
+    # It went through the leader guard.
+    assert "re_research_drain" in guarded_ids
+    # And its lock key exists.
+    assert "re_research_drain" in adapter_mod._LOCK_KEYS

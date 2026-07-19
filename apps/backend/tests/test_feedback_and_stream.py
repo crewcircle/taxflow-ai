@@ -402,7 +402,7 @@ async def test_compiled_graph_astream_yields_mode_chunk_tuples():
         yield _Chunk("", True, _Usage())
 
     with patch.object(
-        g.research_agent, "_build_steering", new=AsyncMock(return_value=("", None))
+        g.research_agent, "_build_steering", new=AsyncMock(return_value=("", None, 0))
     ), patch.object(
         g.research_agent,
         "_retrieve_context",

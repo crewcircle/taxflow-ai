@@ -94,6 +94,26 @@ class Settings(BaseSettings):
     RETRIEVAL_FIRM_POOL: int = 4
     FIRM_CHUNK_WEIGHT: float = 1.5
 
+    # --- Historical / superseded retrieval pool (Task B2) ---------------------
+    # Superseded knowledge chunks (is_current = false) are retrieved as a
+    # DOWN-WEIGHTED historical pool and APPENDED after the authoritative top-K —
+    # they are never cited as current law and never displace current sources.
+    # SUPERSEDED_CHUNK_WEIGHT < 1.0 so a historical chunk always ranks below
+    # equivalent current law.
+    SUPERSEDED_RETRIEVAL_ENABLED: bool = True
+    SUPERSEDED_CHUNK_WEIGHT: float = 0.4
+    SUPERSEDED_POOL_SIZE: int = 3
+
+    # --- Engagement context store (Task C4) -----------------------------------
+    # Approved client-facing documents are embedded on save into the separate
+    # engagement_context table and retrieved as advisory context for future
+    # research queries scoped to the SAME client_ref. ENGAGEMENT_CHUNK_WEIGHT > 1.0
+    # so a prior engagement memo (highly specific to this client engagement)
+    # ranks above equivalent global sources when it matches.
+    ENGAGEMENT_CONTEXT_ENABLED: bool = True
+    RETRIEVAL_ENGAGEMENT_POOL: int = 4
+    ENGAGEMENT_CHUNK_WEIGHT: float = 1.3
+
     # --- Verify gating (Task B2 / C3) -----------------------------------------
     # Verification no longer runs on every answer. It runs ONLY on risky answers:
     # low estimated confidence, few/zero parsed citations, or the "insufficient
@@ -190,6 +210,33 @@ class Settings(BaseSettings):
     # (LangGraph). Off by default so cost/behaviour is unchanged out of the box.
     RE_RETRIEVE_ENABLED: bool = False
     RE_RETRIEVE_MIN_TOP_SCORE: float = 0.03
+
+    # Reviewer-driven widened retrieval (Task C3): when the inline corrective
+    # pass runs, retrieval is re-run with a widened candidate pool (pool_scale=2)
+    # threaded as a per-call PARAMETER — never by mutating the global pool
+    # settings, so concurrent requests can never inherit a widened pool.
+    REVIEWER_WIDEN_ENABLED: bool = True
+
+    # --- Feedback-triggered async re-research (Task C2) -----------------------
+    # A user thumbs-down WITH a note enqueues a background re-research job (see
+    # re_research_jobs). A scheduler interval job drains the queue (leader-guarded
+    # so only one worker runs it), re-running the answer with the user's stated
+    # issue and a widened retrieval pool, then notifies the user. Reviewer/verify
+    # flags stay SYNCHRONOUS (the inline corrective pass) and are never enqueued.
+    #   - RE_RESEARCH_POLL_SECONDS: drain interval.
+    #   - RE_RESEARCH_MAX_ATTEMPTS: bounded retry ceiling before terminal 'failed'.
+    #   - RE_RESEARCH_BACKOFF_SECONDS: delay added to next_attempt_at on a requeue.
+    RE_RESEARCH_ENABLED: bool = True
+    RE_RESEARCH_POLL_SECONDS: int = 30
+    RE_RESEARCH_MAX_ATTEMPTS: int = 3
+    RE_RESEARCH_BACKOFF_SECONDS: int = 120
+
+    # --- Approval-gated learning loop (Task C5) -------------------------------
+    # A thumbs-up or a saved advice_memo creates a PENDING knowledge_suggestion
+    # rather than writing straight into the authoritative firm_knowledge store;
+    # a partner approves (embeds into firm_knowledge) or rejects it. Also gates
+    # the cited-firm-chunk usage_count increment on the answer flow.
+    LEARNING_LOOP_ENABLED: bool = True
 
     # Object storage (S3-compatible / Cloudflare R2). Moved out of os.environ in
     # services/storage/r2.py into config. Empty defaults preserve the graceful

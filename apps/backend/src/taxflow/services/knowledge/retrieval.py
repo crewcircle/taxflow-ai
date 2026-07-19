@@ -96,7 +96,7 @@ def _rrf_merge(semantic: list[dict], textual: list[dict]) -> list[dict]:
     ]
 
 
-async def _llm_rerank(query: str, candidates: list[dict]) -> list[dict]:
+async def _llm_rerank(query: str, candidates: list[dict], pool_scale: int = 1) -> list[dict]:
     """Re-order candidates with ONE batched Haiku relevance-scoring call (Task C1).
 
     Only invoked when RERANK_MODE == "llm". Sends the top RERANK_DEPTH candidates
@@ -104,11 +104,15 @@ async def _llm_rerank(query: str, candidates: list[dict]) -> list[dict]:
     re-order by that score and store it as `rerank_score`. A single structured LLM
     call over the whole batch — never one call per candidate. On any failure we
     fall back to the input order so retrieval never breaks over the re-rank.
+
+    ``pool_scale`` (Task C3) multiplies the re-rank DEPTH for this ONE call so a
+    reviewer-driven widened pass scores a proportionally wider batch, without
+    mutating the global ``RERANK_DEPTH`` setting.
     """
     from taxflow.ports.llm import StructuredParseError
     from taxflow.services.agents.models import RerankScores
 
-    depth = min(len(candidates), settings.RERANK_DEPTH)
+    depth = min(len(candidates), settings.RERANK_DEPTH * pool_scale)
     if depth == 0:
         return candidates
     batch = candidates[:depth]
@@ -213,18 +217,25 @@ async def generate_candidates(
     query: str,
     source_types: list[str] | None = None,
     embedding: list[float] | None = None,
+    pool_scale: int = 1,
 ) -> list[dict]:
     """RRF candidate generation over a widened pool (Task C1). NEVER calls an LLM.
 
     Returns the merged RRF candidates (untruncated, unranked beyond RRF) so a
     caller can merge in other candidates (e.g. firm chunks, Task C4) and re-rank
     the combined pool together.
+
+    ``pool_scale`` (Task C3) multiplies the effective candidate pool pulled from
+    EACH of the semantic/text searches for this ONE call — a reviewer-driven
+    widened pass passes ``pool_scale=2`` to look broader, WITHOUT mutating the
+    global ``RERANK_CANDIDATE_POOL`` setting (so concurrent requests are never
+    affected).
     """
     if embedding is None:
         embedding = await embed(query)
 
     text_query = normalise_query(query)
-    pool = settings.RERANK_CANDIDATE_POOL
+    pool = settings.RERANK_CANDIDATE_POOL * pool_scale
     store = providers.get_vector_store()
     semantic, textual = await asyncio.gather(
         store.semantic_search(embedding=embedding, source_types=source_types, limit=pool),
@@ -233,14 +244,52 @@ async def generate_candidates(
     return _rrf_merge(semantic, textual)
 
 
-async def rerank_candidates(query: str, candidates: list[dict]) -> list[dict]:
+async def generate_historical_candidates(
+    query: str,
+    embedding: list[float] | None = None,
+    limit: int = 3,
+) -> list[dict]:
+    """Semantic-only candidate generation over SUPERSEDED chunks (Task B2).
+
+    The historical/superseded pool is retrieved with a plain cosine search — NO
+    RRF, text search, or re-rank — since these chunks are appended as a
+    down-weighted historical pool below current law, never ranked against it.
+    Reuses the caller-supplied embedding when provided (Task A4); embeds
+    otherwise. Maps each row to a candidate dict carrying `score` (raw cosine
+    similarity) and `superseded_by` (the supersession lineage).
+    """
+    if embedding is None:
+        embedding = await embed(query)
+
+    store = providers.get_vector_store()
+    hits = await store.historical_search(embedding=embedding, limit=limit)
+    return [
+        {
+            "id": str(h["id"]),
+            "citation": h["citation"],
+            "content": h["content"],
+            "source_url": h.get("source_url"),
+            "source_object_key": h.get("source_object_key"),
+            "source_type": h.get("source_type"),
+            "last_scraped_at": h.get("last_scraped_at"),
+            "superseded_by": h.get("superseded_by"),
+            "score": float(h["cosine_sim"]),
+        }
+        for h in hits
+    ]
+
+
+async def rerank_candidates(
+    query: str, candidates: list[dict], pool_scale: int = 1
+) -> list[dict]:
     """Apply RERANK_MODE to an already-merged candidate list (Task C1).
 
     "off"/"rrf_only" return the candidates unchanged (NO LLM call). "llm" runs a
     single batched Haiku relevance-scoring call and re-orders by score.
+    ``pool_scale`` (Task C3) widens the re-rank depth for this one call only.
     """
     if settings.RERANK_MODE == "llm":
-        return await _llm_rerank(query, candidates)
+        return await _llm_rerank(query, candidates, pool_scale=pool_scale)
     return candidates
 
 

@@ -63,6 +63,26 @@ async def test_text_search_uses_fts_columns():
 
 
 @pytest.mark.asyncio
+async def test_historical_search_scopes_to_superseded_and_sets_probes():
+    cm, fake_cur = _fake_conn([])
+    with patch.object(pgvector, "get_pg_conn", return_value=cm):
+        await PgVectorStore().historical_search(
+            embedding=[0.1] * 1536, source_types=None, limit=3
+        )
+
+    # SET LOCAL probes must precede the vector SELECT (so it isn't a no-op).
+    first_sql = fake_cur.execute.call_args_list[0].args[0]
+    assert "SET LOCAL ivfflat.probes" in first_sql
+    assert fake_cur.execute.call_args_list[0].args[1] == (settings.IVFFLAT_PROBES,)
+    second_sql = fake_cur.execute.call_args_list[1].args[0]
+    # Scoped to superseded chunks, carrying lineage, ordered by cosine distance.
+    assert "is_current = false" in second_sql
+    assert "superseded_by" in second_sql
+    assert "<=>" in second_sql
+    assert "knowledge_chunks" in second_sql
+
+
+@pytest.mark.asyncio
 async def test_firm_search_maps_rows_to_vector_hits():
     cm, fake_cur = _fake_conn([{"id": 1, "file_name": "notes", "content": "c", "sim": 0.42}])
     with patch.object(pgvector, "get_pg_conn", return_value=cm):

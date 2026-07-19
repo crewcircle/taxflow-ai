@@ -40,6 +40,7 @@ _LOCK_KEYS: dict[str, int] = {
     "kb_ingestion": 7_310_001,
     "regulatory_monitor": 7_310_002,
     "demo_reset": 7_310_003,
+    "re_research_drain": 7_310_004,
 }
 
 
@@ -92,6 +93,7 @@ class APSchedulerAdapter:
         self._scheduler = AsyncIOScheduler()
 
     def _register_jobs(self) -> None:
+        from taxflow.services.agents.re_research import drain as re_research_drain
         from taxflow.services.demo_reset import reset_demo_data
         from taxflow.services.knowledge.ingest import run_all
         from taxflow.services.regulatory_monitor import check_feeds
@@ -122,6 +124,17 @@ class APSchedulerAdapter:
             hour=17,
             minute=0,
             id="demo_reset",
+            replace_existing=True,
+        )
+        # Feedback-triggered re-research queue drain (Task C2): poll the
+        # re_research_jobs queue on a short interval. Leader-guarded so only one
+        # worker drains at a time; claim_next + FOR UPDATE SKIP LOCKED make the
+        # claim itself concurrency-safe.
+        self._scheduler.add_job(
+            _leader_guard("re_research_drain", re_research_drain),
+            "interval",
+            seconds=settings.RE_RESEARCH_POLL_SECONDS,
+            id="re_research_drain",
             replace_existing=True,
         )
 

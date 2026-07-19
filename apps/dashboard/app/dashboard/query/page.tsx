@@ -11,6 +11,8 @@ import {
   Copy,
   FileDown,
   Pencil,
+  ThumbsUp,
+  ThumbsDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +26,8 @@ import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
 import { AnswerTracePanel, type AnswerTrace } from "@/components/AnswerTracePanel";
 import { CollapsedPanelRail } from "@/components/CollapsedPanelRail";
 import { ClientAutocomplete } from "@/components/ClientAutocomplete";
+import { ReResearchBadge } from "@/components/ReResearchBadge";
+import { NOTIFICATIONS_UPDATED_EVENT } from "@/lib/useNotifications";
 import { cn } from "@/lib/utils";
 
 interface DocumentTemplate {
@@ -184,6 +188,157 @@ function FirmKnowledgeSuggestion({ repeatCount, defaultTitle, content }: FirmKno
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+interface AnswerFeedbackProps {
+  queryId: string;
+  onReResearchEnqueued: () => void;
+}
+
+// Answer-level feedback (Task C9): the entry point for the two approved
+// learning behaviours. A thumbs-down WITH a note enqueues an async
+// re-research (C2) - the note is required before a down submission posts, since
+// the backend only enqueues when a note is present. A thumbs-up creates a
+// pending firm-knowledge suggestion for partner approval (C5, reviewed in C8).
+function AnswerFeedback({ queryId, onReResearchEnqueued }: AnswerFeedbackProps) {
+  const [rating, setRating] = useState<"up" | "down" | null>(null);
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Terminal states after a successful submit.
+  const [outcome, setOutcome] = useState<"re_researching" | "sent_for_approval" | "recorded" | null>(null);
+
+  async function submit(chosenRating: "up" | "down", chosenNote: string) {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/query/${queryId}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating: chosenRating, note: chosenNote.trim() || undefined }),
+      });
+      if (!response.ok) throw new Error("Failed");
+      const data: { re_research_enqueued?: boolean } = await response.json();
+      if (chosenRating === "up") {
+        setOutcome("sent_for_approval");
+      } else if (data.re_research_enqueued) {
+        // Show "Re-researching..." immediately, then refresh history so the
+        // row's re_research_status badge (C7) reflects the persisted state.
+        setOutcome("re_researching");
+        onReResearchEnqueued();
+      } else {
+        setOutcome("recorded");
+      }
+    } catch {
+      setError("Could not record your feedback - please try again");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (outcome === "sent_for_approval") {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 p-3 text-sm text-foreground">
+        <BookOpen className="size-4 text-accent" />
+        Sent for approval - a partner will review this answer for Firm Knowledge.
+      </div>
+    );
+  }
+  if (outcome === "re_researching") {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 p-3 text-sm text-foreground">
+        <ReResearchBadge status="pending" />
+        Thanks - we&apos;re re-researching this answer with your feedback. You&apos;ll be notified when it&apos;s ready.
+      </div>
+    );
+  }
+  if (outcome === "recorded") {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
+        <CheckCircle2 className="size-4 text-green-600" />
+        Thanks for the feedback.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="text-xs font-medium text-muted-foreground">Was this answer helpful?</p>
+        <div className="flex items-center gap-1.5">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={rating === "up" ? "secondary" : "ghost"}
+                size="sm"
+                disabled={submitting}
+                onClick={() => submit("up", "")}
+              >
+                <ThumbsUp className="size-3.5" />
+                Yes
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Suggests this answer for Firm Knowledge (a partner approves it before it&apos;s used)</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={rating === "down" ? "secondary" : "ghost"}
+                size="sm"
+                disabled={submitting}
+                onClick={() => setRating("down")}
+              >
+                <ThumbsDown className="size-3.5" />
+                No
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Tell us what&apos;s wrong and we&apos;ll re-research it in the background</TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+
+      {rating === "down" && (
+        <div className="space-y-2">
+          <Textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={3}
+            placeholder="What was wrong or missing? A note is required to trigger a re-research."
+          />
+          <div className="flex items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                {/* wrapper span so the tooltip still shows when the button is disabled */}
+                <span>
+                  <Button
+                    size="sm"
+                    disabled={submitting || !note.trim()}
+                    onClick={() => submit("down", note)}
+                  >
+                    {submitting ? "Submitting..." : "Submit & re-research"}
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Re-researches this answer in the background with your note as the correction</TooltipContent>
+            </Tooltip>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={submitting}
+              onClick={() => {
+                setRating(null);
+                setNote("");
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {error && <p className="text-sm text-destructive">{error}</p>}
+    </div>
   );
 }
 
@@ -397,6 +552,7 @@ export default function QueryPage() {
   const [verification, setVerification] = useState<Verification | null>(null);
   const [verificationExpanded, setVerificationExpanded] = useState(false);
   const [trace, setTrace] = useState<AnswerTrace | null>(null);
+  const [promoteState, setPromoteState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [repeatCount, setRepeatCount] = useState(0);
   const [copied, setCopied] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(true);
@@ -452,6 +608,15 @@ export default function QueryPage() {
     }).catch(() => {});
   }
 
+  // The notification poll (dashboard chrome) fires this event whenever a fresh
+  // batch arrives - an `answer_improved` notification means a query's
+  // re_research_status just flipped to "done", so reload the history to update
+  // its inline badge.
+  useEffect(() => {
+    window.addEventListener(NOTIFICATIONS_UPDATED_EVENT, loadHistory);
+    return () => window.removeEventListener(NOTIFICATIONS_UPDATED_EVENT, loadHistory);
+  }, [loadHistory]);
+
   // Header "Questions asked" link deep-links here with ?focus=history so it can
   // open the history sidebar (or just flash it if already open) from any page.
   useEffect(() => {
@@ -482,6 +647,7 @@ export default function QueryPage() {
     setVerifying(false);
     setVerificationExpanded(false);
     setTrace(null);
+    setPromoteState("idle");
     setRepeatCount(0);
     setSavedDocId(null);
     setDocType("advice_memo");
@@ -530,6 +696,24 @@ export default function QueryPage() {
     hasAutoLoaded.current = true;
 
     const tag = new URLSearchParams(window.location.search).get("tag");
+    const queryParam = new URLSearchParams(window.location.search).get("query");
+    // A notification (e.g. "answer improved") deep-links here with ?query=<id>
+    // so clicking it opens the exact re-researched conversation.
+    const queryMatch = queryParam ? history.find((h) => h.id === queryParam) : null;
+    if (queryMatch) {
+      window.history.replaceState(null, "", window.location.pathname);
+      const openTimer = setTimeout(() => {
+        setHistoryOpen(true);
+        setHighlightedHistoryId(queryMatch.id);
+        loadConversation(queryMatch);
+      }, 0);
+      const clearTimer = setTimeout(() => setHighlightedHistoryId(null), 2000);
+      return () => {
+        clearTimeout(openTimer);
+        clearTimeout(clearTimer);
+      };
+    }
+
     const tagMatch = tag ? history.find((h) => h.topic_tag === tag) : null;
     if (tagMatch) {
       window.history.replaceState(null, "", window.location.pathname);
@@ -612,6 +796,10 @@ export default function QueryPage() {
             generation?: AnswerTrace["generation"];
             verification?: AnswerTrace["verification"];
             corrective_generation?: AnswerTrace["corrective_generation"];
+            firm?: AnswerTrace["firm"];
+            session?: AnswerTrace["session"];
+            re_retrieval?: AnswerTrace["re_retrieval"];
+            passes?: AnswerTrace["passes"];
           } = JSON.parse(event.data);
 
           if (parsed.type === "token" && parsed.text) {
@@ -657,6 +845,10 @@ export default function QueryPage() {
               generation: parsed.generation,
               verification: parsed.verification ?? null,
               corrective_generation: parsed.corrective_generation,
+              firm: parsed.firm ?? null,
+              session: parsed.session ?? null,
+              re_retrieval: parsed.re_retrieval ?? null,
+              passes: parsed.passes ?? null,
             });
           }
         };
@@ -669,6 +861,30 @@ export default function QueryPage() {
       setError("Query failed - please try again");
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Learning loop (approval-gated): suggest the finished answer for firm
+  // knowledge. Posts to the approval-gated /suggestions endpoint (a partner
+  // approves it before it becomes authoritative firm knowledge) - NOT the
+  // direct from-text save.
+  async function handlePromote() {
+    if (!result) return;
+    setPromoteState("saving");
+    try {
+      const response = await fetch("/api/firm-knowledge/suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: result.askedQuestion.slice(0, 80),
+          content: result.answer,
+          source_query_id: result.query_id,
+        }),
+      });
+      if (!response.ok) throw new Error("Failed");
+      setPromoteState("saved");
+    } catch {
+      setPromoteState("error");
     }
   }
 
@@ -790,13 +1006,33 @@ export default function QueryPage() {
                 </p>
               )}
 
+              {result.query_id &&
+                (() => {
+                  const status = history.find((h) => h.id === result.query_id)?.re_research_status;
+                  return status ? <ReResearchBadge status={status} /> : null;
+                })()}
+
               {verificationExpanded && verification && verification.issues.length > 0 && (
                 <VerificationIssuesPanel issues={verification.issues} />
               )}
 
               <AnswerWithCitationLinks text={result.answer} />
 
-              {trace && <AnswerTracePanel trace={trace} />}
+              {trace && (
+                <AnswerTracePanel
+                  trace={trace}
+                  onPromote={handlePromote}
+                  promoteState={promoteState}
+                />
+              )}
+
+              {result.query_id && (
+                <AnswerFeedback
+                  key={result.query_id}
+                  queryId={result.query_id}
+                  onReResearchEnqueued={loadHistory}
+                />
+              )}
 
               <FirmKnowledgeSuggestion
                 repeatCount={repeatCount}

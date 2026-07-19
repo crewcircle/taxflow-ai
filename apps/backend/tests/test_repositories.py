@@ -255,14 +255,58 @@ def test_get_question_citations_returns_none_for_another_clients_query():
     assert result is None
 
 
+# --- firm_knowledge.usage_trend (Task C6) -------------------------------------
+
+
+def test_firm_knowledge_usage_trend_scoped_by_client_and_quarter():
+    cur = _FakeCursor(fetchone={"quarter_count": 4, "prior_count": 1})
+    with _patch_conn(cur):
+        trend = Repositories().firm_knowledge.usage_trend("client-1")
+
+    sql, params = cur.executed[0]
+    assert "FROM firm_knowledge" in sql
+    assert "WHERE client_id = %s" in sql
+    # This-quarter vs prior-quarter windows keyed off date_trunc('quarter', now()).
+    assert "date_trunc('quarter', now())" in sql
+    assert params == ("client-1",)
+    assert trend == {"quarter_count": 4, "prior_count": 1}
+
+
+def test_firm_knowledge_usage_trend_defaults_to_zero_when_no_rows():
+    cur = _FakeCursor(fetchone=None)
+    with _patch_conn(cur):
+        trend = Repositories().firm_knowledge.usage_trend("client-1")
+    assert trend == {"quarter_count": 0, "prior_count": 0}
+
+
 # --- knowledge ingest short-circuits on empty input ---------------------------
 
 
 def test_mark_superseded_empty_returns_zero_without_query():
     cur = _FakeCursor()
     with _patch_conn(cur):
-        assert Repositories().knowledge_ingest.mark_superseded(set()) == 0
+        assert Repositories().knowledge_ingest.mark_superseded({}) == 0
     assert cur.executed == []
+
+
+def test_mark_superseded_updates_superseded_by_with_unnest_and_parallel_arrays():
+    cur = _FakeCursor(rowcount=2)
+    mapping = {"TR 2020/4": "TR 2024/1", "TD 2019/1": "TR 2024/1"}
+    with _patch_conn(cur):
+        count = Repositories().knowledge_ingest.mark_superseded(mapping)
+
+    assert count == 2
+    assert len(cur.executed) == 1
+    sql, params = cur.executed[0]
+    assert "UPDATE knowledge_chunks" in sql
+    assert "superseded_by" in sql
+    assert "is_current = false" in sql
+    assert "unnest(%s::text[], %s::text[])" in sql
+    # two parallel arrays: old citations then new (superseding) citations,
+    # aligned by index.
+    old_arr, new_arr = params
+    assert old_arr == list(mapping.keys())
+    assert new_arr == [mapping[old] for old in old_arr]
 
 
 def test_stale_urls_empty_returns_empty_without_query():

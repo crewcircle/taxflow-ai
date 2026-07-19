@@ -127,7 +127,7 @@ async def test_retrieve_context_soft_mode_does_not_pass_sql_filter():
     agent = ResearchAgent()
     captured = {}
 
-    async def fake_generate_candidates(question, source_types=None, embedding=None):
+    async def fake_generate_candidates(question, source_types=None, embedding=None, pool_scale=1):
         captured["source_types"] = source_types
         return [{"id": "x", "source_type": "ato_news", "score": 0.5}]
 
@@ -135,7 +135,10 @@ async def test_retrieve_context_soft_mode_does_not_pass_sql_filter():
         "taxflow.services.agents.research.generate_candidates", new=fake_generate_candidates
     ), patch(
         "taxflow.services.agents.research.rerank_candidates",
-        new=AsyncMock(side_effect=lambda q, c: c),
+        new=AsyncMock(side_effect=lambda q, c, pool_scale=1: c),
+    ), patch(
+        "taxflow.services.agents.research.generate_historical_candidates",
+        new=AsyncMock(return_value=[]),
     ), patch.object(agent, "_firm_knowledge_search", new=AsyncMock(return_value=[])):
         await agent._retrieve_context("q", "cid", source_type_hint=["legislation"])
 
@@ -148,7 +151,7 @@ async def test_retrieve_context_hard_mode_passes_sql_filter():
     agent = ResearchAgent()
     captured = {}
 
-    async def fake_generate_candidates(question, source_types=None, embedding=None):
+    async def fake_generate_candidates(question, source_types=None, embedding=None, pool_scale=1):
         captured["source_types"] = source_types
         return []
 
@@ -156,7 +159,10 @@ async def test_retrieve_context_hard_mode_passes_sql_filter():
         "taxflow.services.agents.research.generate_candidates", new=fake_generate_candidates
     ), patch(
         "taxflow.services.agents.research.rerank_candidates",
-        new=AsyncMock(side_effect=lambda q, c: c),
+        new=AsyncMock(side_effect=lambda q, c, pool_scale=1: c),
+    ), patch(
+        "taxflow.services.agents.research.generate_historical_candidates",
+        new=AsyncMock(return_value=[]),
     ), patch.object(agent, "_firm_knowledge_search", new=AsyncMock(return_value=[])):
         await agent._retrieve_context("q", "cid", source_type_hint=["legislation"])
 
