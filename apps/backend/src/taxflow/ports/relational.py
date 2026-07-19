@@ -61,6 +61,12 @@ class DocumentsRepo(Protocol):
 
 
 @runtime_checkable
+class FirmClientsRepo(Protocol):
+    def upsert(self, client_id: str, name: str) -> None: ...
+    def list_for_client(self, client_id: str, search: str | None = None) -> list[dict]: ...
+
+
+@runtime_checkable
 class FirmKnowledgeRepo(Protocol):
     def list_for_client(self, client_id: str) -> list[dict]: ...
     def insert(self, row: dict) -> dict: ...
@@ -122,6 +128,7 @@ class RelationalDataPort(Protocol):
     queries: QueriesRepo
     query_feedback: QueryFeedbackRepo
     documents: DocumentsRepo
+    firm_clients: FirmClientsRepo
     firm_knowledge: FirmKnowledgeRepo
     regulatory_alerts: RegulatoryAlertsRepo
     contact: ContactRepo

@@ -7,13 +7,13 @@ from pydantic import BaseModel
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.providers import get_document_renderer
-from taxflow.services.agents.draft import DraftAgent
+from taxflow.services.agents.document_graph import document_graph
 
 router = APIRouter(prefix="/documents", tags=["documents"])
-drafter = DraftAgent()
 
 TEMPLATE_REGISTRY = {
     "advice_memo": "Tax advice memo",
+    "client_letter": "Client letter",
     "ato_response": "ATO correspondence response",
     "remission_request": "Penalty remission request",
     "objection_letter": "Formal objection letter",
@@ -30,6 +30,10 @@ class GenerateDocumentRequest(BaseModel):
     title: str
     content_md: str
     client_ref: str | None = None
+
+
+class ApproveDocumentRequest(BaseModel):
+    approved_by: str
 
 
 @router.get("/templates")
@@ -49,24 +53,37 @@ async def generate_document(
     if body.document_type not in TEMPLATE_REGISTRY:
         raise HTTPException(status_code=400, detail=f"Unknown document_type: {body.document_type}")
 
-    content_md = body.content_md
-    # Chat answers are the raw research answer, not a formal memo - only
-    # reformat into the firm's 5-section structure here, on demand, when
-    # actually saving one as an advice memo document.
-    if body.document_type == "advice_memo" and body.query_id:
+    if body.client_ref:
+        try:
+            await asyncio.to_thread(db.firm_clients.upsert, client["id"], body.client_ref)
+        except Exception:  # noqa: BLE001 - never block saving the document
+            pass
+
+    # Chat answers are the raw research answer, not a formal memo/letter - only
+    # reformat here, on demand, when actually saving one as a specific document
+    # type (document_graph.py routes advice_memo/client_letter through their
+    # own reformatting node; every other type passes content_md through
+    # unchanged, same as before this graph existed).
+    original_question = None
+    citations: list[dict] = []
+    if body.query_id:
         query = await asyncio.to_thread(
             db.queries.get_question_citations, client["id"], body.query_id
         )
         if query:
-            try:
-                draft_result = await drafter.run(
-                    research_result={"answer": body.content_md, "citations": query["citations"] or []},
-                    original_question=query["question"],
-                    client_id=client["id"],
-                )
-                content_md = draft_result["draft"]
-            except Exception:  # noqa: BLE001 - drafting failure must not block saving the document
-                pass
+            original_question = query["question"]
+            citations = query["citations"] or []
+
+    final_state = await document_graph.ainvoke(
+        {
+            "document_type": body.document_type,
+            "content_md": body.content_md,
+            "original_question": original_question,
+            "citations": citations,
+            "client_id": client["id"],
+        }
+    )
+    content_md = final_state["result_md"]
 
     result = await asyncio.to_thread(
         db.documents.insert,
@@ -80,6 +97,31 @@ async def generate_document(
         },
     )
     return result
+
+
+@router.patch("/{document_id}/approve")
+async def approve_document(
+    document_id: str,
+    body: ApproveDocumentRequest,
+    client=Depends(get_current_client),
+    db=Depends(get_db),
+):
+    """Good-faith sign-off, not a security control - `approved_by` is a name the
+    caller picked from the firm's own staff_directory (Settings), not tied to a
+    per-person login (the product has no multi-user auth to hang that off yet).
+    """
+    doc = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    await asyncio.to_thread(
+        db.documents.update_status,
+        client["id"],
+        document_id,
+        "approved",
+        {"approved_by": body.approved_by, "approved_at": "now()"},
+    )
+    return await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
 
 
 @router.get("/{document_id}/download")

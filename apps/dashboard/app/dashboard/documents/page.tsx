@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ClientAutocomplete } from "@/components/ClientAutocomplete";
 
 interface DocumentRow {
   id: string;
@@ -26,11 +27,18 @@ interface DocumentRow {
   client_ref: string | null;
   context_note: string | null;
   created_at: string;
+  approved_by: string | null;
+  approved_at: string | null;
 }
 
 interface DocumentTemplate {
   type: string;
   label: string;
+}
+
+interface StaffMember {
+  name: string;
+  role: string;
 }
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
@@ -40,6 +48,29 @@ const STATUS_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
   archived: "outline",
 };
 
+// Internal working paper vs. what actually leaves the firm vs. what goes to
+// the ATO - three different audiences, not one flat document list. Matches
+// document_graph.py's TEMPLATE_REGISTRY.
+type Bucket = "all" | "internal" | "client" | "ato";
+const BUCKETS: Record<Exclude<Bucket, "all">, string[]> = {
+  internal: ["advice_memo"],
+  client: ["client_letter", "engagement_letter"],
+  ato: [
+    "ato_response",
+    "remission_request",
+    "objection_letter",
+    "private_ruling_application",
+    "payg_variation",
+    "fbt_declaration",
+  ],
+};
+const BUCKET_LABELS: Record<Bucket, string> = {
+  all: "All",
+  internal: "Internal",
+  client: "Client-facing",
+  ato: "ATO-facing",
+};
+
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<DocumentRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +78,10 @@ export default function DocumentsPage() {
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [clientFilter, setClientFilter] = useState("");
+  const [bucket, setBucket] = useState<Bucket>("all");
+  const [staffDirectory, setStaffDirectory] = useState<StaffMember[]>([]);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [approvingAs, setApprovingAs] = useState("");
   const [form, setForm] = useState({
     title: "",
     document_type: "advice_memo",
@@ -79,6 +114,30 @@ export default function DocumentsPage() {
       .then(setTemplates)
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setStaffDirectory(d?.client?.staff_directory ?? []))
+      .catch(() => {});
+  }, []);
+
+  async function handleApprove(documentId: string) {
+    if (!approvingAs) return;
+    try {
+      const response = await fetch(`/api/documents/${documentId}/approve`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved_by: approvingAs }),
+      });
+      if (!response.ok) throw new Error("Failed");
+      setApprovingId(null);
+      setApprovingAs("");
+      loadDocuments();
+    } catch {
+      setError("Could not approve this document - please try again");
+    }
+  }
 
   async function handleCreate() {
     if (!form.title.trim() || !form.content_md.trim()) return;
@@ -138,6 +197,23 @@ export default function DocumentsPage() {
         </div>
       </div>
 
+      <div className="flex flex-wrap gap-1.5">
+        {(Object.keys(BUCKET_LABELS) as Bucket[]).map((b) => (
+          <button
+            key={b}
+            type="button"
+            onClick={() => setBucket(b)}
+            className={
+              bucket === b
+                ? "rounded-full bg-foreground px-3 py-1 text-xs font-medium text-background"
+                : "rounded-full border border-border px-3 py-1 text-xs text-muted-foreground hover:border-foreground/40"
+            }
+          >
+            {BUCKET_LABELS[b]}
+          </button>
+        ))}
+      </div>
+
       {creating && (
         <Card>
           <CardContent className="space-y-4 pt-6">
@@ -170,10 +246,9 @@ export default function DocumentsPage() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="doc-client-ref">Client (optional)</Label>
-              <Input
-                id="doc-client-ref"
+              <ClientAutocomplete
                 value={form.client_ref}
-                onChange={(e) => setForm({ ...form, client_ref: e.target.value })}
+                onChange={(v) => setForm({ ...form, client_ref: v })}
                 placeholder="e.g. Smith Dental Practice"
               />
             </div>
@@ -208,11 +283,15 @@ export default function DocumentsPage() {
       )}
 
       {documents && documents.length > 0 && (() => {
-        const filtered = clientFilter.trim()
-          ? documents.filter((d) => d.client_ref?.toLowerCase().includes(clientFilter.trim().toLowerCase()))
-          : documents;
+        let filtered = documents;
+        if (bucket !== "all") {
+          filtered = filtered.filter((d) => BUCKETS[bucket].includes(d.document_type));
+        }
+        if (clientFilter.trim()) {
+          filtered = filtered.filter((d) => d.client_ref?.toLowerCase().includes(clientFilter.trim().toLowerCase()));
+        }
         if (filtered.length === 0) {
-          return <p className="text-sm text-muted-foreground">No documents for this client.</p>;
+          return <p className="text-sm text-muted-foreground">No documents in this view.</p>;
         }
         return (
           <div className="overflow-hidden rounded-lg border border-border">
@@ -244,22 +323,75 @@ export default function DocumentsPage() {
                     <TableCell className="text-muted-foreground">{doc.document_type}</TableCell>
                     <TableCell>
                       <Badge variant={STATUS_VARIANT[doc.status] ?? "outline"}>{doc.status}</Badge>
+                      {doc.approved_by && doc.approved_at && (
+                        <span className="mt-1 block text-[11px] text-muted-foreground">
+                          Reviewed and approved by {doc.approved_by} ·{" "}
+                          {new Date(doc.approved_at).toLocaleDateString("en-AU")}
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {new Date(doc.created_at).toLocaleDateString("en-AU")}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <a
-                            href={`/api/documents/${doc.id}/download?fmt=docx`}
-                            className="text-accent hover:underline"
-                          >
-                            Download
-                          </a>
-                        </TooltipTrigger>
-                        <TooltipContent>Downloads this document as a .docx file</TooltipContent>
-                      </Tooltip>
+                      <div className="flex items-center justify-end gap-3">
+                        {doc.status !== "approved" &&
+                          (approvingId === doc.id ? (
+                            <div className="flex items-center gap-1.5">
+                              <Select value={approvingAs} onValueChange={setApprovingAs}>
+                                <SelectTrigger size="sm" className="h-7 w-[150px] text-xs">
+                                  <SelectValue placeholder="Sign off as..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {staffDirectory.map((m) => (
+                                    <SelectItem key={m.name} value={m.name}>
+                                      {m.name} · {m.role}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <Button size="sm" className="h-7 px-2 text-xs" disabled={!approvingAs} onClick={() => handleApprove(doc.id)}>
+                                Confirm
+                              </Button>
+                              <button
+                                type="button"
+                                className="text-xs text-muted-foreground hover:text-foreground"
+                                onClick={() => setApprovingId(null)}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="text-accent hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+                                  disabled={staffDirectory.length === 0}
+                                  onClick={() => setApprovingId(doc.id)}
+                                >
+                                  Approve
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {staffDirectory.length === 0
+                                  ? "Add staff in Settings first"
+                                  : "Record a reviewed-and-approved-by sign-off on this document"}
+                              </TooltipContent>
+                            </Tooltip>
+                          ))}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <a
+                              href={`/api/documents/${doc.id}/download?fmt=docx`}
+                              className="text-accent hover:underline"
+                            >
+                              Download
+                            </a>
+                          </TooltipTrigger>
+                          <TooltipContent>Downloads this document as a .docx file</TooltipContent>
+                        </Tooltip>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}

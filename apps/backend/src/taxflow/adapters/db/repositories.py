@@ -140,7 +140,7 @@ class ClientsRepo:
         cols = list(fields.keys())
         return _execute(
             f"UPDATE clients SET {_set_clause(cols)} WHERE id = %s RETURNING *",
-            [fields[c] for c in cols] + [client_id],
+            [_maybe_json(fields[c]) for c in cols] + [client_id],
             returning=True,
         )
 
@@ -294,7 +294,8 @@ class DocumentsRepo:
         if kind_filter:
             return _fetchall(
                 """
-                SELECT id, title, status, context_note, created_at
+                SELECT id, title, status, context_note, created_at,
+                       approved_by, approved_at
                 FROM documents
                 WHERE client_id = %s AND document_type = %s
                 ORDER BY created_at DESC
@@ -304,7 +305,7 @@ class DocumentsRepo:
         return _fetchall(
             """
             SELECT id, document_type, title, status, client_ref,
-                   context_note, created_at
+                   context_note, created_at, approved_by, approved_at
             FROM documents
             WHERE client_id = %s
             ORDER BY created_at DESC
@@ -340,6 +341,38 @@ class DocumentsRepo:
             f"UPDATE documents SET {', '.join(assignments)} "
             "WHERE id = %s AND client_id = %s",
             params,
+        )
+
+
+# --- firm_clients (a firm's own client register, built organically) ---------
+class FirmClientsRepo:
+    def upsert(self, client_id: str, name: str) -> None:
+        name = name.strip()
+        if not name:
+            return
+        _execute(
+            """
+            INSERT INTO firm_clients (client_id, name)
+            VALUES (%s, %s)
+            ON CONFLICT (client_id, lower(name)) DO NOTHING
+            """,
+            (client_id, name),
+        )
+
+    def list_for_client(self, client_id: str, search: str | None = None) -> list[dict]:
+        if search:
+            return _fetchall(
+                """
+                SELECT id, name FROM firm_clients
+                WHERE client_id = %s AND name ILIKE %s
+                ORDER BY name
+                LIMIT 20
+                """,
+                (client_id, f"%{search}%"),
+            )
+        return _fetchall(
+            "SELECT id, name FROM firm_clients WHERE client_id = %s ORDER BY name LIMIT 200",
+            (client_id,),
         )
 
 
@@ -662,6 +695,7 @@ class Repositories:
         self.queries = QueriesRepo()
         self.query_feedback = QueryFeedbackRepo()
         self.documents = DocumentsRepo()
+        self.firm_clients = FirmClientsRepo()
         self.firm_knowledge = FirmKnowledgeRepo()
         self.regulatory_alerts = RegulatoryAlertsRepo()
         self.contact = ContactRepo()

@@ -301,6 +301,16 @@ async def stream_query(
     """
     start = time.time()
 
+    # Client register (Settings audit follow-up): grows organically from real
+    # use rather than requiring firms to pre-seed a client list. Upsert is a
+    # no-op on repeat names (ON CONFLICT DO NOTHING) and must never block the
+    # question being answered.
+    if client_ref:
+        try:
+            await asyncio.to_thread(db.firm_clients.upsert, client["id"], client_ref)
+        except Exception:  # noqa: BLE001
+            pass
+
     def _insert_query_row(status: str, extra: dict | None = None) -> str:
         row = db.queries.insert(
             {

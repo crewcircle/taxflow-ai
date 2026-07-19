@@ -11,7 +11,6 @@ import {
   Copy,
   FileDown,
   Sparkles,
-  User,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +23,7 @@ import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHisto
 import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
 import { AnswerTracePanel, type AnswerTrace } from "@/components/AnswerTracePanel";
 import { CollapsedPanelRail } from "@/components/CollapsedPanelRail";
+import { ClientAutocomplete } from "@/components/ClientAutocomplete";
 import { cn } from "@/lib/utils";
 
 interface DocumentTemplate {
@@ -306,15 +306,11 @@ function AnswerActions({
       <div className="flex flex-wrap items-center gap-3">
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="relative">
-              <User className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={clientRef}
-                onChange={(e) => onClientRefChange(e.target.value)}
-                placeholder="Client (optional)"
-                className="h-8 w-44 border-accent/30 bg-accent/5 pl-7 text-xs"
-              />
-            </div>
+            <ClientAutocomplete
+              value={clientRef}
+              onChange={onClientRefChange}
+              className="h-8 w-44 border-accent/30 bg-accent/5 text-xs"
+            />
           </TooltipTrigger>
           <TooltipContent>
             Tag this answer with a client name - carries through automatically if you save it as a document below,
