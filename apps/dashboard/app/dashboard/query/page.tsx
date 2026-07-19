@@ -63,34 +63,81 @@ function linkifyCitations(text: string): string {
   return text.replace(/\[(\d+)\]/g, "[[$1]](#source-$1)");
 }
 
-const markdownComponents: Components = {
-  h1: ({ children }) => <h3 className="mt-4 mb-1.5 text-base font-semibold first:mt-0">{children}</h3>,
-  h2: ({ children }) => <h3 className="mt-4 mb-1.5 text-base font-semibold first:mt-0">{children}</h3>,
-  h3: ({ children }) => <h4 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h4>,
-  p: ({ children }) => <p className="mb-2 text-sm leading-relaxed last:mb-0">{children}</p>,
-  ul: ({ children }) => <ul className="mb-2 list-disc space-y-1 pl-5 text-sm">{children}</ul>,
-  ol: ({ children }) => <ol className="mb-2 list-decimal space-y-1 pl-5 text-sm">{children}</ol>,
-  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-  strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
-  code: ({ children }) => <code className="rounded bg-muted px-1 py-0.5 text-xs">{children}</code>,
-  table: ({ children }) => (
-    <div className="mb-2 overflow-x-auto">
-      <table className="w-full border-collapse text-sm">{children}</table>
-    </div>
-  ),
-  th: ({ children }) => <th className="border border-border px-2 py-1 text-left font-semibold">{children}</th>,
-  td: ({ children }) => <td className="border border-border px-2 py-1">{children}</td>,
-  a: ({ href, children }) => (
-    <a href={href} className="font-medium text-accent hover:underline">
-      {children}
-    </a>
-  ),
-};
+const STALE_AFTER_DAYS = 30;
 
-function AnswerWithCitationLinks({ text }: { text: string }) {
+function daysSince(iso: string): number {
+  return Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+}
+
+function formatRefreshedDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-AU", { year: "numeric", month: "short" });
+}
+
+// Every citation marker in the answer carries its own currency, not just the
+// sources panel off to the side - per the audit, the mechanism (last_scraped_at)
+// already existed but wasn't visible at the point a reader actually relies on
+// it. Fresh citations get a quiet hover date; stale ones (30+ days) also get an
+// amber dot so the flag is visible without hovering.
+function buildMarkdownComponents(citations: SourceCitation[]): Components {
+  return {
+    h1: ({ children }) => <h3 className="mt-4 mb-1.5 text-base font-semibold first:mt-0">{children}</h3>,
+    h2: ({ children }) => <h3 className="mt-4 mb-1.5 text-base font-semibold first:mt-0">{children}</h3>,
+    h3: ({ children }) => <h4 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h4>,
+    p: ({ children }) => <p className="mb-2 text-sm leading-relaxed last:mb-0">{children}</p>,
+    ul: ({ children }) => <ul className="mb-2 list-disc space-y-1 pl-5 text-sm">{children}</ul>,
+    ol: ({ children }) => <ol className="mb-2 list-decimal space-y-1 pl-5 text-sm">{children}</ol>,
+    li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+    strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
+    code: ({ children }) => <code className="rounded bg-muted px-1 py-0.5 text-xs">{children}</code>,
+    table: ({ children }) => (
+      <div className="mb-2 overflow-x-auto">
+        <table className="w-full border-collapse text-sm">{children}</table>
+      </div>
+    ),
+    th: ({ children }) => <th className="border border-border px-2 py-1 text-left font-semibold">{children}</th>,
+    td: ({ children }) => <td className="border border-border px-2 py-1">{children}</td>,
+    a: ({ href, children }) => {
+      const match = typeof href === "string" ? href.match(/^#source-(\d+)$/) : null;
+      if (!match) {
+        return (
+          <a href={href} className="font-medium text-accent hover:underline">
+            {children}
+          </a>
+        );
+      }
+      const citation = citations[Number(match[1]) - 1];
+      const refreshedIso = citation?.last_scraped_at ?? null;
+      const stale = refreshedIso ? daysSince(refreshedIso) > STALE_AFTER_DAYS : false;
+      const label = refreshedIso
+        ? `Refreshed ${formatRefreshedDate(refreshedIso)}${stale ? " - check for a newer version" : ""}`
+        : "Refresh date unavailable";
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <a
+              href={href}
+              className={cn(
+                "font-medium hover:underline",
+                stale ? "text-amber-700" : "text-accent"
+              )}
+            >
+              {children}
+              {stale && (
+                <span className="ml-0.5 inline-block size-1.5 rounded-full bg-amber-500 align-super" />
+              )}
+            </a>
+          </TooltipTrigger>
+          <TooltipContent>{label}</TooltipContent>
+        </Tooltip>
+      );
+    },
+  };
+}
+
+function AnswerWithCitationLinks({ text, citations }: { text: string; citations: SourceCitation[] }) {
   return (
     <div>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildMarkdownComponents(citations)}>
         {linkifyCitations(text)}
       </ReactMarkdown>
     </div>
@@ -1016,7 +1063,7 @@ export default function QueryPage() {
                 <VerificationIssuesPanel issues={verification.issues} />
               )}
 
-              <AnswerWithCitationLinks text={result.answer} />
+              <AnswerWithCitationLinks text={result.answer} citations={result.citations} />
 
               {trace && (
                 <AnswerTracePanel
@@ -1081,7 +1128,7 @@ export default function QueryPage() {
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                {result ? "Continues this conversation with your follow-up" : "Runs your question against the AU tax knowledge base"}
+                {result ? "Continues this engagement with your follow-up" : "Runs your question against the AU tax knowledge base"}
               </TooltipContent>
             </Tooltip>
           </div>

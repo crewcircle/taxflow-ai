@@ -147,7 +147,7 @@ export function QueryHistorySidebar({
               New engagement
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Start a fresh conversation - clears the current answer and starts a new session</TooltipContent>
+          <TooltipContent>Start a fresh engagement - clears the current answer and starts a new thread</TooltipContent>
         </Tooltip>
         {hasAnyClientRef && (
           <Tooltip>
