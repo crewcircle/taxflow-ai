@@ -238,27 +238,53 @@ function FirmKnowledgeSuggestion({ repeatCount, defaultTitle, content }: FirmKno
   );
 }
 
-interface AnswerFeedbackProps {
-  queryId: string;
+interface AnswerActionsBarProps {
+  queryId: string | null;
   onReResearchEnqueued: () => void;
+  copied: boolean;
+  onCopy: () => void;
+  savedDocId: string | null;
+  savingDoc: boolean;
+  docType: string;
+  onDocTypeChange: (v: string) => void;
+  templates: DocumentTemplate[];
+  onSave: () => void;
+  clientRef: string;
+  onClientRefChange: (v: string) => void;
 }
 
-// Answer-level feedback (Task C9): the entry point for the two approved
-// learning behaviours. A thumbs-down WITH a note enqueues an async
-// re-research (C2) - the note is required before a down submission posts, since
-// the backend only enqueues when a note is present. A thumbs-up creates a
-// pending firm-knowledge suggestion for partner approval (C5, reviewed in C8).
-function AnswerFeedback({ queryId, onReResearchEnqueued }: AnswerFeedbackProps) {
+// Everything you can do with a finished answer, in one row: rate it (Task
+// C9 - thumbs-up sends it for Firm Knowledge approval, thumbs-down WITH a
+// note enqueues an async re-research per C2), say who it's for, copy the
+// text, or pick a format and save it as a document (which picks up the
+// client tag automatically). Combined into a single block per feedback that
+// two separate boxes made the relationship between them unclear - only the
+// thumbs-down note editor drops to its own line below.
+function AnswerActionsBar({
+  queryId,
+  onReResearchEnqueued,
+  copied,
+  onCopy,
+  savedDocId,
+  savingDoc,
+  docType,
+  onDocTypeChange,
+  templates,
+  onSave,
+  clientRef,
+  onClientRefChange,
+}: AnswerActionsBarProps) {
   const [rating, setRating] = useState<"up" | "down" | null>(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Terminal states after a successful submit.
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  // Terminal states after a successful feedback submit.
   const [outcome, setOutcome] = useState<"re_researching" | "sent_for_approval" | "recorded" | null>(null);
 
-  async function submit(chosenRating: "up" | "down", chosenNote: string) {
+  async function submitFeedback(chosenRating: "up" | "down", chosenNote: string) {
+    if (!queryId) return;
     setSubmitting(true);
-    setError(null);
+    setFeedbackError(null);
     try {
       const response = await fetch(`/api/query/${queryId}/feedback`, {
         method: "POST",
@@ -278,74 +304,147 @@ function AnswerFeedback({ queryId, onReResearchEnqueued }: AnswerFeedbackProps) 
         setOutcome("recorded");
       }
     } catch {
-      setError("Could not record your feedback - please try again");
+      setFeedbackError("Could not record your feedback - please try again");
     } finally {
       setSubmitting(false);
     }
   }
 
-  if (outcome === "sent_for_approval") {
-    return (
-      <div className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 p-3 text-sm text-foreground">
+  const feedbackSegment =
+    outcome === "sent_for_approval" ? (
+      <span className="flex items-center gap-1.5 text-sm text-foreground">
         <BookOpen className="size-4 text-accent" />
-        Sent for approval - a partner will review this answer for Firm Knowledge.
-      </div>
-    );
-  }
-  if (outcome === "re_researching") {
-    return (
-      <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 p-3 text-sm text-foreground">
+        Sent for approval
+      </span>
+    ) : outcome === "re_researching" ? (
+      <span className="flex items-center gap-1.5 text-sm text-foreground">
         <ReResearchBadge status="pending" />
-        Thanks - we&apos;re re-researching this answer with your feedback. You&apos;ll be notified when it&apos;s ready.
-      </div>
-    );
-  }
-  if (outcome === "recorded") {
-    return (
-      <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
+        Re-researching...
+      </span>
+    ) : outcome === "recorded" ? (
+      <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
         <CheckCircle2 className="size-4 text-green-600" />
-        Thanks for the feedback.
+        Thanks for the feedback
+      </span>
+    ) : (
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs font-medium text-muted-foreground">Helpful?</span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant={rating === "up" ? "secondary" : "ghost"}
+              size="sm"
+              disabled={submitting}
+              onClick={() => submitFeedback("up", "")}
+            >
+              <ThumbsUp className="size-3.5" />
+              Yes
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Suggests this answer for Firm Knowledge (a partner approves it before it&apos;s used)</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant={rating === "down" ? "secondary" : "ghost"}
+              size="sm"
+              disabled={submitting}
+              onClick={() => setRating("down")}
+            >
+              <ThumbsDown className="size-3.5" />
+              No
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Tell us what&apos;s wrong and we&apos;ll re-research it in the background</TooltipContent>
+        </Tooltip>
       </div>
     );
-  }
 
   return (
     <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-3">
       <div className="flex flex-wrap items-center gap-3">
-        <p className="text-xs font-medium text-muted-foreground">Was this answer helpful?</p>
-        <div className="flex items-center gap-1.5">
+        {queryId && (
+          <>
+            {feedbackSegment}
+            <div className="h-6 w-px bg-border" aria-hidden />
+          </>
+        )}
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <ClientAutocomplete
+              value={clientRef}
+              onChange={onClientRefChange}
+              className="h-8 w-44 border-accent/30 bg-accent/5 text-xs"
+            />
+          </TooltipTrigger>
+          <TooltipContent>
+            Tag this answer with a client name - carries through automatically if you save it as a document below,
+            and lets you highlight their questions in the history panel
+          </TooltipContent>
+        </Tooltip>
+
+        <div className="h-6 w-px bg-border" aria-hidden />
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="secondary" size="sm" onClick={onCopy}>
+              <Copy className="size-3.5" />
+              {copied ? "Copied!" : "Copy"}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            Copies the plain answer text to your clipboard - handy for pasting into an email or another document
+          </TooltipContent>
+        </Tooltip>
+
+        <div className="h-6 w-px bg-border" aria-hidden />
+
+        {savedDocId ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button
-                variant={rating === "up" ? "secondary" : "ghost"}
-                size="sm"
-                disabled={submitting}
-                onClick={() => submit("up", "")}
-              >
-                <ThumbsUp className="size-3.5" />
-                Yes
+              <Button asChild variant="secondary" size="sm">
+                <Link href="/dashboard/documents">View saved document →</Link>
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Suggests this answer for Firm Knowledge (a partner approves it before it&apos;s used)</TooltipContent>
+            <TooltipContent>Opens the Documents list where this was just saved</TooltipContent>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant={rating === "down" ? "secondary" : "ghost"}
-                size="sm"
-                disabled={submitting}
-                onClick={() => setRating("down")}
-              >
-                <ThumbsDown className="size-3.5" />
-                No
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Tell us what&apos;s wrong and we&apos;ll re-research it in the background</TooltipContent>
-          </Tooltip>
-        </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Select value={docType} onValueChange={onDocTypeChange}>
+                  <SelectTrigger size="sm" className="w-[220px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {templates.map((t) => (
+                      <SelectItem key={t.type} value={t.type}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </TooltipTrigger>
+              <TooltipContent>Choose the document style to generate - e.g. an advice memo vs. a client letter</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="secondary" size="sm" disabled={savingDoc} onClick={onSave}>
+                  <FileDown className="size-3.5" />
+                  {savingDoc ? "Saving..." : "Save as document"}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Saves this answer as a new {templates.find((t) => t.type === docType)?.label.toLowerCase() ?? "document"}{" "}
+                under Documents{clientRef.trim() ? `, tagged to ${clientRef.trim()}` : " (no client tagged)"}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        )}
       </div>
 
-      {rating === "down" && (
+      {rating === "down" && outcome === null && (
         <div className="space-y-2">
           <Textarea
             value={note}
@@ -361,7 +460,7 @@ function AnswerFeedback({ queryId, onReResearchEnqueued }: AnswerFeedbackProps) 
                   <Button
                     size="sm"
                     disabled={submitting || !note.trim()}
-                    onClick={() => submit("down", note)}
+                    onClick={() => submitFeedback("down", note)}
                   >
                     {submitting ? "Submitting..." : "Submit & re-research"}
                   </Button>
@@ -384,7 +483,7 @@ function AnswerFeedback({ queryId, onReResearchEnqueued }: AnswerFeedbackProps) 
         </div>
       )}
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {feedbackError && <p className="text-sm text-destructive">{feedbackError}</p>}
     </div>
   );
 }
@@ -470,116 +569,6 @@ function VerificationIssuesPanel({ issues }: { issues: VerificationIssue[] }) {
         </ul>
       </CardContent>
     </Card>
-  );
-}
-
-interface AnswerActionsProps {
-  copied: boolean;
-  onCopy: () => void;
-  savedDocId: string | null;
-  savingDoc: boolean;
-  docType: string;
-  onDocTypeChange: (v: string) => void;
-  templates: DocumentTemplate[];
-  onSave: () => void;
-  clientRef: string;
-  onClientRefChange: (v: string) => void;
-}
-
-// The four things you can do with a finished answer, in the order you'd
-// naturally do them: say who it's for, copy the text if that's all you need,
-// or pick a format and save it as a document (which picks up the client tag
-// above automatically).
-function AnswerActions({
-  copied,
-  onCopy,
-  savedDocId,
-  savingDoc,
-  docType,
-  onDocTypeChange,
-  templates,
-  onSave,
-  clientRef,
-  onClientRefChange,
-}: AnswerActionsProps) {
-  return (
-    <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-3">
-      <p className="text-xs font-medium text-muted-foreground">What would you like to do with this answer?</p>
-      <div className="flex flex-wrap items-center gap-3">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <ClientAutocomplete
-              value={clientRef}
-              onChange={onClientRefChange}
-              className="h-8 w-44 border-accent/30 bg-accent/5 text-xs"
-            />
-          </TooltipTrigger>
-          <TooltipContent>
-            Tag this answer with a client name - carries through automatically if you save it as a document below,
-            and lets you highlight their questions in the history panel
-          </TooltipContent>
-        </Tooltip>
-
-        <div className="h-6 w-px bg-border" aria-hidden />
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="secondary" size="sm" onClick={onCopy}>
-              <Copy className="size-3.5" />
-              {copied ? "Copied!" : "Copy"}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            Copies the plain answer text to your clipboard - handy for pasting into an email or another document
-          </TooltipContent>
-        </Tooltip>
-
-        <div className="h-6 w-px bg-border" aria-hidden />
-
-        {savedDocId ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button asChild variant="secondary" size="sm">
-                <Link href="/dashboard/documents">View saved document →</Link>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Opens the Documents list where this was just saved</TooltipContent>
-          </Tooltip>
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Select value={docType} onValueChange={onDocTypeChange}>
-                  <SelectTrigger size="sm" className="w-[220px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {templates.map((t) => (
-                      <SelectItem key={t.type} value={t.type}>
-                        {t.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </TooltipTrigger>
-              <TooltipContent>Choose the document style to generate - e.g. an advice memo vs. a client letter</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="secondary" size="sm" disabled={savingDoc} onClick={onSave}>
-                  <FileDown className="size-3.5" />
-                  {savingDoc ? "Saving..." : "Save as document"}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                Saves this answer as a new {templates.find((t) => t.type === docType)?.label.toLowerCase() ?? "document"}{" "}
-                under Documents{clientRef.trim() ? `, tagged to ${clientRef.trim()}` : " (no client tagged)"}
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        )}
-      </div>
-    </div>
   );
 }
 
@@ -994,7 +983,10 @@ export default function QueryPage() {
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <div className="flex-1 space-y-4 overflow-y-auto p-6">
           {result && (
-            <div className="flex items-center gap-1.5">
+            <div className="space-y-0.5">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Engagement name
+              </p>
               {editingLabel ? (
                 <Input
                   autoFocus
@@ -1004,17 +996,25 @@ export default function QueryPage() {
                     if (e.key === "Enter") e.currentTarget.blur();
                     if (e.key === "Escape") setEditingLabel(false);
                   }}
-                  className="h-7 max-w-sm text-xs"
+                  className="h-7 max-w-sm text-sm font-semibold"
                 />
               ) : (
-                <button
-                  type="button"
-                  onClick={() => setEditingLabel(true)}
-                  className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-                >
-                  {sessionLabels[sessionId] ?? result.askedQuestion.slice(0, 80)}
-                  <Pencil className="size-3 opacity-60" />
-                </button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => setEditingLabel(true)}
+                      className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-sm font-semibold text-foreground hover:bg-muted"
+                    >
+                      {sessionLabels[sessionId] ?? result.askedQuestion.slice(0, 80)}
+                      <Pencil className="size-3 opacity-60" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Click to rename this engagement - defaults to your first question, but you can give it a
+                    short, client-friendly name to find it later
+                  </TooltipContent>
+                </Tooltip>
               )}
             </div>
           )}
@@ -1073,21 +1073,16 @@ export default function QueryPage() {
                 />
               )}
 
-              {result.query_id && (
-                <AnswerFeedback
-                  key={result.query_id}
-                  queryId={result.query_id}
-                  onReResearchEnqueued={loadHistory}
-                />
-              )}
-
               <FirmKnowledgeSuggestion
                 repeatCount={repeatCount}
                 defaultTitle={result.askedQuestion.slice(0, 80) || "Saved answer"}
                 content={result.answer}
               />
 
-              <AnswerActions
+              <AnswerActionsBar
+                key={result.query_id}
+                queryId={result.query_id}
+                onReResearchEnqueued={loadHistory}
                 copied={copied}
                 onCopy={handleCopy}
                 savedDocId={savedDocId}
