@@ -472,3 +472,18 @@ def test_get_llm_llm_key_wins_over_opencode(monkeypatch, _reset_llm_cache):
     )
     adapter = providers.get_llm()
     assert adapter._api_key == "sk-generic"
+
+
+# --- knowledge_ingest repo satisfies the extended Protocol (Task C1) ---------
+def test_knowledge_ingest_repo_satisfies_extended_protocol():
+    """The psycopg2 KnowledgeIngestRepo must still satisfy the (extended)
+    KnowledgeIngestRepo Protocol after adding delete_by_source_url +
+    list_ingested_sources (Workstream C, Task C1)."""
+    from taxflow.adapters.db.repositories import KnowledgeIngestRepo
+    from taxflow.ports.relational import KnowledgeIngestRepo as KnowledgeIngestRepoPort
+
+    repo = KnowledgeIngestRepo()
+    assert isinstance(repo, KnowledgeIngestRepoPort)
+    # The two new methods are callable attributes.
+    assert callable(repo.delete_by_source_url)
+    assert callable(repo.list_ingested_sources)

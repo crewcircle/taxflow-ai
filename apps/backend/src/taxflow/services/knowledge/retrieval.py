@@ -56,6 +56,15 @@ def _citation_year(citation: str) -> int:
     return int(match.group()) if match else _NEUTRAL_YEAR
 
 
+# Hierarchical-chunking fields (Workstream C) copied onto every candidate dict.
+# .get() so legacy NULL rows / flat mode flow through unchanged.
+_HIERARCHY_FIELDS = ("heading_path", "parent_content", "chunk_level", "parent_key")
+
+
+def _hierarchy_fields(src: dict) -> dict:
+    return {field: src.get(field) for field in _HIERARCHY_FIELDS}
+
+
 def _rrf_merge(semantic: list[dict], textual: list[dict]) -> list[dict]:
     """Reciprocal-rank-fusion merge of the semantic + text candidate lists.
 
@@ -90,6 +99,7 @@ def _rrf_merge(semantic: list[dict], textual: list[dict]) -> list[dict]:
             "source_object_key": docs[doc_id].get("source_object_key"),
             "source_type": docs[doc_id].get("source_type"),
             "last_scraped_at": docs[doc_id].get("last_scraped_at"),
+            **_hierarchy_fields(docs[doc_id]),
             "score": score,
         }
         for doc_id, score in ranked
@@ -273,6 +283,7 @@ async def generate_historical_candidates(
             "source_type": h.get("source_type"),
             "last_scraped_at": h.get("last_scraped_at"),
             "superseded_by": h.get("superseded_by"),
+            **_hierarchy_fields(h),
             "score": float(h["cosine_sim"]),
         }
         for h in hits

@@ -22,6 +22,10 @@ class VectorHit(TypedDict, total=False):
     score: float
     superseded_by: str | None
     is_current: bool
+    heading_path: str | None
+    parent_content: str | None
+    chunk_level: str | None
+    parent_key: str | None
 
 
 @runtime_checkable

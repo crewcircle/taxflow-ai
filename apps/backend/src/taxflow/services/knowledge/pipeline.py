@@ -83,13 +83,19 @@ def classify_topic(title: str, citation: str, text: str) -> str | None:
     return None
 
 
-def chunk_text(text: str, chunk_tokens: int | None = None, overlap_tokens: int | None = None) -> list[str]:
-    """Split into ~chunk_tokens segments at sentence boundaries with token overlap."""
-    chunk_tokens = chunk_tokens or settings.CHUNK_SIZE_TOKENS
-    overlap_tokens = overlap_tokens or settings.CHUNK_OVERLAP_TOKENS
+def _pack_sentences(
+    sentences: list[str], chunk_tokens: int, overlap_tokens: int
+) -> list[str]:
+    """Sentence-packing loop shared by flat ``chunk_text`` and the intra-unit
+    child split in ``structure.hierarchical_chunk`` (Workstream C).
 
+    Packs sentences into ~``chunk_tokens`` segments at sentence boundaries,
+    carrying ``overlap_tokens`` of trailing sentences into the next segment.
+    Extracting this from ``chunk_text`` means flat and hierarchical modes share
+    ONE implementation, so a child split inside one section produces identical
+    packing to the flat path.
+    """
     tokenizer = get_tokenizer()
-    sentences = SENTENCE_SPLIT.split(text)
     chunks: list[str] = []
     current: list[str] = []
     current_tokens = 0
@@ -117,19 +123,60 @@ def chunk_text(text: str, chunk_tokens: int | None = None, overlap_tokens: int |
     return [c.strip() for c in chunks if c.strip()]
 
 
+def chunk_text(text: str, chunk_tokens: int | None = None, overlap_tokens: int | None = None) -> list[str]:
+    """Split into ~chunk_tokens segments at sentence boundaries with token overlap."""
+    chunk_tokens = chunk_tokens or settings.CHUNK_SIZE_TOKENS
+    overlap_tokens = overlap_tokens or settings.CHUNK_OVERLAP_TOKENS
+
+    sentences = SENTENCE_SPLIT.split(text)
+    return _pack_sentences(sentences, chunk_tokens, overlap_tokens)
+
+
 def _upsert_chunks(rows: list[tuple]) -> int:
     return get_relational_data().knowledge_ingest.upsert_chunks(rows)
 
 
 async def process_document(text: str, metadata: dict, source_object_key: str | None = None) -> int:
-    """Chunk, embed, and upsert one document. Returns chunk count."""
+    """Chunk, embed, and upsert one document. Returns chunk count.
+
+    Two modes, gated by ``settings.HIERARCHICAL_CHUNKING_ENABLED``:
+    - flat (default / flag off): today's exact behaviour — ``chunk_text`` splits
+      on a sentence-packing window, rows carry ``chunk_level='flat'`` and NULL
+      for the hierarchy fields.
+    - hierarchical (flag on): ``structure.hierarchical_chunk`` splits on logical
+      units with heading breadcrumbs; rows carry ``chunk_level='child'`` plus
+      heading_path/section_ref/parent_key/parent_content.
+    Both modes build the same 17-column row tuple, so ONE upsert path serves both.
+    """
+    if settings.HIERARCHICAL_CHUNKING_ENABLED:
+        rows = await _hierarchical_rows(text, metadata, source_object_key)
+    else:
+        rows = await _flat_rows(text, metadata, source_object_key)
+
+    if not rows:
+        return 0
+
+    chunk_count = await asyncio.to_thread(_upsert_chunks, rows)
+
+    superseded = _detect_superseded_citations(text) - {metadata["citation"]}
+    if superseded:
+        mapping = {old: metadata["citation"] for old in superseded}
+        marked = await asyncio.to_thread(_mark_superseded, mapping)
+        if marked:
+            print(f"    {metadata['citation']} marks {superseded} as superseded ({marked} chunks)")
+
+    return chunk_count
+
+
+async def _flat_rows(text: str, metadata: dict, source_object_key: str | None) -> list[tuple]:
+    """Build flat-mode row tuples (chunk_level='flat', hierarchy fields None)."""
     chunks = chunk_text(text)
     if not chunks:
-        return 0
+        return []
 
     embeddings = await embed_batch(chunks)
 
-    rows = [
+    return [
         (
             metadata["source_type"],
             metadata["url"],
@@ -143,16 +190,46 @@ async def process_document(text: str, metadata: dict, source_object_key: str | N
             source_object_key,
             metadata.get("jurisdiction"),
             classify_topic(metadata["title"], metadata["citation"], chunk),
+            None,  # heading_path (flat mode)
+            None,  # section_ref (flat mode)
+            "flat",  # chunk_level
+            None,  # parent_key (flat mode)
+            None,  # parent_content (flat mode)
         )
         for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))
     ]
-    chunk_count = await asyncio.to_thread(_upsert_chunks, rows)
 
-    superseded = _detect_superseded_citations(text) - {metadata["citation"]}
-    if superseded:
-        mapping = {old: metadata["citation"] for old in superseded}
-        marked = await asyncio.to_thread(_mark_superseded, mapping)
-        if marked:
-            print(f"    {metadata['citation']} marks {superseded} as superseded ({marked} chunks)")
 
-    return chunk_count
+async def _hierarchical_rows(text: str, metadata: dict, source_object_key: str | None) -> list[tuple]:
+    """Build hierarchical-mode row tuples from structure-aware child chunks."""
+    # Imported lazily to avoid a circular import (structure imports from pipeline).
+    from taxflow.services.knowledge.structure import hierarchical_chunk
+
+    records = hierarchical_chunk(text, metadata)
+    if not records:
+        return []
+
+    embeddings = await embed_batch([r.content for r in records])
+
+    return [
+        (
+            metadata["source_type"],
+            metadata["url"],
+            metadata["title"],
+            metadata["citation"],
+            record.content,
+            embedding,
+            index,
+            len(_encoder.encode(record.content)),
+            metadata.get("effective_date"),
+            source_object_key,
+            metadata.get("jurisdiction"),
+            record.topic,
+            record.heading_path or None,
+            record.section_ref or None,
+            record.chunk_level,
+            record.parent_key,
+            record.parent_content,
+        )
+        for index, (record, embedding) in enumerate(zip(records, embeddings))
+    ]

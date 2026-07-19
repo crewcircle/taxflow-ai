@@ -408,7 +408,7 @@ async def test_compiled_graph_astream_yields_mode_chunk_tuples():
         "_retrieve_context",
         new=AsyncMock(return_value=([{"id": 1, "citation": "x", "source_type": "ruling", "score": 1.0}], {"num_chunks": 1, "top_score": 1.0})),
     ), patch.object(
-        g.research_agent, "_build_context_string", return_value="ctx"
+        g.research_agent, "_build_context_string", return_value=("ctx", [{"citation": "x", "source_url": None, "parent_key": None, "chunks": [{"id": 1, "citation": "x", "content": "c", "source_url": None}]}])
     ), patch.object(
         g.research_agent, "_user_content", return_value="uc"
     ), patch.object(
