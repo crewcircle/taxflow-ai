@@ -176,6 +176,13 @@ class Settings(BaseSettings):
     # Each coupled subsystem is chosen by a provider knob so the concrete vendor
     # adapter is swappable via config, not code. Defaults reproduce today's stack.
     LLM_PROVIDER: str = "anthropic"
+    # Optional LiteLLM base URL + keys for routing generation to an OpenAI-
+    # compatible gateway (e.g. OpenCode). Empty LLM_API_BASE => Anthropic default
+    # (OpenCode strictly opt-in). Key-resolution precedence lives in
+    # providers.get_llm() and is documented in docs/model-routing.md.
+    LLM_API_BASE: str = ""
+    LLM_API_KEY: str = ""
+    OPENCODE_API_KEY: str = ""
     EMBEDDING_PROVIDER: str = "openai"
     RELATIONAL_PROVIDER: str = "postgres"
     AUTH_PROVIDER: str = "supabase"
@@ -201,6 +208,14 @@ class Settings(BaseSettings):
     MODEL_TIER_MAP: dict[str, str] = {
         "haiku": "anthropic/claude-haiku-4-5",
         "sonnet": "anthropic/claude-sonnet-4-6",
+        # Named per-agent tiers (all Anthropic today; concrete OpenCode IDs are
+        # set per-deployment in Doppler). resolve_model() also falls back through
+        # _TIER_ALIAS so an agent tier still resolves when omitted here.
+        "draft": "anthropic/claude-haiku-4-5",
+        "verify": "anthropic/claude-haiku-4-5",
+        "rerank": "anthropic/claude-haiku-4-5",
+        "classify": "anthropic/claude-haiku-4-5",
+        "verify_strong": "anthropic/claude-sonnet-4-6",
     }
 
     # Tokenizer used for chunk sizing (was hard-coded tiktoken cl100k_base).

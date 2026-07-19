@@ -100,6 +100,44 @@ def test_raw_pool_access_confined() -> None:
     )
 
 
+def test_no_hardcoded_model_ids_outside_adapters() -> None:
+    """Model IDs must resolve through ``providers.resolve_model(tier)`` (Workstream
+    A): no service/router code may reference a raw ``settings.ANTHROPIC_HAIKU_MODEL``
+    / ``ANTHROPIC_SONNET_MODEL`` / ``VERIFY_MODEL`` field OR a hardcoded literal
+    model/provider ID (``anthropic/...``, ``openai/...``, bare ``claude-*``,
+    ``gpt-*``). ``config.py`` (tier-map + legacy field definitions), ``providers.py``
+    (legacy fallback), and ``adapters/`` (the one place allowed to know concrete
+    vendor strings) are exempt."""
+    allowed = {"config.py", "providers.py"}
+    patterns = [
+        # raw settings fields that hold concrete model IDs
+        r"settings\.(ANTHROPIC_HAIKU_MODEL|ANTHROPIC_SONNET_MODEL|VERIFY_MODEL)\b",
+        # provider-prefixed LiteLLM routes, e.g. "anthropic/claude-...", "openai/gpt-..."
+        r"""["'](?:anthropic|openai)/[\w.\-]+["']""",
+        # bare vendor model IDs, e.g. "claude-haiku-4-5", "gpt-4o"
+        r"""["'](?:claude|gpt)-[\w.\-]+["']""",
+    ]
+    rxs = [re.compile(p) for p in patterns]
+    offenders: list[str] = []
+    for path in _py_files_outside_adapters():
+        if str(path.relative_to(SRC)) in allowed:
+            continue
+        for i, line in enumerate(path.read_text().splitlines(), start=1):
+            stripped = line.lstrip()
+            if stripped.startswith("#") or stripped.startswith("*"):
+                continue
+            if "``" in line or line.count('"') >= 4:
+                continue
+            if any(rx.search(line) for rx in rxs):
+                offenders.append(f"{path.relative_to(SRC)}:{i}  {stripped}")
+    assert not offenders, (
+        "Model IDs must resolve through providers.resolve_model(tier); raw "
+        "settings.ANTHROPIC_*_MODEL/VERIFY_MODEL fields and hardcoded literal model "
+        "IDs (anthropic/..., openai/..., claude-*, gpt-*) are only allowed in "
+        "config.py, providers.py, and adapters/. Found:\n" + "\n".join(offenders)
+    )
+
+
 def test_app_imports_cleanly_with_default_settings() -> None:
     """Boot check: the FastAPI app + composition root import with default
     (unconfigured-R2) settings, proving the wiring graph is sound."""

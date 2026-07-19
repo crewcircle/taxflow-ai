@@ -2,7 +2,6 @@ import json
 import re
 
 from taxflow import providers
-from taxflow.config import settings
 from taxflow.providers import get_relational_data
 
 REQUIRED_SECTIONS = [
@@ -44,7 +43,7 @@ class DraftAgent:
         result = await self._llm.generate(
             messages=[{"role": "user", "content": user}],
             system=system,
-            model=settings.ANTHROPIC_HAIKU_MODEL,
+            model=providers.resolve_model("draft"),
             max_tokens=2000,
             temperature=0.1,
         )

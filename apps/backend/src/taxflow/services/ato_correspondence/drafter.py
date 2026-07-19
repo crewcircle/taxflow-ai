@@ -1,7 +1,6 @@
 from datetime import date
 
 from taxflow import providers
-from taxflow.config import settings
 from taxflow.services.prompt_cache import cacheable_system
 
 SYSTEM_PROMPT = """You are drafting a formal letter to the Australian Taxation Office on behalf of
@@ -53,7 +52,7 @@ class ATOResponseDrafter:
         result = await self._llm.generate(
             messages=[{"role": "user", "content": user}],
             system=system_param,
-            model=settings.ANTHROPIC_HAIKU_MODEL,
+            model=providers.resolve_model("draft"),
             max_tokens=1200,
             temperature=0.1,
         )
