@@ -327,18 +327,18 @@ function AnswerActionsBar({
         Thanks for the feedback
       </span>
     ) : (
-      <div className="flex items-center gap-1.5">
-        <span className="text-xs font-medium text-muted-foreground">Helpful?</span>
+      <div className="flex items-center gap-1">
+        <span className="mr-0.5 text-xs text-muted-foreground">Helpful?</span>
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant={rating === "up" ? "secondary" : "ghost"}
-              size="sm"
+              size="icon-sm"
               disabled={submitting}
               onClick={() => submitFeedback("up", "")}
+              aria-label="Yes, this was helpful"
             >
               <ThumbsUp className="size-3.5" />
-              Yes
             </Button>
           </TooltipTrigger>
           <TooltipContent>Suggests this answer for Firm Knowledge (a partner approves it before it&apos;s used)</TooltipContent>
@@ -347,12 +347,12 @@ function AnswerActionsBar({
           <TooltipTrigger asChild>
             <Button
               variant={rating === "down" ? "secondary" : "ghost"}
-              size="sm"
+              size="icon-sm"
               disabled={submitting}
               onClick={() => setRating("down")}
+              aria-label="No, this wasn't helpful"
             >
               <ThumbsDown className="size-3.5" />
-              No
             </Button>
           </TooltipTrigger>
           <TooltipContent>Tell us what&apos;s wrong and we&apos;ll re-research it in the background</TooltipContent>
@@ -361,86 +361,81 @@ function AnswerActionsBar({
     );
 
   return (
-    <div className="space-y-2 rounded-lg border border-border bg-muted/40 p-3">
-      <div className="flex flex-wrap items-center gap-3">
-        {queryId && (
-          <>
-            {feedbackSegment}
-            <div className="h-6 w-px bg-border" aria-hidden />
-          </>
-        )}
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <ClientAutocomplete
-              value={clientRef}
-              onChange={onClientRefChange}
-              className="h-8 w-44 border-accent/30 bg-accent/5 text-xs"
-            />
-          </TooltipTrigger>
-          <TooltipContent>
-            Tag this answer with a client name - carries through automatically if you save it as a document below,
-            and lets you highlight their questions in the history panel
-          </TooltipContent>
-        </Tooltip>
-
-        <div className="h-6 w-px bg-border" aria-hidden />
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="secondary" size="sm" onClick={onCopy}>
-              <Copy className="size-3.5" />
-              {copied ? "Copied!" : "Copy"}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            Copies the plain answer text to your clipboard - handy for pasting into an email or another document
-          </TooltipContent>
-        </Tooltip>
-
-        <div className="h-6 w-px bg-border" aria-hidden />
-
-        {savedDocId ? (
+    <div className="space-y-2 rounded-xl border border-border bg-muted/30 p-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button asChild variant="secondary" size="sm">
-                <Link href="/dashboard/documents">View saved document →</Link>
-              </Button>
+              <ClientAutocomplete
+                value={clientRef}
+                onChange={onClientRefChange}
+                className="h-8 w-40 bg-background text-xs"
+              />
             </TooltipTrigger>
-            <TooltipContent>Opens the Documents list where this was just saved</TooltipContent>
+            <TooltipContent>
+              Tag this answer with a client name - carries through automatically if you save it as a document,
+              and lets you highlight their questions in the history panel
+            </TooltipContent>
           </Tooltip>
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
+
+          {savedDocId ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Select value={docType} onValueChange={onDocTypeChange}>
-                  <SelectTrigger size="sm" className="w-[220px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {templates.map((t) => (
-                      <SelectItem key={t.type} value={t.type}>
-                        {t.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </TooltipTrigger>
-              <TooltipContent>Choose the document style to generate - e.g. an advice memo vs. a client letter</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="secondary" size="sm" disabled={savingDoc} onClick={onSave}>
-                  <FileDown className="size-3.5" />
-                  {savingDoc ? "Saving..." : "Save as document"}
+                <Button asChild variant="secondary" size="sm">
+                  <Link href="/dashboard/documents">View saved document →</Link>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>
-                Saves this answer as a new {templates.find((t) => t.type === docType)?.label.toLowerCase() ?? "document"}{" "}
-                under Documents{clientRef.trim() ? `, tagged to ${clientRef.trim()}` : " (no client tagged)"}
-              </TooltipContent>
+              <TooltipContent>Opens the Documents list where this was just saved</TooltipContent>
             </Tooltip>
-          </div>
+          ) : (
+            <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Select value={docType} onValueChange={onDocTypeChange}>
+                    <SelectTrigger size="sm" className="w-[180px] bg-background">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {templates.map((t) => (
+                        <SelectItem key={t.type} value={t.type}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </TooltipTrigger>
+                <TooltipContent>Choose the document style to generate - e.g. an advice memo vs. a client letter</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button size="sm" disabled={savingDoc} onClick={onSave}>
+                    <FileDown className="size-3.5" />
+                    {savingDoc ? "Saving..." : "Save as document"}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Saves this answer as a new {templates.find((t) => t.type === docType)?.label.toLowerCase() ?? "document"}{" "}
+                  under Documents{clientRef.trim() ? `, tagged to ${clientRef.trim()}` : " (no client tagged)"}
+                </TooltipContent>
+              </Tooltip>
+            </>
+          )}
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="outline" size="sm" onClick={onCopy}>
+                <Copy className="size-3.5" />
+                {copied ? "Copied!" : "Copy"}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              Copies the plain answer text to your clipboard - handy for pasting into an email or another document
+            </TooltipContent>
+          </Tooltip>
+        </div>
+
+        {queryId && (
+          <div className="flex shrink-0 items-center gap-2 border-l border-border pl-3">{feedbackSegment}</div>
         )}
       </div>
 
