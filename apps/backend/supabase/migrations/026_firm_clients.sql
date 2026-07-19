@@ -12,10 +12,13 @@ CREATE TABLE firm_clients (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     client_id uuid NOT NULL REFERENCES clients(id),
     name text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (client_id, lower(name))
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- A plain UNIQUE table constraint can't take a function expression like
+-- lower(name) - a unique index is the correct (and, for ON CONFLICT
+-- purposes, equivalent) way to enforce this.
+CREATE UNIQUE INDEX ON firm_clients (client_id, lower(name));
 CREATE INDEX ON firm_clients (client_id, name);
 
 ALTER TABLE firm_clients ENABLE ROW LEVEL SECURITY;
