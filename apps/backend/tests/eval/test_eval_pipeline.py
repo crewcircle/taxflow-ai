@@ -44,16 +44,14 @@ RESULTS_DIR = EVAL_DIR / "results"
 QUESTIONS = json.loads((EVAL_DIR / "questions.json").read_text())
 
 
-def _build_context(candidates: list[dict]) -> str:
-    return "\n---\n".join(
-        f"[{i}] Citation: {c.get('citation')}\nContent: {c.get('content', '')}"
-        for i, c in enumerate(candidates, start=1)
-    )
-
-
 @pytest.mark.eval
 @pytest.mark.asyncio
-async def test_eval_pipeline_report_and_regression():
+async def test_eval_pipeline_report_and_regression(monkeypatch):
+    # Echo the exact rendered context run() generated from, so the judge grades
+    # against the real sources the answer saw (source-type boosts, firm/engagement
+    # merges, rerank/truncation, historical) — not a re-derived candidate list.
+    monkeypatch.setattr(settings, "EVAL_CAPTURE_CONTEXT", True)
+
     judge = EvalJudge()
     agent = ResearchAgent()
     per_question: list[dict] = []
@@ -76,12 +74,9 @@ async def test_eval_pipeline_report_and_regression():
         wall_time_ms = int((time.monotonic() - start) * 1000)
 
         # --- judge (eval overhead, separate cost) ----------------------------
-        trace_candidates = (
-            result.get("trace", {}).get("retrieval", {}).get("candidates", [])
-        )
-        retrieved_context = _build_context(
-            candidates[: len(trace_candidates)] or candidates
-        )
+        # Use the EXACT context the answer was generated from (eval_context),
+        # falling back to the answer's own trace-derived context only if absent.
+        retrieved_context = result.get("eval_context", "")
         verdict = await judge.score(
             question=q["question"],
             answer=result.get("answer", ""),
@@ -97,10 +92,17 @@ async def test_eval_pipeline_report_and_regression():
             model_tier,
             result.get("input_tokens", 0) or 0,
             result.get("output_tokens", 0) or 0,
-            cache_read=result.get("cache_read_tokens", 0) or 0,
-            cache_creation=result.get("cache_creation_tokens", 0) or 0,
+            cache_read=result.get("cache_read_input_tokens", 0) or 0,
+            cache_creation=result.get("cache_creation_input_tokens", 0) or 0,
         )
-        judge_cost = run_cost(settings.EVAL_JUDGE_TIER, 0, 0)
+        # Judge cost is real eval overhead: price the judge's own token usage,
+        # tracked separately and excluded from the production quality-per-dollar.
+        judge_usage = verdict.get("judge_usage", {})
+        judge_cost = run_cost(
+            settings.EVAL_JUDGE_TIER,
+            judge_usage.get("input_tokens", 0) or 0,
+            judge_usage.get("output_tokens", 0) or 0,
+        )
 
         per_question.append(
             {

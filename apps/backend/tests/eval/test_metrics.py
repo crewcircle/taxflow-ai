@@ -79,3 +79,23 @@ def test_ndcg_graded_uses_grades():
     dcg = 1.0 / math.log2(2) + 2.0 / math.log2(3)
     idcg = 2.0 / math.log2(2) + 1.0 / math.log2(3)
     assert got == pytest.approx(dcg / idcg)
+
+
+def test_ndcg_duplicate_citations_never_exceed_one():
+    # Duplicate retrieved citations must not inflate DCG above the ideal: each
+    # gold item is credited once, at the rank of its first match.
+    assert ndcg_at_k(["A", "A"], {"A"}, 2) == pytest.approx(1.0)
+    # A relevant item at rank 1 then repeated stays <= 1.0.
+    got = ndcg_at_k(["A", "A", "A"], {"A"}, 3)
+    assert got == pytest.approx(1.0)
+    assert got <= 1.0
+
+
+def test_ndcg_duplicate_with_second_gold_later():
+    # First hit credits A at rank 1; the duplicate A at rank 2 is ignored; B is
+    # credited at rank 3. Result must stay <= 1.0.
+    got = ndcg_at_k(["A", "A", "B"], {"A", "B"}, 3)
+    assert got <= 1.0
+    dcg = 1.0 / math.log2(2) + 1.0 / math.log2(4)
+    idcg = 1.0 / math.log2(2) + 1.0 / math.log2(3)
+    assert got == pytest.approx(dcg / idcg)

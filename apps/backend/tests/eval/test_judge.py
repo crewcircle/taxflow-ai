@@ -57,6 +57,9 @@ async def test_score_one_structured_call_resolved_model_and_dict_bridge(monkeypa
     assert isinstance(result, dict)
     assert result["faithfulness"] == 5
     assert result["hallucination"] is False
+    # Judge token usage is recorded (structured path -> tokenizer estimate).
+    assert result["judge_usage"]["input_tokens"] > 0
+    assert result["judge_usage"]["output_tokens"] > 0
 
 
 @pytest.mark.asyncio
@@ -95,6 +98,31 @@ async def test_score_tolerant_fallback_on_structured_parse_error(monkeypatch):
     assert fake_llm.generate.await_args.kwargs["model"] == providers.resolve_model("sonnet")
     assert result["faithfulness"] == 3
     assert result["hallucination"] is True
+    # Judge usage recorded on the fallback path too (estimate, MagicMock usage).
+    assert result["judge_usage"]["input_tokens"] > 0
+    assert result["judge_usage"]["output_tokens"] > 0
+
+
+@pytest.mark.asyncio
+async def test_score_uses_real_usage_when_available(monkeypatch):
+    from taxflow.ports.llm import LLMResult, Usage
+
+    fake_llm = MagicMock()
+    fake_llm.generate_structured = AsyncMock(side_effect=StructuredParseError("bad"))
+    fake_llm.generate = AsyncMock(
+        return_value=LLMResult(
+            text='{"faithfulness": 4, "relevance": 4, "citation_correctness": 4, "hallucination": false, "unsupported_claims": [], "rationale": "ok"}',
+            usage=Usage(input_tokens=123, output_tokens=45),
+        )
+    )
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+
+    judge = EvalJudge()
+    result = await judge.score(
+        question="q", answer="a", retrieved_context="ctx", citations=[]
+    )
+    # Real Usage from the plain generation is preferred over the estimate.
+    assert result["judge_usage"] == {"input_tokens": 123, "output_tokens": 45}
 
 
 @pytest.mark.asyncio

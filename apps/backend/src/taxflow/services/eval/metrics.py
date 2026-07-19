@@ -86,18 +86,28 @@ def ndcg_at_k(
     if k <= 0:
         return 0.0
 
-    def _grade_for(retrieved_citation: str) -> float:
+    def _grade_for(retrieved_citation: str) -> tuple[str, float]:
+        """The best-matching gold citation and its grade for a retrieved item.
+
+        Returns ``("", 0.0)`` when nothing matches.
+        """
+        best_gold = ""
         best = 0.0
         for g in gold:
             if match_citation(retrieved_citation, {g}):
                 gain = grades.get(g, 1.0) if grades else 1.0
-                best = max(best, gain)
-        return best
+                if gain > best:
+                    best_gold, best = g, gain
+        return best_gold, best
 
     dcg = 0.0
+    # Award each gold item's gain at most once, at the rank of its FIRST match,
+    # so duplicate retrieved citations can't inflate DCG above the ideal.
+    credited: set[str] = set()
     for i, r in enumerate(retrieved[:k], start=1):
-        gain = _grade_for(r)
-        if gain:
+        gold_hit, gain = _grade_for(r)
+        if gain and gold_hit not in credited:
+            credited.add(gold_hit)
             dcg += gain / math.log2(i + 1)
 
     # Ideal ordering: the highest gold grades first, capped at k.

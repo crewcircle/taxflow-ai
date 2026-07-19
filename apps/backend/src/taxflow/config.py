@@ -255,6 +255,12 @@ class Settings(BaseSettings):
     # Regression tolerance (absolute metric delta) below which a run-over-run
     # change is treated as noise rather than a regression.
     EVAL_REGRESSION_TOLERANCE: float = 0.05
+    # Eval-only: when True, ResearchAgent.run() echoes the EXACT rendered context
+    # string it generated from back on the result (``eval_context``) so the
+    # LLM-as-judge grades against the sources the answer actually saw — not a
+    # re-derived candidate list. Default False keeps production output unchanged;
+    # only the paid eval runner flips it on.
+    EVAL_CAPTURE_CONTEXT: bool = False
 
     # Object storage (S3-compatible / Cloudflare R2). Moved out of os.environ in
     # services/storage/r2.py into config. Empty defaults preserve the graceful

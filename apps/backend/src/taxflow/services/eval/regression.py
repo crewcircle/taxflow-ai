@@ -29,7 +29,15 @@ _LOWER_BETTER = ("hallucination_rate",)
 
 
 def _diff_group(current: dict, baseline: dict, tolerance: float) -> dict:
-    """Per-metric deltas + regression flags for one roll-up group."""
+    """Per-metric deltas + regression flags for one roll-up group.
+
+    When ``baseline`` is empty (no baseline for this group yet), we still report
+    deltas-vs-zero for context but flag NO regressions and set
+    ``baseline_missing=True`` — otherwise a lower-is-better metric (e.g.
+    hallucination_rate) would be spuriously flagged as a regression against an
+    implicit zero baseline on the very first run.
+    """
+    baseline_missing = not baseline
     deltas: dict = {}
     regressions: list[str] = []
     for metric in _HIGHER_BETTER:
@@ -37,16 +45,20 @@ def _diff_group(current: dict, baseline: dict, tolerance: float) -> dict:
         base = float(baseline.get(metric, 0.0) or 0.0)
         delta = cur - base
         deltas[metric] = delta
-        if delta < -tolerance:
+        if not baseline_missing and delta < -tolerance:
             regressions.append(metric)
     for metric in _LOWER_BETTER:
         cur = float(current.get(metric, 0.0) or 0.0)
         base = float(baseline.get(metric, 0.0) or 0.0)
         delta = cur - base
         deltas[metric] = delta
-        if delta > tolerance:
+        if not baseline_missing and delta > tolerance:
             regressions.append(metric)
-    return {"deltas": deltas, "regressions": regressions}
+    return {
+        "deltas": deltas,
+        "regressions": regressions,
+        "baseline_missing": baseline_missing,
+    }
 
 
 def diff_against_baseline(current: dict, baseline: dict, tolerance: float) -> dict:
@@ -54,9 +66,9 @@ def diff_against_baseline(current: dict, baseline: dict, tolerance: float) -> di
 
     Both inputs are :func:`taxflow.services.eval.scoring.aggregate` outputs.
     Returns overall + per-topic + per-tier deltas with ``regressions`` flags, and
-    a top-level ``has_regressions`` bool. A missing baseline group is treated as
-    all-zeros (so a new category never spuriously flags — its higher-is-better
-    deltas are positive).
+    a top-level ``has_regressions`` bool. A missing baseline group reports
+    ``baseline_missing=True`` and flags NO regressions (so the first run, or a
+    brand-new category/tier, never spuriously reports a regression).
     """
     result: dict = {
         "overall": _diff_group(

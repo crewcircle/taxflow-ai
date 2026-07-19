@@ -63,12 +63,29 @@ def test_per_category_regression_flagged():
     assert diff["has_regressions"] is True
 
 
-def test_missing_baseline_group_treated_as_zero():
+def test_missing_baseline_group_flags_no_regression():
     current = _agg(category="new_topic")
     baseline = _agg()  # no by_category
     diff = diff_against_baseline(current, baseline, tolerance=0.05)
-    # New category's higher-is-better metrics are positive deltas -> no regression.
-    assert diff["by_category"]["new_topic"]["regressions"] == []
+    entry = diff["by_category"]["new_topic"]
+    # New category has no baseline -> baseline_missing, never a regression.
+    assert entry["baseline_missing"] is True
+    assert entry["regressions"] == []
+
+
+def test_empty_baseline_never_reports_regression():
+    # First run against a seeded-empty baseline: even a lower-is-better metric
+    # (hallucination_rate) present in current must NOT be flagged.
+    current = _agg(halluc=0.5)
+    diff = diff_against_baseline(current, {}, tolerance=0.05)
+    assert diff["overall"]["baseline_missing"] is True
+    assert diff["overall"]["regressions"] == []
+    assert diff["has_regressions"] is False
+
+
+def test_present_baseline_is_not_missing():
+    diff = diff_against_baseline(_agg(), _agg(), tolerance=0.05)
+    assert diff["overall"]["baseline_missing"] is False
 
 
 def test_load_baseline_missing_and_empty(tmp_path):

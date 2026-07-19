@@ -13,13 +13,11 @@ verdict so a single malformed judge response never crashes an eval run.
 
 from __future__ import annotations
 
-import json
-import re
-
 from taxflow import providers
 from taxflow.config import settings
 from taxflow.ports.llm import StructuredParseError
 from taxflow.services.eval.models import JudgeScore
+from taxflow.services.json_utils import extract_json_object
 from taxflow.services.prompt_cache import cacheable_system
 
 SYSTEM_PROMPT = """You are a senior Australian tax lawyer acting as an impartial \
@@ -59,37 +57,15 @@ Return ONLY a JSON object with this exact schema, no preamble or explanation:
 
 
 def _parse_judge(text: str) -> dict:
-    """Tolerantly extract the judge JSON (copied from verify._parse_verification).
+    """Tolerantly extract the judge JSON.
 
-    Tries direct json.loads, then fence-stripped, then the first balanced
-    ``{...}`` object; falls back to a ``parse_error`` verdict when all fail.
+    Delegates the fence/prose-tolerant JSON extraction to the shared
+    :func:`extract_json_object` helper, then applies the judge's own fallback: a
+    ``parse_error`` verdict when no JSON object could be recovered.
     """
-    text = (text or "").strip()
-
-    def _try(candidate: str) -> dict | None:
-        try:
-            parsed = json.loads(candidate)
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
-            return None
-
-    result = _try(text)
+    result = extract_json_object(text)
     if result is not None:
         return result
-
-    stripped = text
-    if stripped.startswith("```"):
-        stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped
-        stripped = stripped.rsplit("```", 1)[0].strip()
-        result = _try(stripped)
-        if result is not None:
-            return result
-
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        result = _try(match.group(0))
-        if result is not None:
-            return result
 
     return {
         "faithfulness": 0,
@@ -148,9 +124,43 @@ class EvalJudge:
                 max_tokens=1500,
                 temperature=0,
             )
-            return _parse_judge(response.text or "")
+            verdict = _parse_judge(response.text or "")
+            # Prefer the real usage from the plain generation; estimate if absent.
+            usage = getattr(response, "usage", None)
+            verdict["judge_usage"] = _usage_dict(
+                usage, prompt=SYSTEM_PROMPT + "\n" + user, output=response.text or ""
+            )
+            return verdict
         # Bridge to a dict so downstream aggregation stays dict-shaped.
-        return result.model_dump()
+        verdict = result.model_dump()
+        # The structured path returns no Usage object, so estimate judge tokens
+        # from the prompt + the rendered verdict — enough for the separate
+        # judge_cost line (eval overhead, excluded from production QPD).
+        verdict["judge_usage"] = _usage_dict(
+            None, prompt=SYSTEM_PROMPT + "\n" + user, output=result.model_dump_json()
+        )
+        return verdict
+
+
+def _usage_dict(usage, *, prompt: str, output: str) -> dict:
+    """Judge token usage: the real Usage when non-zero, else a tokenizer estimate.
+
+    Only ``input_tokens``/``output_tokens`` are needed for the judge_cost line;
+    cache counters are irrelevant to eval-overhead accounting.
+    """
+    if usage is not None:
+        try:
+            input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+            output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            input_tokens = output_tokens = 0
+        if input_tokens or output_tokens:
+            return {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    tokenizer = providers.get_tokenizer()
+    return {
+        "input_tokens": tokenizer.count(prompt),
+        "output_tokens": tokenizer.count(output),
+    }
 
 
 def _format_citations(citations: list[dict]) -> str:
