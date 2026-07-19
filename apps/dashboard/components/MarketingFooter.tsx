@@ -20,7 +20,7 @@ export function MarketingFooter() {
       <div className="mx-auto max-w-7xl px-6 py-16">
         <div className="grid grid-cols-1 gap-12 md:grid-cols-4">
           <div className="md:col-span-2">
-            <Logo />
+            <Logo onDark />
             <p className="mt-4 max-w-xs text-sm text-primary-foreground/60 leading-relaxed">
               AI research and correspondence tools for Australian accounting firms.
               Built by CrewCircle.

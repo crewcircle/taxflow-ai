@@ -85,15 +85,6 @@ export default async function Home() {
               every claim checked before you see it.
             </p>
 
-            <div className="flex flex-col justify-center gap-4 sm:flex-row">
-              <Button asChild size="lg" className="bg-accent text-accent-foreground hover:opacity-90">
-                <Link href="/signup">Start your free trial</Link>
-              </Button>
-              <Button asChild size="lg" variant="outline">
-                <Link href="/pricing">See pricing</Link>
-              </Button>
-            </div>
-
             <DemoCallout />
           </div>
         </section>
@@ -200,7 +191,12 @@ export default async function Home() {
               <Button asChild size="lg" className="bg-accent text-accent-foreground hover:opacity-90">
                 <Link href="/signup">Start your free trial</Link>
               </Button>
-              <Button asChild size="lg" variant="outline" className="border-primary-foreground/20 text-primary-foreground hover:bg-primary-foreground/10">
+              <Button
+                asChild
+                size="lg"
+                variant="outline"
+                className="border-primary-foreground/30 bg-transparent text-primary-foreground hover:bg-primary-foreground/10"
+              >
                 <Link href="/login">Try the live demo</Link>
               </Button>
             </div>
