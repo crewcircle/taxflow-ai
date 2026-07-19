@@ -1,10 +1,8 @@
-import json
-import re
-
 from taxflow import providers
 from taxflow.config import settings
 from taxflow.ports.llm import StructuredParseError
 from taxflow.services.agents.models import VerificationResult
+from taxflow.services.json_utils import extract_json_object
 from taxflow.services.prompt_cache import cacheable_system
 
 SYSTEM_PROMPT = """You are a senior Australian tax lawyer reviewing an AI-drafted advice memo.
@@ -74,39 +72,13 @@ def verify_model_for(confidence: float, citations: list[dict], answer: str) -> s
 def _parse_verification(text: str) -> dict:
     """Tolerantly extract the verification JSON (Task C3).
 
-    Models often wrap JSON in ```json fences or add stray prose despite the
-    instructions. Rather than fragile fence-stripping only, we try, in order:
-      1. direct json.loads,
-      2. fence-stripped json.loads,
-      3. the first balanced {...} object found anywhere in the text.
-    Falls back to a parse_error result (kept from the original) if all fail.
+    Delegates the fence/prose-tolerant JSON extraction to the shared
+    :func:`extract_json_object` helper, then applies verify's own fallback: a
+    parse_error verdict when no JSON object could be recovered.
     """
-    text = (text or "").strip()
-
-    def _try(candidate: str) -> dict | None:
-        try:
-            parsed = json.loads(candidate)
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
-            return None
-
-    result = _try(text)
+    result = extract_json_object(text)
     if result is not None:
         return result
-
-    stripped = text
-    if stripped.startswith("```"):
-        stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped
-        stripped = stripped.rsplit("```", 1)[0].strip()
-        result = _try(stripped)
-        if result is not None:
-            return result
-
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        result = _try(match.group(0))
-        if result is not None:
-            return result
 
     return {
         "overall_status": "parse_error",

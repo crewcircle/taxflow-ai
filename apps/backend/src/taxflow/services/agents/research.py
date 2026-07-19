@@ -1023,7 +1023,7 @@ class ResearchAgent:
             client_id, self._cited_firm_ids(citations, chunks)
         )
 
-        return {
+        result = {
             "answer": answer,
             "citations": citations,
             "confidence": confidence,
@@ -1044,6 +1044,12 @@ class ResearchAgent:
                 client_ref=client_ref,
             ),
         }
+        # Eval-only (default off): echo the EXACT rendered context the answer was
+        # generated from, so the LLM-as-judge grades against the real sources
+        # rather than a re-derived candidate list. Never emitted in production.
+        if settings.EVAL_CAPTURE_CONTEXT:
+            result["eval_context"] = context
+        return result
 
     async def regenerate_with_feedback(
         self,
