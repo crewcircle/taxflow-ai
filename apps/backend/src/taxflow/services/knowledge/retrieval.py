@@ -133,7 +133,7 @@ async def _llm_rerank(query: str, candidates: list[dict], pool_scale: int = 1) -
         result = await providers.get_llm().generate_structured(
             messages=[{"role": "user", "content": user}],
             system=system,
-            model=settings.ANTHROPIC_HAIKU_MODEL,
+            model=providers.resolve_model("rerank"),
             output_model=RerankScores,
             max_tokens=500,
             temperature=0,
@@ -146,7 +146,7 @@ async def _llm_rerank(query: str, candidates: list[dict], pool_scale: int = 1) -
             response = await providers.get_llm().generate(
                 messages=[{"role": "user", "content": user}],
                 system=system,
-                model=settings.ANTHROPIC_HAIKU_MODEL,
+                model=providers.resolve_model("rerank"),
                 max_tokens=500,
                 temperature=0,
             )

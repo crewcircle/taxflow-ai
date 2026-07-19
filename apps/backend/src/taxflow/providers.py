@@ -20,22 +20,45 @@ from taxflow.config import settings
 
 
 # --- model tier resolution ---------------------------------------------------
-def resolve_model(tier: str) -> str:
-    """Map an abstract model tier ("haiku"/"sonnet") to a concrete model string.
+# Named agent tiers alias onto the two base tiers so an agent tier still resolves
+# to a concrete model when it is absent from MODEL_TIER_MAP (e.g. a deployment
+# only overrides "haiku"/"sonnet"). draft/rerank/classify/verify -> haiku,
+# verify_strong -> sonnet.
+_TIER_ALIAS = {
+    "draft": "haiku",
+    "rerank": "haiku",
+    "classify": "haiku",
+    "verify": "haiku",
+    "verify_strong": "sonnet",
+}
 
-    Prefers ``settings.MODEL_TIER_MAP``; falls back to the legacy
-    ``ANTHROPIC_*_MODEL`` fields so behaviour is unchanged when the map is absent.
+
+def resolve_model(tier: str) -> str:
+    """Map an abstract model tier ("haiku"/"sonnet" or a named agent tier) to a
+    concrete LiteLLM model string.
+
+    Resolution order:
+      1. ``settings.MODEL_TIER_MAP[tier]`` (direct hit),
+      2. ``settings.MODEL_TIER_MAP[_TIER_ALIAS[tier]]`` (agent tier -> base tier),
+      3. the legacy ``ANTHROPIC_*_MODEL`` fields (prefixing bare Claude IDs),
+      4. the ``tier`` string verbatim (treated as an explicit model string).
     """
     mapped = settings.MODEL_TIER_MAP.get(tier)
     if mapped:
         return mapped
+    alias = _TIER_ALIAS.get(tier)
+    if alias:
+        aliased = settings.MODEL_TIER_MAP.get(alias)
+        if aliased:
+            return aliased
     legacy = {
         "haiku": settings.ANTHROPIC_HAIKU_MODEL,
         "sonnet": settings.ANTHROPIC_SONNET_MODEL,
     }
-    if tier in legacy:
+    legacy_tier = alias or tier
+    if legacy_tier in legacy:
         # Legacy fields are bare Claude IDs; prefix so LiteLLM routes to Anthropic.
-        model = legacy[tier]
+        model = legacy[legacy_tier]
         return model if "/" in model else f"anthropic/{model}"
     # Unknown tier: treat it as an explicit model string.
     return tier
@@ -48,7 +71,21 @@ def get_llm():
     if settings.LLM_PROVIDER == "anthropic" or settings.LLM_PROVIDER == "litellm":
         from taxflow.adapters.llm.litellm_adapter import LiteLLMAdapter
 
-        return LiteLLMAdapter(api_key=settings.ANTHROPIC_API_KEY)
+        # Key-resolution contract (conditional on LLM_API_BASE so OpenCode stays
+        # strictly opt-in): when a base URL is set the OpenCode key participates;
+        # when it is empty OPENCODE_API_KEY is ignored so it can never be sent to
+        # Anthropic. LLM_API_KEY is the generic override that always wins. See
+        # docs/model-routing.md.
+        if settings.LLM_API_BASE:
+            api_key = (
+                settings.LLM_API_KEY
+                or settings.OPENCODE_API_KEY
+                or settings.ANTHROPIC_API_KEY
+            )
+        else:
+            api_key = settings.LLM_API_KEY or settings.ANTHROPIC_API_KEY
+
+        return LiteLLMAdapter(api_key=api_key, api_base=settings.LLM_API_BASE or None)
     raise ValueError(f"Unknown LLM_PROVIDER: {settings.LLM_PROVIDER}")
 
 

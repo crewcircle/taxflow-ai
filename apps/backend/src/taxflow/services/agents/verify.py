@@ -64,7 +64,11 @@ def verify_model_for(confidence: float, citations: list[dict], answer: str) -> s
     admission — where a stronger reviewer is worth the cost.
     """
     severe = not citations or INSUFFICIENT_PHRASE in (answer or "").lower()
-    return settings.ANTHROPIC_SONNET_MODEL if severe else settings.VERIFY_MODEL
+    return (
+        providers.resolve_model("verify_strong")
+        if severe
+        else providers.resolve_model("verify")
+    )
 
 
 def _parse_verification(text: str) -> dict:
@@ -157,7 +161,7 @@ class VerifyAgent:
             f"Source documents for verification:\n{_format_citations(citations)}"
         )
         system = _system_blocks()
-        resolved_model = model or settings.VERIFY_MODEL
+        resolved_model = model or providers.resolve_model("verify")
         try:
             result = await providers.get_llm().generate_structured(
                 messages=[{"role": "user", "content": user}],

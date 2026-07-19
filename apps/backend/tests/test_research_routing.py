@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from taxflow.config import settings
+from taxflow import providers
 from taxflow.services.agents.research import ResearchAgent, route_model
 
 
@@ -86,7 +87,7 @@ async def test_run_generates_once_with_routed_model():
         result = await agent.run(question="q", client_id="cid")
 
     mock_gen.assert_awaited_once()  # exactly one generation call per query
-    assert mock_gen.await_args.args[2] == settings.ANTHROPIC_HAIKU_MODEL
+    assert mock_gen.await_args.args[2] == providers.resolve_model("haiku")
     assert result["model_used"] == "haiku"
     assert result["cache_read_input_tokens"] == 3
 
@@ -112,7 +113,7 @@ async def test_run_routes_hard_question_to_sonnet_single_call():
         result = await agent.run(question="q", client_id="cid")
 
     mock_gen.assert_awaited_once()
-    assert mock_gen.await_args.args[2] == settings.ANTHROPIC_SONNET_MODEL
+    assert mock_gen.await_args.args[2] == providers.resolve_model("sonnet")
     assert result["model_used"] == "sonnet"
 
 

@@ -76,7 +76,7 @@ def _build_messages(messages: Messages, system: SystemPrompt | None) -> list[dic
 class LiteLLMAdapter:
     """Concrete :class:`LLMPort` backed by ``litellm.acompletion``."""
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, api_base: str | None = None) -> None:
         # The composition root injects the configured provider key (e.g.
         # ``settings.ANTHROPIC_API_KEY``). Pydantic ``BaseSettings(env_file=...)``
         # does NOT export values into ``os.environ``, so relying on LiteLLM's
@@ -84,6 +84,9 @@ class LiteLLMAdapter:
         # keys only via ``apps/backend/.env``. Passing the key explicitly (None
         # falls back to LiteLLM's env lookup) keeps both paths working.
         self._api_key = api_key or None
+        # Optional OpenAI-compatible base URL (e.g. OpenCode). ``None`` preserves
+        # the current Anthropic behaviour (LiteLLM uses its default endpoints).
+        self._api_base = api_base or None
 
     async def generate(
         self,
@@ -100,6 +103,7 @@ class LiteLLMAdapter:
             max_tokens=max_tokens,
             temperature=temperature,
             api_key=self._api_key,
+            api_base=self._api_base,
         )
         text = resp.choices[0].message.content or ""
         usage = _map_usage(getattr(resp, "usage", None))
@@ -130,6 +134,7 @@ class LiteLLMAdapter:
                 stream=True,
                 stream_options={"include_usage": True},
                 api_key=self._api_key,
+                api_base=self._api_base,
             )
             final_usage: Usage | None = None
             async for chunk in stream:
@@ -163,6 +168,7 @@ class LiteLLMAdapter:
             temperature=temperature,
             response_format=output_model,
             api_key=self._api_key,
+            api_base=self._api_base,
         )
         content = resp.choices[0].message.content or ""
         try:

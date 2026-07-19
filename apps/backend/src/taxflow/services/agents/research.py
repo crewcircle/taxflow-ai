@@ -989,7 +989,7 @@ class ResearchAgent:
     @staticmethod
     def _model_for(routed: str) -> str:
         """Map a route_model() decision ("haiku"/"sonnet") to the configured model id."""
-        return settings.ANTHROPIC_SONNET_MODEL if routed == "sonnet" else settings.ANTHROPIC_HAIKU_MODEL
+        return providers.resolve_model(routed)
 
     async def run(
         self,
@@ -1097,7 +1097,7 @@ class ResearchAgent:
         )
 
         answer, stats = await self._generate(
-            question, corrective_context, settings.ANTHROPIC_SONNET_MODEL, steering=steering
+            question, corrective_context, providers.resolve_model("sonnet"), steering=steering
         )
         citations = self._parse_citations(answer, chunks)
         confidence = self._estimate_confidence(answer, chunks, citations)

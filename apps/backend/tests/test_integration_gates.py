@@ -100,6 +100,33 @@ def test_raw_pool_access_confined() -> None:
     )
 
 
+def test_no_hardcoded_model_ids_outside_adapters() -> None:
+    """Model IDs must resolve through ``providers.resolve_model(tier)`` (Workstream
+    A): no service/router code may reference the raw ``settings.ANTHROPIC_HAIKU_MODEL``
+    / ``ANTHROPIC_SONNET_MODEL`` / ``VERIFY_MODEL`` fields. ``config.py`` (definitions)
+    and ``providers.py`` (legacy fallback) are the only allowed references."""
+    allowed = {"config.py", "providers.py"}
+    pattern = r"settings\.(ANTHROPIC_HAIKU_MODEL|ANTHROPIC_SONNET_MODEL|VERIFY_MODEL)\b"
+    rx = re.compile(pattern)
+    offenders: list[str] = []
+    for path in _py_files_outside_adapters():
+        if str(path.relative_to(SRC)) in allowed:
+            continue
+        for i, line in enumerate(path.read_text().splitlines(), start=1):
+            stripped = line.lstrip()
+            if stripped.startswith("#") or stripped.startswith("*"):
+                continue
+            if "``" in line or line.count('"') >= 4:
+                continue
+            if rx.search(line):
+                offenders.append(f"{path.relative_to(SRC)}:{i}  {stripped}")
+    assert not offenders, (
+        "Model IDs must resolve through providers.resolve_model(tier); raw "
+        "settings.ANTHROPIC_*_MODEL/VERIFY_MODEL is only allowed in config.py + "
+        "providers.py. Found:\n" + "\n".join(offenders)
+    )
+
+
 def test_app_imports_cleanly_with_default_settings() -> None:
     """Boot check: the FastAPI app + composition root import with default
     (unconfigured-R2) settings, proving the wiring graph is sound."""
