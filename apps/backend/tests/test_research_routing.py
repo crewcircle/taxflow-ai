@@ -128,7 +128,7 @@ async def test_retrieve_context_reuses_embedding_without_re_embedding():
         "taxflow.services.agents.research.generate_candidates", new=AsyncMock(return_value=[])
     ) as mock_gen, patch(
         "taxflow.services.agents.research.rerank_candidates",
-        new=AsyncMock(side_effect=lambda q, c: c),
+        new=AsyncMock(side_effect=lambda q, c, pool_scale=1: c),
     ), patch.object(
         agent, "_firm_knowledge_search", new=AsyncMock(return_value=[])
     ) as mock_firm, patch(

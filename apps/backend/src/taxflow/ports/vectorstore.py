@@ -20,6 +20,8 @@ class VectorHit(TypedDict, total=False):
     source_type: str | None
     last_scraped_at: object  # datetime | None; kept loose to match row shapes
     score: float
+    superseded_by: str | None
+    is_current: bool
 
 
 @runtime_checkable
@@ -46,4 +48,21 @@ class VectorStorePort(Protocol):
         embedding: list[float],
         client_id: str,
         limit: int = 4,
+    ) -> list[VectorHit]: ...
+
+    async def engagement_search(
+        self,
+        *,
+        embedding: list[float],
+        client_id: str,
+        client_ref: str,
+        limit: int = 4,
+    ) -> list[VectorHit]: ...
+
+    async def historical_search(
+        self,
+        *,
+        embedding: list[float],
+        source_types: list[str] | None = None,
+        limit: int = 3,
     ) -> list[VectorHit]: ...

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from taxflow.config import settings
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.middleware.trial_gate import check_trial_gate, increment_usage
@@ -33,6 +34,10 @@ class QueryRequest(BaseModel):
     # to the same session_id only — never across sessions or clients. Omitting it
     # (single-shot query) behaves exactly as before.
     session_id: str | None = None
+    # Task C4: an optional client-engagement reference. When present, prior
+    # engagement memos saved for this same client_ref are retrieved as advisory
+    # context (already a query param on GET /stream; added here for POST parity).
+    client_ref: str | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -44,14 +49,32 @@ def _build_final_trace(
     trace: dict | None,
     verification: dict | None,
     corrected: dict | None,
+    *,
+    re_retrieved: bool = False,
+    re_reason: str | None = None,
+    re_detail: str | None = None,
+    first_pass: dict | None = None,
 ) -> dict:
     """Combine the agent's retrieval/generation trace with the verify (+ optional
     corrective regeneration) stage into the single record persisted on the
     queries row and shown in the "why this answer?" UI. `trace` is None for a
-    cache hit (no pipeline actually ran)."""
+    cache hit (no pipeline actually ran).
+
+    The top-level ``retrieval``/``generation`` blocks always describe the FINAL
+    stored answer (the corrected/widened one when a corrective pass ran). When a
+    corrective pass ran, ``trace.passes`` carries the first-pass-vs-corrected
+    diff — ``first_pass`` comes from the ``AgentState["first_pass"]`` snapshot
+    (works for BOTH POST and SSE, since the corrective pass overwrites
+    ``final["confidence"]``) and ``corrected`` from the corrected pass's trace.
+    ``trace.re_retrieval`` is emitted only when a re-retrieval actually fired."""
     if trace is None:
         return {"retrieval": None, "generation": {"model": "cache"}, "verification": None}
-    result = {"retrieval": trace["retrieval"], "generation": trace["generation"]}
+    # Shallow-copy the agent trace so additive top-level blocks the agent builds
+    # (``firm``/``session`` — firm profile/voice/items/usage_trend, prior turns,
+    # engagement memos, client_ref — and any future block) survive into the
+    # persisted/returned trace. ``retrieval``/``generation`` come straight from
+    # ``trace`` so they still describe the FINAL stored answer.
+    result = dict(trace)
     if verification is None:
         result["verification"] = {"ran": False}
     else:
@@ -63,6 +86,30 @@ def _build_final_trace(
         }
     if corrected is not None:
         result["corrective_generation"] = corrected["trace"]["generation"]
+        # The stored answer is the corrected one, so the top-level blocks already
+        # describe it; trace.passes records the first-pass-vs-corrected diff. The
+        # first-pass meta comes from the state snapshot (POST must not read
+        # final["confidence"], which the corrective pass overwrote).
+        first = first_pass or {}
+        corrected_gen = corrected["trace"]["generation"]
+        result["passes"] = {
+            "first_pass": {
+                "model": first.get("model"),
+                "confidence": first.get("confidence"),
+            },
+            "corrected": {
+                "model": corrected_gen.get("model"),
+                "confidence": corrected_gen.get("confidence"),
+            },
+            "changed": True,
+        }
+    # Re-retrieval block: omitted entirely unless a re-retrieval fired.
+    if re_retrieved:
+        result["re_retrieval"] = {
+            "fired": True,
+            "reason": re_reason or "weak_signal",
+            "detail": re_detail,
+        }
     return result
 
 
@@ -170,6 +217,7 @@ async def submit_query(
                 "module": body.module,
                 "status": "processing",
                 "session_id": body.session_id,
+                "client_ref": body.client_ref,
             }
         )
         return row["id"]
@@ -193,6 +241,7 @@ async def submit_query(
             "client": client,
             "client_id": client["id"],
             "session_id": body.session_id,
+            "client_ref": body.client_ref,
             "embedding": embedding,
             "streaming": False,
             "corrective_count": 0,
@@ -225,7 +274,15 @@ async def submit_query(
             "cache_read_input_tokens": final.get("cache_read_input_tokens"),
             "cache_creation_input_tokens": final.get("cache_creation_input_tokens"),
         }
-        trace = _build_final_trace(final.get("trace"), verification, corrected_meta)
+        trace = _build_final_trace(
+            final.get("trace"),
+            verification,
+            corrected_meta,
+            re_retrieved=final.get("re_retrieved", False),
+            re_reason=final.get("re_reason"),
+            re_detail=final.get("re_detail"),
+            first_pass=final.get("first_pass"),
+        )
 
         update = {
             "status": "completed",
@@ -440,6 +497,7 @@ async def stream_query(
             "client": client,
             "client_id": client["id"],
             "session_id": session_id,
+            "client_ref": client_ref,
             "embedding": embedding,
             "streaming": True,
             "corrective_count": 0,
@@ -512,7 +570,15 @@ async def stream_query(
         # marks this row 'completed', so it never counts itself.
         repeat_count = await answer_cache.count_prior_asks(client["id"], question)
 
-        trace = _build_final_trace(final.get("trace"), verification, corrected_meta)
+        trace = _build_final_trace(
+            final.get("trace"),
+            verification,
+            corrected_meta,
+            re_retrieved=final.get("re_retrieved", False),
+            re_reason=final.get("re_reason"),
+            re_detail=final.get("re_detail"),
+            first_pass=final.get("first_pass"),
+        )
 
         # Task C5: persist model_used/confidence/tokens/wall_time on the stream
         # path (previously only POST /query stored these), plus the B1 cache
@@ -609,7 +675,63 @@ async def submit_feedback(
             "note": body.note,
         },
     )
-    return {"id": row["id"], "query_id": query_id, "rating": body.rating}
+    feedback_id = row["id"]
+
+    # Task C2: a thumbs-DOWN WITH a note enqueues an async re-research job so the
+    # background worker can re-run the answer with the user's stated issue and a
+    # widened retrieval pool. Reviewer/verify flags stay synchronous (the inline
+    # corrective pass) and are never enqueued here. The enqueue is at-most-once
+    # per feedback row (UNIQUE(feedback_id) + ON CONFLICT DO NOTHING) — a dup
+    # feedback returns None and does NOT re-enqueue or re-flag the query.
+    re_research_enqueued = False
+    note = (body.note or "").strip()
+    if body.rating == "down" and note and settings.RE_RESEARCH_ENABLED:
+        job = await asyncio.to_thread(
+            db.re_research_jobs.enqueue,
+            {
+                "client_id": client["id"],
+                "query_id": query_id,
+                "feedback_id": feedback_id,
+                "feedback_note": note,
+                "original_answer": owned.get("final_answer"),
+            },
+        )
+        if job is not None:
+            re_research_enqueued = True
+            await asyncio.to_thread(
+                db.queries.set_re_research_status, client["id"], query_id, "pending"
+            )
+
+    # Task C5: a thumbs-UP creates a PENDING knowledge_suggestion from the
+    # question + answer (approval-gated learning loop — a partner later approves
+    # it into firm_knowledge). De-duped per query via exists_for_query so a
+    # second thumbs-up on the same query never creates a second pending
+    # suggestion. Best-effort: a suggestion failure never fails the feedback.
+    if body.rating == "up" and settings.LEARNING_LOOP_ENABLED:
+        already = await asyncio.to_thread(
+            db.knowledge_suggestions.exists_for_query, client["id"], query_id
+        )
+        if not already:
+            title = (owned.get("question") or "").strip()[:80] or "Suggested note"
+            content = (owned.get("final_answer") or "").strip()
+            if content:
+                await asyncio.to_thread(
+                    db.knowledge_suggestions.insert,
+                    {
+                        "client_id": client["id"],
+                        "source_query_id": query_id,
+                        "title": title,
+                        "content": content,
+                        "reason": "thumbs_up",
+                    },
+                )
+
+    return {
+        "id": feedback_id,
+        "query_id": query_id,
+        "rating": body.rating,
+        "re_research_enqueued": re_research_enqueued,
+    }
 
 
 # Must stay below /stream - FastAPI matches routes in declaration order, and this

@@ -211,7 +211,7 @@ class QueriesRepo:
             """
             SELECT id, question, status, model_used, confidence_score,
                    verification_result, client_ref, context_note, topic_tag,
-                   session_id, created_at
+                   session_id, re_research_status, created_at
             FROM queries
             WHERE client_id = %s
             ORDER BY created_at DESC
@@ -276,6 +276,28 @@ class QueriesRepo:
             LIMIT %s
             """,
             (client_id, session_id, limit),
+        )
+
+    def set_re_research_status(self, client_id: str, query_id: str, status: str) -> None:
+        # Scoped by BOTH id AND client_id so the async worker can only touch the
+        # requesting client's query.
+        _execute(
+            "UPDATE queries SET re_research_status = %s "
+            "WHERE id = %s AND client_id = %s",
+            (status, query_id, client_id),
+        )
+
+    def get_answer_for_client(self, client_id: str, query_id: str) -> dict | None:
+        # The async re-research worker reloads the original answer to re-run it.
+        # Scoped by BOTH id AND client_id so one client's answer can never be
+        # re-researched under another client.
+        return _fetchone(
+            """
+            SELECT question, final_answer, citations, session_id, client_ref
+            FROM queries
+            WHERE id = %s AND client_id = %s
+            """,
+            (query_id, client_id),
         )
 
 
@@ -431,6 +453,207 @@ class FirmKnowledgeRepo:
         _execute(
             "DELETE FROM firm_knowledge WHERE id = %s AND client_id = %s",
             (item_id, client_id),
+        )
+
+    def increment_usage(self, client_id: str, item_ids: list[str]) -> None:
+        # Task C5: bump usage_count for the firm-knowledge items actually CITED
+        # in an answer (best-effort — the answer flow swallows failures). Scoped
+        # by client_id so one client's usage can never inflate another's, and
+        # short-circuits on an empty id list to avoid a pointless DB round-trip.
+        if not item_ids:
+            return
+        _execute(
+            "UPDATE firm_knowledge SET usage_count = usage_count + 1 "
+            "WHERE client_id = %s AND id = ANY(%s)",
+            (client_id, list(item_ids)),
+        )
+
+    def usage_trend(self, client_id: str) -> dict:
+        """Firm-knowledge usage trend (Task C6) for ``trace.firm.usage_trend``:
+        ``{quarter_count, prior_count}`` — the number of firm_knowledge items
+        added this calendar quarter vs the immediately prior quarter, scoped by
+        ``client_id``. A single grouped query keys off ``created_at`` relative to
+        ``date_trunc('quarter', now())`` so the "why this answer?" UI can show
+        whether the firm's knowledge base is growing. Best-effort — the caller
+        (research agent) swallows failures and renders no trend.
+        """
+        row = _fetchone(
+            """
+            SELECT
+              count(*) FILTER (
+                WHERE created_at >= date_trunc('quarter', now())
+              ) AS quarter_count,
+              count(*) FILTER (
+                WHERE created_at >= date_trunc('quarter', now()) - interval '3 months'
+                  AND created_at < date_trunc('quarter', now())
+              ) AS prior_count
+            FROM firm_knowledge
+            WHERE client_id = %s
+            """,
+            (client_id,),
+        )
+        return {
+            "quarter_count": int(row["quarter_count"]) if row else 0,
+            "prior_count": int(row["prior_count"]) if row else 0,
+        }
+
+
+# --- knowledge_suggestions (Task C5) -----------------------------------------
+class KnowledgeSuggestionsRepo:
+    """Approval-gated learning-loop suggestions (032_knowledge_suggestions).
+
+    A thumbs-up or a saved advice_memo creates a PENDING suggestion here rather
+    than writing straight into the authoritative firm_knowledge store. A partner
+    then approves (embeds into firm_knowledge, records firm_knowledge_id) or
+    rejects it. Every method is scoped by an explicit ``client_id`` predicate.
+    """
+
+    _SELECT_COLS = (
+        "id, source_query_id, source_document_id, title, content, "
+        "reason, status, decided_by, decided_at, firm_knowledge_id, created_at"
+    )
+
+    def insert(self, row: dict) -> dict:
+        cols = list(row.keys())
+        return _execute(
+            _insert_sql("knowledge_suggestions", cols),
+            [row[c] for c in cols],
+            returning=True,
+        )
+
+    def list_for_client(self, client_id: str, status: str | None = None) -> list[dict]:
+        if status:
+            return _fetchall(
+                f"SELECT {self._SELECT_COLS} FROM knowledge_suggestions "
+                "WHERE client_id = %s AND status = %s ORDER BY created_at DESC",
+                (client_id, status),
+            )
+        return _fetchall(
+            f"SELECT {self._SELECT_COLS} FROM knowledge_suggestions "
+            "WHERE client_id = %s ORDER BY created_at DESC",
+            (client_id,),
+        )
+
+    def get_for_client(self, client_id: str, suggestion_id: str) -> dict | None:
+        return _fetchone(
+            f"SELECT {self._SELECT_COLS} FROM knowledge_suggestions "
+            "WHERE id = %s AND client_id = %s",
+            (suggestion_id, client_id),
+        )
+
+    def set_decision(self, client_id: str, suggestion_id: str, status: str, fields: dict | None = None) -> dict | None:
+        # Record an approve/reject decision. Scoped by id AND client_id so a
+        # client can only decide on its own suggestions, and guarded by
+        # ``status = 'pending'`` so the decision is a check-and-CLAIM: a
+        # concurrent double-approve/reject (or a retry of an already-decided
+        # suggestion) matches 0 rows and returns None, so the caller does NOT
+        # write a second firm_knowledge row. Extra columns (e.g.
+        # firm_knowledge_id/decided_by/decided_at) come through ``fields``.
+        assignments = ["status = %s"]
+        params: list = [status]
+        for c, value in (fields or {}).items():
+            if c == "decided_at" and value == "now()":
+                assignments.append(f"{c} = now()")
+            else:
+                assignments.append(f"{c} = %s")
+                params.append(value)
+        params.extend([suggestion_id, client_id])
+        return _execute(
+            f"UPDATE knowledge_suggestions SET {', '.join(assignments)} "
+            "WHERE id = %s AND client_id = %s AND status = 'pending' RETURNING *",
+            params,
+            returning=True,
+        )
+
+    def approve(self, client_id: str, suggestion_id: str, firm_knowledge_row: dict, decided_by: str | None) -> dict | None:
+        """Atomically approve a PENDING suggestion (Task C5, idempotent).
+
+        In ONE transaction: (1) claim the suggestion by flipping status
+        pending→approved ``WHERE ... AND status = 'pending'`` — the guard makes
+        this a check-and-claim, so a concurrent double-approve (or a retry of an
+        already-decided suggestion) matches 0 rows; (2) only if the claim
+        succeeded, INSERT the authoritative ``firm_knowledge`` row; (3) stamp the
+        resulting ``firm_knowledge_id``/``decided_by``/``decided_at`` back onto
+        the suggestion. If the claim matches 0 rows we insert NOTHING and return
+        None, so exactly one concurrent approver can ever write firm_knowledge and
+        an insert-without-decision can't happen (both live in the same txn).
+        """
+        with get_pg_conn() as conn:
+            cur = _dict_cursor(conn)
+            # (1) check-and-claim: only a still-pending row is claimed.
+            cur.execute(
+                "UPDATE knowledge_suggestions SET status = 'approved' "
+                "WHERE id = %s AND client_id = %s AND status = 'pending' "
+                "RETURNING id",
+                (suggestion_id, client_id),
+            )
+            claimed = cur.fetchone()
+            if not claimed:
+                # Already decided / claimed by a concurrent request → no insert.
+                conn.rollback()
+                cur.close()
+                return None
+            # (2) insert the authoritative firm_knowledge row.
+            fk_cols = list(firm_knowledge_row.keys())
+            fk_placeholders = ", ".join(["%s"] * len(fk_cols))
+            cur.execute(
+                f"INSERT INTO firm_knowledge ({', '.join(fk_cols)}) "
+                f"VALUES ({fk_placeholders}) RETURNING id",
+                [firm_knowledge_row[c] for c in fk_cols],
+            )
+            fk_id = cur.fetchone()["id"]
+            # (3) stamp the decision metadata onto the claimed suggestion.
+            cur.execute(
+                "UPDATE knowledge_suggestions "
+                "SET firm_knowledge_id = %s, decided_by = %s, decided_at = now() "
+                "WHERE id = %s AND client_id = %s "
+                f"RETURNING {self._SELECT_COLS}",
+                (fk_id, decided_by, suggestion_id, client_id),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            cur.close()
+            return dict(row) if row else None
+
+    def exists_for_query(self, client_id: str, query_id: str) -> bool:
+        # De-dup guard: a second thumbs-up on the SAME query must not create a
+        # second pending suggestion. Only pending suggestions block a re-create
+        # (an approved/rejected one has already been acted on).
+        return _fetchval(
+            """
+            SELECT 1 FROM knowledge_suggestions
+            WHERE client_id = %s AND source_query_id = %s AND status = 'pending'
+            LIMIT 1
+            """,
+            (client_id, query_id),
+        ) is not None
+
+
+# --- engagement_context (Task C4) --------------------------------------------
+class EngagementContextRepo:
+    _SELECT_COLS = (
+        "id, client_ref, document_id, document_type, title, content, created_at"
+    )
+
+    def insert(self, row: dict) -> dict:
+        cols = list(row.keys())
+        return _execute(
+            _insert_sql("engagement_context", cols),
+            [row[c] for c in cols],
+            returning=True,
+        )
+
+    def list_for_client(self, client_id: str, client_ref: str | None = None) -> list[dict]:
+        if client_ref:
+            return _fetchall(
+                f"SELECT {self._SELECT_COLS} FROM engagement_context "
+                "WHERE client_id = %s AND client_ref = %s ORDER BY created_at DESC",
+                (client_id, client_ref),
+            )
+        return _fetchall(
+            f"SELECT {self._SELECT_COLS} FROM engagement_context "
+            "WHERE client_id = %s ORDER BY created_at DESC",
+            (client_id,),
         )
 
 
@@ -612,16 +835,25 @@ class KnowledgeIngestRepo:
             cur.close()
             return count
 
-    def mark_superseded(self, citations: set[str]) -> int:
-        # The B1 fix lands here: mark referenced rulings is_current = false.
+    def mark_superseded(self, mapping: dict[str, str]) -> int:
+        # The B1 fix lands here: mark referenced rulings is_current = false and
+        # record which current citation superseded each. ``mapping`` maps a
+        # superseded citation -> the superseding (current) citation.
         # Needs cur.rowcount, so keep an explicit connection.
-        if not citations:
+        if not mapping:
             return 0
+        old_citations = list(mapping.keys())
+        new_citations = [mapping[old] for old in old_citations]
         with get_pg_conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                "UPDATE knowledge_chunks SET is_current = false WHERE citation = ANY(%s)",
-                (list(citations),),
+                """
+                UPDATE knowledge_chunks AS kc
+                SET is_current = false, superseded_by = m.new_citation
+                FROM unnest(%s::text[], %s::text[]) AS m(old_citation, new_citation)
+                WHERE kc.citation = m.old_citation
+                """,
+                (old_citations, new_citations),
             )
             count = cur.rowcount
             conn.commit()
@@ -708,6 +940,106 @@ class HealthRepo:
         return True
 
 
+# --- re_research_jobs --------------------------------------------------------
+class ReResearchJobsRepo:
+    """Async feedback re-research job queue (030_re_research_jobs_notifications).
+
+    Idempotency/at-most-once contract:
+      - ``enqueue`` uses ``ON CONFLICT (feedback_id) DO NOTHING RETURNING *`` so a
+        duplicate feedback never produces a second job (returns None on dup).
+      - ``claim_next`` sets ``status='running'`` inside the SAME statement that
+        selects the row (``FOR UPDATE SKIP LOCKED``), so once claimed the row is
+        no longer ``queued`` and no other worker re-claims it.
+    """
+
+    def enqueue(self, row: dict) -> dict | None:
+        cols = list(row.keys())
+        return _execute(
+            _insert_sql("re_research_jobs", cols, returning=False)
+            + " ON CONFLICT (feedback_id) DO NOTHING RETURNING *",
+            [_maybe_json(row[c]) for c in cols],
+            returning=True,
+        )
+
+    def claim_next(self) -> dict | None:
+        # Atomic claim: the UPDATE sets status='running' + increments attempts on
+        # exactly one queued, due row selected FOR UPDATE SKIP LOCKED so
+        # concurrent workers never grab the same job.
+        return _execute(
+            """
+            UPDATE re_research_jobs
+            SET status = 'running', attempts = attempts + 1, updated_at = now()
+            WHERE id = (
+                SELECT id FROM re_research_jobs
+                WHERE status = 'queued' AND next_attempt_at <= now()
+                ORDER BY next_attempt_at
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            RETURNING *
+            """,
+            (),
+            returning=True,
+        )
+
+    def requeue(self, job_id: str, error: str, backoff_seconds: int) -> None:
+        # Transient failure with attempts left: back to 'queued' with a future
+        # next_attempt_at so claim_next picks it up again after the backoff.
+        _execute(
+            "UPDATE re_research_jobs "
+            "SET status = 'queued', error_message = %s, "
+            "next_attempt_at = now() + make_interval(secs => %s), updated_at = now() "
+            "WHERE id = %s",
+            (error, backoff_seconds, job_id),
+        )
+
+    def mark(self, job_id: str, status: str, fields: dict | None = None) -> None:
+        # Terminal done/failed (plus any extra columns, e.g. error_message).
+        assignments = ["status = %s"]
+        params: list = [status]
+        for c, value in (fields or {}).items():
+            assignments.append(f"{c} = %s")
+            params.append(_maybe_json(value))
+        assignments.append("updated_at = now()")
+        params.append(job_id)
+        _execute(
+            f"UPDATE re_research_jobs SET {', '.join(assignments)} WHERE id = %s",
+            params,
+        )
+
+
+# --- notifications -----------------------------------------------------------
+class NotificationsRepo:
+    def insert(self, row: dict) -> dict:
+        cols = list(row.keys())
+        return _execute(
+            _insert_sql("notifications", cols),
+            [_maybe_json(row[c]) for c in cols],
+            returning=True,
+        )
+
+    def list_for_client(self, client_id: str, limit: int = 50) -> list[dict]:
+        return _fetchall(
+            """
+            SELECT id, kind, query_id, title, body, read_at, created_at
+            FROM notifications
+            WHERE client_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (client_id, limit),
+        )
+
+    def mark_read(self, client_id: str, notification_id: str) -> None:
+        # Scoped by BOTH id AND client_id so a client can only mark its own
+        # notifications read.
+        _execute(
+            "UPDATE notifications SET read_at = now() "
+            "WHERE id = %s AND client_id = %s",
+            (notification_id, client_id),
+        )
+
+
 class Repositories:
     """Concrete ``RelationalDataPort`` facade wiring one repo per aggregate."""
 
@@ -720,6 +1052,8 @@ class Repositories:
         self.firm_clients = FirmClientsRepo()
         self.query_sessions = QuerySessionsRepo()
         self.firm_knowledge = FirmKnowledgeRepo()
+        self.knowledge_suggestions = KnowledgeSuggestionsRepo()
+        self.engagement_context = EngagementContextRepo()
         self.regulatory_alerts = RegulatoryAlertsRepo()
         self.contact = ContactRepo()
         self.rate_limit = RateLimitRepo()
@@ -727,3 +1061,5 @@ class Repositories:
         self.knowledge_ingest = KnowledgeIngestRepo()
         self.demo_reset = DemoResetRepo()
         self.health = HealthRepo()
+        self.re_research_jobs = ReResearchJobsRepo()
+        self.notifications = NotificationsRepo()

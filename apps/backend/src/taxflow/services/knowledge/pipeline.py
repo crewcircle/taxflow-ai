@@ -41,8 +41,8 @@ def _detect_superseded_citations(text: str) -> set[str]:
     return found
 
 
-def _mark_superseded(citations: set[str]) -> int:
-    return get_relational_data().knowledge_ingest.mark_superseded(citations)
+def _mark_superseded(mapping: dict[str, str]) -> int:
+    return get_relational_data().knowledge_ingest.mark_superseded(mapping)
 
 
 # Phase 3: lightweight, deterministic topic classification for the knowledge
@@ -150,7 +150,8 @@ async def process_document(text: str, metadata: dict, source_object_key: str | N
 
     superseded = _detect_superseded_citations(text) - {metadata["citation"]}
     if superseded:
-        marked = await asyncio.to_thread(_mark_superseded, superseded)
+        mapping = {old: metadata["citation"] for old in superseded}
+        marked = await asyncio.to_thread(_mark_superseded, mapping)
         if marked:
             print(f"    {metadata['citation']} marks {superseded} as superseded ({marked} chunks)")
 

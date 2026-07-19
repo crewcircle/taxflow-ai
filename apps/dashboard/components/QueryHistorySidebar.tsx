@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ReResearchBadge } from "@/components/ReResearchBadge";
 import { cn } from "@/lib/utils";
 
 export interface QueryListItem {
@@ -19,6 +20,7 @@ export interface QueryListItem {
   context_note: string | null;
   topic_tag: string | null;
   session_id: string | null;
+  re_research_status?: string | null;
   created_at: string;
 }
 
@@ -198,10 +200,15 @@ export function QueryHistorySidebar({
                       <MessageSquare className="mt-0.5 size-3.5 shrink-0 opacity-60" />
                       <span className="flex-1 space-y-1">
                         <span className="line-clamp-2 block leading-snug">{item.question}</span>
-                        {item.client_ref && (
-                          <Badge variant="outline" className="text-[9px]">
-                            {item.client_ref}
-                          </Badge>
+                        {(item.client_ref || item.re_research_status) && (
+                          <span className="flex flex-wrap items-center gap-1">
+                            {item.client_ref && (
+                              <Badge variant="outline" className="text-[9px]">
+                                {item.client_ref}
+                              </Badge>
+                            )}
+                            <ReResearchBadge status={item.re_research_status} />
+                          </span>
                         )}
                       </span>
                     </button>
@@ -235,10 +242,15 @@ export function QueryHistorySidebar({
                             <MessageSquare className="mt-0.5 size-3.5 shrink-0 opacity-60" />
                             <span className="flex-1 space-y-1">
                               <span className="line-clamp-2 block leading-snug">{item.question}</span>
-                              {item.client_ref && (
-                                <Badge variant="outline" className="text-[9px]">
-                                  {item.client_ref}
-                                </Badge>
+                              {(item.client_ref || item.re_research_status) && (
+                                <span className="flex flex-wrap items-center gap-1">
+                                  {item.client_ref && (
+                                    <Badge variant="outline" className="text-[9px]">
+                                      {item.client_ref}
+                                    </Badge>
+                                  )}
+                                  <ReResearchBadge status={item.re_research_status} />
+                                </span>
                               )}
                             </span>
                           </button>

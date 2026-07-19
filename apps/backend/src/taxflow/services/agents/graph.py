@@ -24,7 +24,10 @@ from taxflow import providers
 from taxflow.config import settings
 from taxflow.services.agents.research import (
     ResearchAgent,
+    _compute_knowledge_as_of,
     _system_blocks,
+    build_firm_items,
+    build_session_fragment,
     route_model,
 )
 from taxflow.services.agents.verify import (
@@ -57,6 +60,7 @@ class AgentState(TypedDict, total=False):
     client: dict | None
     client_id: str
     session_id: str | None
+    client_ref: str | None
     embedding: list[float] | None
     steering: str
     source_type_hint: list[str] | None
@@ -71,7 +75,19 @@ class AgentState(TypedDict, total=False):
     corrected_meta: dict | None
     corrective_count: int
     re_retrieved: bool
+    re_reason: str | None
+    re_detail: str | None
     streaming: bool
+    # Optional trace-assembly inputs (workstreams B/C thread real values in
+    # later; A1 wires them through null-safe). ``firm``/``session`` are the
+    # already-merged trace fragments; ``knowledge_as_of`` the freshness stamp;
+    # ``first_pass`` the first-pass generation-meta snapshot captured before any
+    # corrective pass overwrites confidence/model (see C3/H3).
+    firm: dict | None
+    session: dict | None
+    knowledge_as_of: str | None
+    first_pass: dict | None
+    prior_turns_used: int
     input_tokens: int
     output_tokens: int
     cache_read_input_tokens: int
@@ -95,13 +111,31 @@ def _weak_signal(signals: dict) -> bool:
 
 
 async def build_steering(state: AgentState) -> dict:
-    steering, source_type_hint = await research_agent._build_steering(
+    steering, source_type_hint, prior_turns_used = await research_agent._build_steering(
         state["question"],
         state["client_id"],
         state.get("client"),
         state.get("session_id"),
     )
-    return {"steering": steering, "source_type_hint": source_type_hint}
+    out: dict = {
+        "steering": steering,
+        "source_type_hint": source_type_hint,
+        # Task C6: the prior-session-turn count is threaded onto the state so the
+        # generate node can populate trace.session.prior_turns_used (previously
+        # computed in _build_steering then discarded).
+        "prior_turns_used": prior_turns_used,
+    }
+    # Task C6: the C-owned trace.firm fragment (profile_applied / voice_applied /
+    # profile_summary / usage_trend). Set on the state ONLY when non-empty so a
+    # caller-supplied firm fragment survives when there is nothing firm-specific
+    # to report; the generate node MERGES B's firm_items fragment into it before
+    # _build_trace (co-ownership — disjoint keys, neither side overwrites).
+    firm_fragment = await research_agent._build_firm_fragment(
+        state.get("client"), state["client_id"]
+    )
+    if firm_fragment:
+        out["firm"] = firm_fragment
+    return out
 
 
 async def retrieve(state: AgentState) -> dict:
@@ -110,30 +144,27 @@ async def retrieve(state: AgentState) -> dict:
         state["client_id"],
         embedding=state.get("embedding"),
         source_type_hint=state.get("source_type_hint"),
+        client_ref=state.get("client_ref"),
     )
     return {"chunks": chunks, "signals": signals}
 
 
 async def re_retrieve(state: AgentState) -> dict:
     """Widen the candidate pool ONCE and re-run retrieval (guarded by
-    RE_RETRIEVE_ENABLED). Reuses ``_retrieve_context`` with a temporarily
-    doubled candidate pool so weak first-pass retrieval gets a second, broader
-    look before generation. Sets ``re_retrieved`` so this can never repeat.
+    RE_RETRIEVE_ENABLED). Reuses ``_retrieve_context`` with a widened candidate
+    pool (``pool_scale=2``) so weak first-pass retrieval gets a second, broader
+    look before generation. The widening is threaded as a PARAMETER (Task C3) so
+    the global pool ``settings`` are never mutated — concurrent requests can
+    never inherit a widened pool. Sets ``re_retrieved`` so this can never repeat.
     """
-    original_pool = settings.RERANK_CANDIDATE_POOL
-    original_global = settings.RETRIEVAL_GLOBAL_POOL
-    try:
-        settings.RERANK_CANDIDATE_POOL = original_pool * 2
-        settings.RETRIEVAL_GLOBAL_POOL = original_global * 2
-        chunks, signals = await research_agent._retrieve_context(
-            state["question"],
-            state["client_id"],
-            embedding=state.get("embedding"),
-            source_type_hint=state.get("source_type_hint"),
-        )
-    finally:
-        settings.RERANK_CANDIDATE_POOL = original_pool
-        settings.RETRIEVAL_GLOBAL_POOL = original_global
+    chunks, signals = await research_agent._retrieve_context(
+        state["question"],
+        state["client_id"],
+        embedding=state.get("embedding"),
+        source_type_hint=state.get("source_type_hint"),
+        pool_scale=2,
+        client_ref=state.get("client_ref"),
+    )
     return {"chunks": chunks, "signals": signals, "re_retrieved": True}
 
 
@@ -199,16 +230,64 @@ async def generate(state: AgentState) -> dict:
         "cache_read_input_tokens": usage.cache_read_input_tokens if usage else 0,
         "cache_creation_input_tokens": usage.cache_creation_input_tokens if usage else 0,
     }
+    # Task C5: bump usage_count for the CITED firm chunks (best-effort) and
+    # surface the cited firm citations on trace.retrieval.firm_knowledge_used.
+    firm_used = research_agent._cited_firm_citations(citations)
+    await research_agent._increment_firm_usage(
+        state["client_id"], research_agent._cited_firm_ids(citations, chunks)
+    )
+    # Task B3: freshness stamp + firm-items trace fragment. MERGE the B firm
+    # fragment (firm_items/firm_items_used) with C's fragment (profile/voice/
+    # usage_trend, threaded via state["firm"] from the build_steering node) so
+    # neither side overwrites the other's keys (co-ownership of trace.firm).
+    # Merging into a copy of state["firm"] keeps it null-safe when C has nothing
+    # to report. The B fragment is only merged when firm items are actually
+    # present so the trace.firm block stays absent when neither side has content.
+    knowledge_as_of = state.get("knowledge_as_of") or _compute_knowledge_as_of(
+        chunks, citations
+    )
+    firm_fragment = dict(state.get("firm") or {})
+    firm_items = build_firm_items(chunks, citations)
+    if firm_items["firm_items"]:
+        firm_fragment.update(firm_items)
+    # Task C6: the C-owned trace.session fragment (prior_turns_used from the
+    # build_steering node, engagement_memos_used counted from the retrieved
+    # pool, client_ref from state). None for a plain single-shot query, so a
+    # caller-supplied session fragment is preferred when present.
+    session_fragment = state.get("session") or build_session_fragment(
+        state.get("prior_turns_used", 0),
+        research_agent._engagement_memos_used(chunks),
+        state.get("client_ref"),
+    )
+    trace = research_agent._build_trace(
+        chunks,
+        citations,
+        state.get("source_type_hint"),
+        state["routed_tier"],
+        stats,
+        confidence,
+        firm=firm_fragment or None,
+        session=session_fragment,
+        knowledge_as_of=knowledge_as_of,
+        firm_knowledge_used=firm_used or None,
+    )
     return {
         "answer": answer,
         "citations": citations,
         "confidence": confidence,
         **stats,
         # Answer-flow trace (migration 022 / "why this answer?" UI): capture what
-        # retrieval returned and what generation did on the first pass.
-        "trace": research_agent._build_trace(
-            chunks, citations, state.get("source_type_hint"), state["routed_tier"], stats, confidence
-        ),
+        # retrieval returned and what generation did on the first pass. Optional
+        # firm/session/knowledge_as_of inputs are read via state.get(...) so the
+        # manual-stats streaming path and research.run assemble identical traces
+        # (no usage.as_dict() dependency — guards the streaming _Usage bug).
+        "trace": trace,
+        # First-pass generation-meta snapshot (Task C3/H3): captured HERE, before
+        # any corrective pass overwrites confidence/model in state, so both the
+        # POST and SSE paths have a real first-pass record for trace.passes. Read
+        # via state.get in _build_final_trace, so it survives the corrective pass
+        # overwriting state["confidence"].
+        "first_pass": trace["generation"],
     }
 
 
@@ -227,6 +306,16 @@ async def corrective_generate(state: AgentState) -> dict:
     ``regenerate_with_feedback``. Increments ``corrective_count`` and attaches a
     caveat. There is no edge back to verify — the corrective pass is
     at-most-once and is NOT re-verified.
+
+    Task C3: the corrective pass passes ``widen=True`` so retrieval re-runs with
+    a widened pool (``pool_scale=2``, threaded as a parameter — never a global
+    settings mutation). Because the STORED answer is the corrected one, the
+    corrected answer's trace REPLACES the top-level ``state["trace"]`` (so the
+    top-level ``retrieval``/``generation`` describe the corrected answer); the
+    ``generate`` node's ``first_pass`` snapshot is left untouched so
+    ``trace.passes.first_pass`` still carries the original meta. The returned
+    ``re_retrieval`` (reason ``"reviewer_flag"``) is threaded into state so A1's
+    ``_build_final_trace`` records ``re_retrieval.fired``.
     """
     verification = state.get("verification") or {}
     result = await research_agent.regenerate_with_feedback(
@@ -236,8 +325,10 @@ async def corrective_generate(state: AgentState) -> dict:
         embedding=state.get("embedding"),
         client=state.get("client"),
         session_id=state.get("session_id"),
+        client_ref=state.get("client_ref"),
+        widen=True,
     )
-    return {
+    out: dict = {
         "answer": result["answer"],
         "citations": result["citations"],
         "confidence": result["confidence"],
@@ -245,6 +336,20 @@ async def corrective_generate(state: AgentState) -> dict:
         "corrected_meta": result,
         "corrective_count": state.get("corrective_count", 0) + 1,
     }
+    # The stored answer is the corrected one, so the top-level trace must
+    # describe it. Replace state["trace"] with the corrected pass's trace; the
+    # generate node's `first_pass` snapshot is NOT touched, so
+    # trace.passes.first_pass keeps the original meta.
+    if result.get("trace") is not None:
+        out["trace"] = result["trace"]
+    # Thread the reviewer-driven widen result so _build_final_trace emits
+    # re_retrieval.fired. Only set when the widen actually fired, so a prior
+    # weak-signal re_retrieve flag is never clobbered.
+    re_retrieval = result.get("re_retrieval") or {}
+    if result.get("re_retrieved"):
+        out["re_retrieved"] = True
+        out["re_reason"] = re_retrieval.get("reason")
+    return out
 
 
 # --- conditional edges -------------------------------------------------------

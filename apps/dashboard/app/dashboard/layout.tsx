@@ -9,6 +9,7 @@ import { createClient } from "@/lib/supabase/server";
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { DashboardSidebar } from "@/components/DashboardSidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Toaster } from "@/components/ui/sonner";
 
 const NAV_LINKS = [
   { href: "/dashboard/query", label: "Ask TaxFlow", icon: MessageSquareText },
@@ -76,6 +77,7 @@ export default async function DashboardLayout({
           <main className="min-w-0 flex-1 overflow-y-auto p-6">{children}</main>
         </div>
       </div>
+      <Toaster position="bottom-right" />
     </TooltipProvider>
   );
 }
