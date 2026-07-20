@@ -71,10 +71,16 @@ def _migrated_db():
     except psycopg2.OperationalError as exc:
         # The root tests/conftest.py always sets a dummy DATABASE_URL via
         # setdefault, so we can't gate on it being unset. Instead we probe
-        # connectivity: CI's test-backend job points DATABASE_URL at a live
-        # pgvector service (the gate runs for real), while a sandbox / local
-        # run without a reachable migrated Postgres skips cleanly rather than
-        # erroring — so `uv run pytest tests/` stays green either way.
+        # connectivity. In CI (GitHub Actions always sets CI=true) the gate MUST
+        # run against the live pgvector service, so an unreachable DB is a hard
+        # failure — otherwise a bad URL, credentials error, or service regression
+        # would make the deploy gate silently green. Only a local/sandbox run
+        # (CI unset) skips cleanly so `uv run pytest tests/` stays green.
+        if os.environ.get("CI"):
+            pytest.fail(
+                "Deploy gate could not reach the Postgres at DATABASE_URL under CI "
+                f"— the gate must not be skipped in CI: {exc}"
+            )
         pytest.skip(f"No reachable Postgres at DATABASE_URL for the deploy gate: {exc}")
     try:
         with conn.cursor() as cur:

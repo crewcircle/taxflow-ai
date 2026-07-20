@@ -108,10 +108,16 @@ def _reset_public_schema() -> None:
         conn.close()
 
 
-def _run_script(*args: str):
-    """Invoke the real shell runner with MIGRATION_DATABASE_URL set."""
+def _run_script(*args: str, extra_env: dict | None = None):
+    """Invoke the real shell runner with MIGRATION_DATABASE_URL set.
+
+    ``extra_env`` merges additional environment variables (e.g. a MIGRATIONS_DIR
+    override pointing at a scratch dir of test migrations).
+    """
     env = dict(os.environ)
     env["MIGRATION_DATABASE_URL"] = _MIGRATION_URL
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["bash", str(_SCRIPT), *args],
         capture_output=True,
@@ -150,10 +156,20 @@ def _require_script_and_db():
     # a live pgvector service; a sandbox/local run without a reachable Postgres
     # skips cleanly so the full suite stays green.
     if not _BASE_URL:
+        if os.environ.get("CI"):
+            pytest.fail("DATABASE_URL not set under CI; the runner self-test must run.")
         pytest.skip("DATABASE_URL not set; runner self-test needs a real Postgres.")
     try:
         psycopg2.connect(_BASE_URL).close()
     except psycopg2.OperationalError as exc:
+        # In CI (GitHub Actions sets CI=true) the runner self-test MUST run
+        # against the live pgvector service — an unreachable DB is a hard failure
+        # so a broken URL/service can't make the deploy-critical runner green.
+        if os.environ.get("CI"):
+            pytest.fail(
+                "Runner self-test could not reach the Postgres at DATABASE_URL under CI: "
+                f"{exc}"
+            )
         pytest.skip(f"No reachable Postgres at DATABASE_URL for the runner self-test: {exc}")
 
 
@@ -222,34 +238,29 @@ def test_bootstrap_through_040_then_applies_only_041():
 
 
 def test_broken_migration_rolls_back(tmp_path):
-    """(d) A deliberately broken scratch migration rolls back its DDL AND its
-    ledger insert (nothing recorded, non-zero exit).
+    """(d) A migration whose SQL fails PART-WAY THROUGH rolls back its already-
+    succeeded DDL AND its ledger insert (nothing recorded, non-zero exit).
 
-    We can't drop a bad file into the shipped migrations dir, so we point the
-    runner at a scratch dir (if it honours a MIGRATIONS_DIR override) OR fall
-    back to asserting the runner exits non-zero and records nothing when the
-    file fails. The scratch dir holds one valid + one broken migration.
+    To actually prove transactional rollback (not just that a single failing
+    statement did nothing), the broken migration first runs a VALID
+    ``CREATE TABLE gate_broken`` and only THEN hits an invalid statement. Because
+    the runner applies each file with ``--single-transaction``, the successful
+    CREATE must be rolled back too — so ``gate_broken`` must not exist afterward.
     """
     _reset_public_schema()
 
     scratch = tmp_path / "migrations"
     scratch.mkdir()
     (scratch / "001_ok.sql").write_text("CREATE TABLE gate_ok (id int PRIMARY KEY);\n")
-    # Broken: references a column/table that does not exist -> DDL error.
+    # Broken: a VALID create-table that succeeds, followed by an invalid statement
+    # in the same file. The whole file runs in one transaction, so the successful
+    # gate_broken create must roll back when the second statement errors.
     (scratch / "002_broken.sql").write_text(
-        "CREATE TABLE gate_broken (id int REFERENCES nonexistent_table(id));\n"
+        "CREATE TABLE gate_broken (id int PRIMARY KEY);\n"
+        "CREATE TABLE gate_broken_ref (id int REFERENCES nonexistent_table(id));\n"
     )
 
-    env = dict(os.environ)
-    env["MIGRATION_DATABASE_URL"] = _MIGRATION_URL
-    env["MIGRATIONS_DIR"] = str(scratch)
-    result = subprocess.run(
-        ["bash", str(_SCRIPT)],
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=str(_REPO_ROOT),
-    )
+    result = _run_script(extra_env={"MIGRATIONS_DIR": str(scratch)})
 
     # The broken file must fail the run.
     assert result.returncode != 0, (
@@ -258,7 +269,8 @@ def test_broken_migration_rolls_back(tmp_path):
     )
 
     # The broken migration's DDL and ledger insert must both be rolled back:
-    # gate_broken must not exist, and 002 must not be recorded.
+    # gate_broken (a statement that SUCCEEDED before the failure) must not exist,
+    # and 002 must not be recorded.
     conn = psycopg2.connect(_MIGRATION_URL)
     try:
         with conn.cursor() as cur:
@@ -266,7 +278,10 @@ def test_broken_migration_rolls_back(tmp_path):
                 "SELECT 1 FROM information_schema.tables "
                 "WHERE table_schema = 'public' AND table_name = 'gate_broken'"
             )
-            assert cur.fetchone() is None, "broken migration DDL was not rolled back"
+            assert cur.fetchone() is None, (
+                "a statement that succeeded inside the failed migration was not "
+                "rolled back — the file is not applied atomically"
+            )
             cur.execute(
                 "SELECT count(*) FROM taxflow_internal.applied_migrations "
                 "WHERE version = '002'"

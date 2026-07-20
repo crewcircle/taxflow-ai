@@ -138,9 +138,15 @@ if [ "${#VERSIONS[@]}" -eq 0 ]; then
 fi
 
 # --- psql helpers ------------------------------------------------------------
+# Single-source the connection + fail-fast policy for every one-shot psql call
+# (the persistent lock session at acquire_lock uses its own coprocess).
+psql_db() {
+  psql "$DB_URL" -v ON_ERROR_STOP=1 "$@"
+}
+
 # One-shot query returning a single scalar (tuples-only, unaligned).
 psql_scalar() {
-  psql "$DB_URL" -v ON_ERROR_STOP=1 -qtA -c "$1"
+  psql_db -qtA -c "$1"
 }
 
 # --- concurrency: hold a session advisory lock for the whole run -------------
@@ -159,12 +165,30 @@ acquire_lock() {
   # Take the lock (blocks until granted) and emit a sentinel we wait for.
   printf 'SELECT pg_advisory_lock(%s);\n' "$LOCK_KEY" >"/dev/fd/$LOCK_FD"
   printf '\\echo __LOCK_ACQUIRED__\n' >"/dev/fd/$LOCK_FD"
-  local line
+  # Read until the sentinel. If the coprocess dies (bad URL, auth failure, killed
+  # session) the read loop hits EOF WITHOUT the sentinel — treat that as fatal so
+  # the run never proceeds believing it holds a lock it does not.
+  local line got_lock=0
   while IFS= read -r line <&"${LOCK_PROC[0]}"; do
     case "$line" in
-      *__LOCK_ACQUIRED__*) break ;;
+      *__LOCK_ACQUIRED__*) got_lock=1; break ;;
     esac
   done
+  if [ "$got_lock" -ne 1 ]; then
+    echo "ERROR: failed to acquire the advisory lock — the psql lock session exited" >&2
+    echo "       before confirming the lock (check MIGRATION_DATABASE_URL / connectivity)." >&2
+    exit 1
+  fi
+}
+
+# Fail if the persistent lock session has died: a dropped session releases the
+# advisory lock, so continuing would run un-serialized against a concurrent run.
+assert_lock_held() {
+  if [ -z "$LOCK_SESSION_PID" ] || ! kill -0 "$LOCK_SESSION_PID" 2>/dev/null; then
+    echo "ERROR: the advisory-lock session died mid-run — serialization is lost." >&2
+    echo "       Aborting rather than applying migrations without the lock." >&2
+    exit 1
+  fi
 }
 
 release_lock() {
@@ -182,16 +206,28 @@ trap release_lock EXIT
 acquire_lock
 
 # --- create the ledger (idempotent, access-controlled) -----------------------
-psql "$DB_URL" -v ON_ERROR_STOP=1 -q <<'SQL'
+# The REVOKEs target Supabase's anon/authenticated roles so the Data API can
+# never read the ledger. Those roles only exist on a real Supabase DB; a bare
+# Postgres (e.g. CI's pgvector image) has neither, so REVOKE ... FROM <role>
+# would abort with "role does not exist". Guard each revoke on role presence.
+psql_db -q <<'SQL'
 CREATE SCHEMA IF NOT EXISTS taxflow_internal;
-REVOKE ALL ON SCHEMA taxflow_internal FROM anon, authenticated;
 CREATE TABLE IF NOT EXISTS taxflow_internal.applied_migrations (
     version    text PRIMARY KEY,
     filename   text NOT NULL,
     checksum   text NOT NULL,
     applied_at timestamptz NOT NULL DEFAULT now()
 );
-REVOKE ALL ON taxflow_internal.applied_migrations FROM anon, authenticated;
+DO $$
+DECLARE r text;
+BEGIN
+  FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+      EXECUTE format('REVOKE ALL ON SCHEMA taxflow_internal FROM %I', r);
+      EXECUTE format('REVOKE ALL ON taxflow_internal.applied_migrations FROM %I', r);
+    END IF;
+  END LOOP;
+END $$;
 SQL
 
 # --- bootstrap mode: --mark-applied-through ----------------------------------
@@ -213,14 +249,31 @@ if [ -n "$MARK_THROUGH" ]; then
     exit 1
   fi
 
-  # Schema PREFLIGHT: for versions <= 040, verify the key objects actually exist
-  # before recording them as applied (never mark an unmigrated schema as done).
+  # Schema PREFLIGHT: for versions <= 040, verify that EVERY object introduced by
+  # migrations 038–040 actually exists before recording them as applied — never
+  # mark an unmigrated (or partially-migrated) schema as done. This covers 038's
+  # annotations table, all of 039 (engagements table + the three ADD COLUMNs
+  # writes depend on), and all of 040's nullable columns.
   if [ "$((10#$MARK_THROUGH))" -ge 40 ]; then
     echo "Running schema preflight for --mark-applied-through $MARK_THROUGH..."
     missing="$(psql_scalar "
       SELECT string_agg(x, ', ') FROM (
-        SELECT 'engagements table' AS x
+        -- 038
+        SELECT 'annotations table' AS x
+          WHERE to_regclass('public.annotations') IS NULL
+        -- 039
+        UNION ALL SELECT 'engagements table'
           WHERE to_regclass('public.engagements') IS NULL
+        UNION ALL SELECT 'queries.engagement_id'
+          WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='queries' AND column_name='engagement_id')
+        UNION ALL SELECT 'documents.engagement_id'
+          WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='documents' AND column_name='engagement_id')
+        UNION ALL SELECT 'firm_clients.next_engagement_seq'
+          WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='firm_clients' AND column_name='next_engagement_seq')
+        -- 040
         UNION ALL SELECT 'queries.deleted_at'
           WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
             WHERE table_schema='public' AND table_name='queries' AND column_name='deleted_at')
@@ -241,7 +294,7 @@ if [ -n "$MARK_THROUGH" ]; then
   count=0
   for i in "${!VERSIONS[@]}"; do
     if [ "$((10#${VERSIONS[$i]}))" -le "$((10#$MARK_THROUGH))" ]; then
-      psql "$DB_URL" -v ON_ERROR_STOP=1 -q -c \
+      psql_db -q -c \
         "INSERT INTO taxflow_internal.applied_migrations (version, filename, checksum)
          VALUES ('${VERSIONS[$i]}', '${FILES[$i]}', '${SUMS[$i]}')
          ON CONFLICT (version) DO NOTHING;"
@@ -253,13 +306,21 @@ if [ -n "$MARK_THROUGH" ]; then
 fi
 
 # --- normal mode: apply pending migrations -----------------------------------
-# Fetch already-recorded (version -> checksum) into an associative array.
+# Fetch already-recorded (version -> checksum) into an associative array. Capture
+# the query output via checked command substitution FIRST: a failing psql inside
+# a `while ... < <(psql ...)` process substitution does NOT trip `set -e`, so the
+# loop would silently run against an empty RECORDED map (treating every migration
+# as pending). Assigning to a local and letting `set -e` see psql's exit status
+# makes a failed ledger read abort the run.
+assert_lock_held
+recorded_rows="$(psql_db -qtA -F '|' \
+  -c "SELECT version, checksum FROM taxflow_internal.applied_migrations;")"
+
 declare -A RECORDED=()
 while IFS='|' read -r rec_version rec_sum; do
   [ -z "$rec_version" ] && continue
   RECORDED["$rec_version"]="$rec_sum"
-done < <(psql "$DB_URL" -v ON_ERROR_STOP=1 -qtA -F '|' \
-  -c "SELECT version, checksum FROM taxflow_internal.applied_migrations;")
+done <<< "$recorded_rows"
 
 declare -a APPLIED=()
 for i in "${!VERSIONS[@]}"; do
@@ -280,9 +341,12 @@ for i in "${!VERSIONS[@]}"; do
   fi
 
   # Apply the DDL + record the ledger row in ONE transaction, so a partial apply
-  # is never recorded (both roll back together on any error).
+  # is never recorded (both roll back together on any error). Re-assert the lock
+  # session is alive first: if it died, the advisory lock is gone and a concurrent
+  # run could be applying the same DDL, so we must not proceed.
+  assert_lock_held
   echo "Applying $fname ..."
-  if ! psql "$DB_URL" -v ON_ERROR_STOP=1 --single-transaction \
+  if ! psql_db --single-transaction \
       -f "$path" \
       -c "INSERT INTO taxflow_internal.applied_migrations (version, filename, checksum)
           VALUES ('$version', '$fname', '$sum');"; then
