@@ -407,12 +407,15 @@ class QueriesRepo:
         Pins BOTH client_id and session_id: RLS gives no isolation, so the
         explicit ``WHERE client_id = %s`` is the only tenant scoping. The trace
         jsonb marker is read with the ``->'clarify'->>'asked' = 'true'``
-        predicate (no new column / migration).
+        predicate (no new column / migration). Soft-deleted turns
+        (``deleted_at IS NOT NULL``, Phase 3) are excluded so archived
+        clarify turns can't keep suppressing clarification on a reused session.
         """
         count = _fetchval(
             """
             SELECT COUNT(*) FROM queries
             WHERE client_id = %s AND session_id = %s
+              AND deleted_at IS NULL
               AND trace -> 'clarify' ->> 'asked' = 'true'
             """,
             (client_id, session_id),

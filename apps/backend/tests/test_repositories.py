@@ -985,6 +985,8 @@ def test_count_session_clarifications_scoped_and_marker():
     assert "session_id = %s" in sql
     # Counts the trace.clarify.asked marker (no new column / migration).
     assert "'clarify'" in sql and "'asked'" in sql
+    # Phase 3 soft-delete: archived turns must not keep suppressing clarify.
+    assert "deleted_at IS NULL" in sql
     assert params == ("client-1", "sess-1")
     assert result == 2
 
