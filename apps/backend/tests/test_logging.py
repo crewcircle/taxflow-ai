@@ -219,6 +219,15 @@ def test_authenticated_access_record_includes_client_id(client, caplog):
 
 
 def test_no_print_in_src_except_cli_entrypoint():
+    # Modules deliberately allowed to use print() for CLI stdout output:
+    #  - services/knowledge/ingest.py: ingest CLI __main__ entrypoint.
+    #  - services/eval/runner.py: eval CLI runner's _print_summary/main stdout
+    #    (ships on the eval-on-demand branch; forward-looking path exception so
+    #    the gate stays green once both branches land on main).
+    _PRINT_ALLOWED = {
+        "services/knowledge/ingest.py",
+        "services/eval/runner.py",
+    }
     offenders: list[str] = []
     for path in SRC.rglob("*.py"):
         if "__pycache__" in path.parts:
@@ -227,8 +236,7 @@ def test_no_print_in_src_except_cli_entrypoint():
             if "print(" not in line:
                 continue
             rel = path.relative_to(SRC).as_posix()
-            # The knowledge ingest CLI __main__ entrypoint keeps its stdout print.
-            if rel == "services/knowledge/ingest.py":
+            if rel in _PRINT_ALLOWED:
                 continue
             offenders.append(f"{rel}:{i}")
     assert not offenders, f"Unexpected print() calls: {offenders}"
