@@ -324,6 +324,57 @@ def test_stale_urls_returns_urls_not_recently_scraped():
     assert stale == ["stale-url"]
 
 
+# --- ops notifications (Task 3a-0) -------------------------------------------
+
+
+def test_ops_notifications_insert_builds_insert_returning():
+    cur = _FakeCursor(fetchone={"id": "n1", "kind": "drift"})
+    with _patch_conn(cur):
+        row = Repositories().ops_notifications.insert(
+            {"kind": "drift", "title": "t", "body": "b", "severity": "warning"}
+        )
+    sql, params = cur.executed[0]
+    assert "INSERT INTO ops_notifications" in sql
+    assert "RETURNING *" in sql
+    # Ops-scoped: no client_id anywhere in the write.
+    assert "client_id" not in sql
+    assert row == {"id": "n1", "kind": "drift"}
+
+
+def test_ops_notifications_insert_serialises_jsonb_metadata():
+    cur = _FakeCursor(fetchone={"id": "n1"})
+    with _patch_conn(cur):
+        Repositories().ops_notifications.insert(
+            {"kind": "drift", "metadata": {"regressed": ["avg_confidence"]}}
+        )
+    _sql, params = cur.executed[0]
+    # dict metadata is JSON-encoded for the jsonb column.
+    assert '{"regressed": ["avg_confidence"]}' in params
+
+
+def test_ops_notifications_latest_orders_created_at_desc():
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().ops_notifications.latest(10)
+    sql, params = cur.executed[0]
+    assert "FROM ops_notifications" in sql
+    assert "ORDER BY created_at DESC" in sql
+    assert "client_id" not in sql
+    assert params == (10,)
+
+
+def test_ops_notifications_mark_read_updates_by_id():
+    cur = _FakeCursor()
+    with _patch_conn(cur):
+        Repositories().ops_notifications.mark_read("n1")
+    sql, params = cur.executed[0]
+    assert "UPDATE ops_notifications SET read_at = now()" in sql
+    assert "WHERE id = %s" in sql
+    # No client_id predicate — the table is operator-global.
+    assert "client_id" not in sql
+    assert params == ("n1",)
+
+
 # --- facade wiring ------------------------------------------------------------
 
 
@@ -343,5 +394,7 @@ def test_repositories_exposes_all_aggregates():
         "knowledge_ingest",
         "demo_reset",
         "health",
+        "notifications",
+        "ops_notifications",
     ):
         assert hasattr(repos, attr)
