@@ -10,6 +10,10 @@ jobs:
   test-backend:
     runs-on: ubuntu-latest
     services:
+      # The deploy gate (tests/integration/test_deploy_gate.py) and the migration
+      # runner self-test (tests/integration/test_apply_migrations.py) apply ALL
+      # migrations to this Postgres service, so schema drift / a broken migration
+      # fails CI here before deploy-backend can run.
       postgres:
         image: pgvector/pgvector:pg16
         env:
@@ -33,10 +37,18 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      # psql client for the migration runner self-test (test_apply_migrations.py
+      # shells out to scripts/apply_migrations.sh, which calls psql).
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
       - name: Install backend dependencies
         working-directory: apps/backend
         run: uv sync --extra dev
 
+      # This step now also runs the migrate + read-path deploy gate
+      # (tests/integration/test_deploy_gate.py) and the shell runner self-test
+      # (tests/integration/test_apply_migrations.py) against the postgres service.
       - name: Run backend tests
         working-directory: apps/backend
         env:
@@ -89,8 +101,18 @@ jobs:
 
   deploy-backend:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # test-backend now includes the migrate + read-path deploy gate
+    # (tests/integration/test_deploy_gate.py) and the runner self-test
+    # (tests/integration/test_apply_migrations.py), so a schema-drift / broken
+    # migration fails this pipeline before it can deploy.
     needs: [test-backend, test-dashboard]
     runs-on: ubuntu-latest
+    # Serialize deploys to main: a session advisory lock in apply_migrations.sh is
+    # the real guard against overlapping migration runs, but this concurrency group
+    # stops CI from starting two deploy-backend jobs at once as belt-and-suspenders.
+    concurrency:
+      group: deploy-backend-main
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -105,10 +127,18 @@ jobs:
       - name: Install Doppler CLI
         run: (curl -Ls --tlsv1.2 --proto "=https" --retry 3 https://cli.doppler.com/install.sh) | sudo sh
 
+      # psql client for scripts/apply_migrations.sh, which deploy_backend.sh runs on
+      # this GitHub runner (against MIGRATION_DATABASE_URL) before building/deploying.
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
       - name: Deploy backend to droplet
         env:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
-        # deploy_backend.sh is the deploy gate: it builds a sha-tagged image, runs a
-        # post-deploy /health smoke test, and rolls back to the previous tag + exits
-        # non-zero on failure, so this job goes red on a bad deploy (Decision #2487).
+        # deploy_backend.sh is the deploy gate: it applies pending DB migrations
+        # (schema before code), then builds a sha-tagged image, runs a post-deploy
+        # /health smoke test, and rolls back to the previous tag + exits non-zero on
+        # failure, so this job goes red on a bad deploy (Decision #2487).
+        # MIGRATION_DATABASE_URL (Supabase session pooler, port 5432) comes from the
+        # taxflow/prd Doppler config alongside the other required vars.
         run: doppler run --project taxflow --config prd -- bash scripts/deploy_backend.sh

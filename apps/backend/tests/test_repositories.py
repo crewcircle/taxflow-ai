@@ -67,10 +67,10 @@ def _all_sql(cursor) -> str:
 
 
 def test_queries_list_recent_scoped_by_client():
-    cur = _FakeCursor(fetchall=[])
+    cur = _ColumnProbeCursor(present=("edited_at", "deleted_at"))
     with _patch_conn(cur):
         Repositories().queries.list_recent("client-1", 50)
-    sql, params = cur.executed[0]
+    sql, params = cur.executed[-1]
     assert "FROM queries" in sql
     assert "WHERE client_id = %s" in sql
     assert params[0] == "client-1"
@@ -90,7 +90,7 @@ def test_documents_list_for_client_scoped_by_client():
     cur = _FakeCursor(fetchall=[])
     with _patch_conn(cur):
         Repositories().documents.list_for_client("client-1")
-    sql, params = cur.executed[0]
+    sql, params = cur.executed[-1]
     assert "FROM documents" in sql
     assert "WHERE client_id = %s" in sql
     assert params[0] == "client-1"
@@ -100,7 +100,7 @@ def test_documents_list_for_client_with_kind_filter_scoped_by_client():
     cur = _FakeCursor(fetchall=[])
     with _patch_conn(cur):
         Repositories().documents.list_for_client("client-1", "ato_response")
-    sql, params = cur.executed[0]
+    sql, params = cur.executed[-1]
     assert "FROM documents" in sql
     assert "client_id = %s" in sql
     assert "document_type = %s" in sql
@@ -1030,10 +1030,10 @@ def test_queries_delete_session_soft_deletes_all_scoped_by_client():
 
 
 def test_queries_list_recent_excludes_archived():
-    cur = _FakeCursor(fetchall=[])
+    cur = _ColumnProbeCursor(present=("edited_at", "deleted_at"))
     with _patch_conn(cur):
         Repositories().queries.list_recent("client-1", 50)
-    sql, _ = cur.executed[0]
+    sql, _ = cur.executed[-1]
     assert "FROM queries" in sql
     assert "deleted_at IS NULL" in sql
 
@@ -1270,3 +1270,147 @@ def test_stats_excludes_archived_queries():
     # Every FROM queries aggregate must filter archived rows; the query_feedback
     # CTE (no deleted_at column) must NOT reference it.
     assert "deleted_at IS NULL" in sql
+
+
+# --- Task A2: graceful column degradation ------------------------------------
+# The three drift-prone read paths (queries.list_recent, documents.list_for_client,
+# knowledge.graph_metadata) probe information_schema.columns via _present_columns
+# before building their SQL, so a not-yet-migrated column is omitted rather than
+# raising UndefinedColumn. This cursor lets each test declare which candidate
+# columns the probe reports present.
+
+
+class _ColumnProbeCursor:
+    """Fake cursor whose column probe reports a fixed set of present columns.
+
+    ``present`` are the column names the ``information_schema.columns`` probe
+    (``_present_columns`` via ``_fetchcol``) should report as existing; every
+    other query (the actual read) returns an empty result set. Records every
+    executed ``(sql, params)`` so tests can assert the emitted SQL shape.
+    """
+
+    def __init__(self, present=()):
+        self.executed = []  # (sql, params)
+        self._present = list(present)
+        self._last_sql = ""
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        self._last_sql = sql
+
+    def fetchone(self):
+        return None
+
+    def fetchall(self):
+        if "information_schema.columns" in self._last_sql:
+            return [(c,) for c in self._present]
+        return []
+
+    def close(self):
+        pass
+
+
+def _read_sql(cursor) -> str:
+    """The last non-probe SELECT the read path emitted (skips the column probe)."""
+    return next(
+        sql for sql, _ in reversed(cursor.executed)
+        if "information_schema.columns" not in sql
+    )
+
+
+# queries.list_recent -----------------------------------------------------------
+
+def test_list_recent_both_columns_present():
+    cur = _ColumnProbeCursor(present=("edited_at", "deleted_at"))
+    with _patch_conn(cur):
+        Repositories().queries.list_recent("client-1", 50)
+    sql = _read_sql(cur)
+    assert "edited_at" in sql and "NULL AS edited_at" not in sql
+    assert "deleted_at IS NULL" in sql
+    assert "WHERE client_id = %s" in sql
+
+
+def test_list_recent_neither_column_present():
+    cur = _ColumnProbeCursor(present=())
+    with _patch_conn(cur):
+        Repositories().queries.list_recent("client-1", 50)
+    sql = _read_sql(cur)
+    assert "NULL AS edited_at" in sql
+    assert "deleted_at IS NULL" not in sql
+    assert "WHERE client_id = %s" in sql
+
+
+def test_list_recent_only_deleted_at_present():
+    cur = _ColumnProbeCursor(present=("deleted_at",))
+    with _patch_conn(cur):
+        Repositories().queries.list_recent("client-1", 50)
+    sql = _read_sql(cur)
+    assert "NULL AS edited_at" in sql
+    assert "deleted_at IS NULL" in sql
+
+
+def test_list_recent_only_edited_at_present():
+    cur = _ColumnProbeCursor(present=("edited_at",))
+    with _patch_conn(cur):
+        Repositories().queries.list_recent("client-1", 50)
+    sql = _read_sql(cur)
+    assert "edited_at" in sql and "NULL AS edited_at" not in sql
+    assert "deleted_at IS NULL" not in sql
+
+
+# documents.list_for_client -----------------------------------------------------
+
+def test_documents_list_for_client_edited_at_present():
+    cur = _ColumnProbeCursor(present=("edited_at",))
+    with _patch_conn(cur):
+        Repositories().documents.list_for_client("client-1")
+    sql = _read_sql(cur)
+    assert "edited_at" in sql and "NULL AS edited_at" not in sql
+    assert "FROM documents" in sql
+
+
+def test_documents_list_for_client_edited_at_absent():
+    cur = _ColumnProbeCursor(present=())
+    with _patch_conn(cur):
+        Repositories().documents.list_for_client("client-1")
+    sql = _read_sql(cur)
+    assert "NULL AS edited_at" in sql
+    assert "FROM documents" in sql
+
+
+def test_documents_list_for_client_kind_filter_edited_at_present():
+    cur = _ColumnProbeCursor(present=("edited_at",))
+    with _patch_conn(cur):
+        Repositories().documents.list_for_client("client-1", "ato_response")
+    sql = _read_sql(cur)
+    assert "edited_at" in sql and "NULL AS edited_at" not in sql
+    assert "document_type = %s" in sql
+
+
+def test_documents_list_for_client_kind_filter_edited_at_absent():
+    cur = _ColumnProbeCursor(present=())
+    with _patch_conn(cur):
+        Repositories().documents.list_for_client("client-1", "ato_response")
+    sql = _read_sql(cur)
+    assert "NULL AS edited_at" in sql
+    assert "document_type = %s" in sql
+
+
+# knowledge.graph_metadata ------------------------------------------------------
+
+def test_graph_metadata_deleted_at_present():
+    cur = _ColumnProbeCursor(present=("deleted_at",))
+    with _patch_conn(cur):
+        Repositories().knowledge_ingest.graph_metadata()
+    sql = _read_sql(cur)
+    assert "deleted_at IS NULL" in sql
+    assert "citation_counts AS" in sql
+
+
+def test_graph_metadata_deleted_at_absent():
+    cur = _ColumnProbeCursor(present=())
+    with _patch_conn(cur):
+        Repositories().knowledge_ingest.graph_metadata()
+    sql = _read_sql(cur)
+    assert "deleted_at IS NULL" not in sql
+    assert "citation_counts AS" in sql

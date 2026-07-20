@@ -207,7 +207,9 @@ def test_list_recent_selects_re_research_status():
     cur = _FakeCursor(fetchall=[])
     with _patch_conn(cur):
         Repositories().queries.list_recent("client-1", 50)
-    sql, _ = cur.executed[0]
+    # list_recent first probes information_schema for edited_at/deleted_at, so the
+    # actual read is the last executed statement, not executed[0].
+    sql, _ = cur.executed[-1]
     assert "re_research_status" in sql
     assert "FROM queries" in sql
 

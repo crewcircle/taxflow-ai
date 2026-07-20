@@ -24,6 +24,7 @@ KEEP_TAGS="${KEEP_TAGS:-3}"
 
 REQUIRED_VARS=(SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY SUPABASE_ANON_KEY ANTHROPIC_API_KEY
                OPENAI_API_KEY STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET DATABASE_URL
+               MIGRATION_DATABASE_URL
                STRIPE_STARTER_PRICE_ID STRIPE_PROFESSIONAL_PRICE_ID)
 for var in "${REQUIRED_VARS[@]}"; do
   if [ -z "${!var:-}" ]; then
@@ -31,6 +32,14 @@ for var in "${REQUIRED_VARS[@]}"; do
     exit 1
   fi
 done
+
+# Apply pending DB migrations from the GitHub runner (session-pooler URL) BEFORE
+# building/deploying the new image, so the schema is always ahead of the code.
+# set -euo pipefail means a non-zero exit here aborts the deploy before any image
+# build/up — fail-safe. Only additive (expand) migrations may auto-apply; see the
+# expand/contract note in scripts/apply_migrations.sh.
+echo "=== Applying pending DB migrations (schema before code) ==="
+bash "$REPO_ROOT/scripts/apply_migrations.sh"
 
 echo "=== 1/4 First-run server setup (Docker, swap, firewall) ==="
 ssh -o StrictHostKeyChecking=accept-new "root@$DROPLET_IP" bash -s << 'REMOTE'
