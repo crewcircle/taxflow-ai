@@ -49,9 +49,27 @@ export default function SourceViewerPage({
         const container = containerRef.current;
         if (!container) return;
 
+        // Pass 1: text-only scan (no rendering) to find the matched page fast.
+        // Rendering every page's canvas before the one we actually need is
+        // what made a 20+ page ruling take ages to reach its highlight - text
+        // extraction alone is a fraction of the cost of a full canvas render.
         let foundPage: number | null = null;
+        const pageTextCache = new Map<number, TextItem[]>();
+        if (needle) {
+          for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+            const page: PDFPageProxy = await doc.getPage(pageNum);
+            const textContent = await page.getTextContent();
+            const items = textContent.items as TextItem[];
+            pageTextCache.set(pageNum, items);
+            const pageText = normalise(items.map((i) => i.str).join(" "));
+            if (pageText.indexOf(needle) !== -1) {
+              foundPage = pageNum;
+              break;
+            }
+          }
+        }
 
-        for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+        async function renderPage(pageNum: number) {
           const page: PDFPageProxy = await doc.getPage(pageNum);
           const viewport = page.getViewport({ scale: 1.5 });
 
@@ -60,7 +78,7 @@ export default function SourceViewerPage({
           canvas.height = viewport.height;
           canvas.className = "block border border-border shadow-sm";
           const ctx = canvas.getContext("2d");
-          if (!ctx) continue;
+          if (!ctx) return;
           await page.render({ canvas, canvasContext: ctx, viewport }).promise;
 
           // "relative" so highlight overlays below can be positioned with
@@ -69,42 +87,45 @@ export default function SourceViewerPage({
           pageWrapper.className = "relative mx-auto mb-4 w-fit";
           pageWrapper.dataset.page = String(pageNum);
           pageWrapper.appendChild(canvas);
-          container.appendChild(pageWrapper);
 
-          if (needle && !foundPage) {
-            const textContent = await page.getTextContent();
-            const items = textContent.items as TextItem[];
+          if (pageNum === foundPage) {
+            const items = pageTextCache.get(pageNum) ?? (await page.getTextContent()).items as TextItem[];
             const pageText = normalise(items.map((i) => i.str).join(" "));
-            const matchIndex = pageText.indexOf(needle);
-            if (matchIndex !== -1) {
-              foundPage = pageNum;
-              // Find which text items overlap the matched slice by walking
-              // items and accumulating normalised length until we cover the
-              // match range, then convert each overlapping item's bounding
-              // box into viewport (pixel) coordinates for the highlight.
-              let cursor = 0;
-              const matchEnd = matchIndex + needle.length;
-              for (const item of items) {
-                const itemLen = normalise(item.str).length + 1;
-                const itemStart = cursor;
-                const itemEnd = cursor + itemLen;
-                cursor = itemEnd;
-                if (itemEnd < matchIndex || itemStart > matchEnd) continue;
-                const tx = pdfjs.Util.transform(viewport.transform, item.transform);
-                const height = Math.hypot(tx[2], tx[3]);
-                const width = item.width * viewport.scale;
-                const highlight = document.createElement("div");
-                highlight.className =
-                  "pointer-events-none absolute rounded-sm bg-amber-300/50 ring-2 ring-amber-400";
-                highlight.style.left = `${tx[4]}px`;
-                highlight.style.top = `${tx[5] - height}px`;
-                highlight.style.width = `${width}px`;
-                highlight.style.height = `${height}px`;
-                pageWrapper.appendChild(highlight);
-              }
+            const matchIndex = pageText.indexOf(needle!);
+            // Find which text items overlap the matched slice by walking
+            // items and accumulating normalised length until we cover the
+            // match range, then convert each overlapping item's bounding
+            // box into viewport (pixel) coordinates for the highlight.
+            let cursor = 0;
+            const matchEnd = matchIndex + needle!.length;
+            for (const item of items) {
+              const itemLen = normalise(item.str).length + 1;
+              const itemStart = cursor;
+              const itemEnd = cursor + itemLen;
+              cursor = itemEnd;
+              if (itemEnd < matchIndex || itemStart > matchEnd) continue;
+              const tx = pdfjs.Util.transform(viewport.transform, item.transform);
+              const height = Math.hypot(tx[2], tx[3]);
+              const width = item.width * viewport.scale;
+              const highlight = document.createElement("div");
+              highlight.className =
+                "pointer-events-none absolute rounded-sm bg-amber-300/50 ring-2 ring-amber-400";
+              highlight.style.left = `${tx[4]}px`;
+              highlight.style.top = `${tx[5] - height}px`;
+              highlight.style.width = `${width}px`;
+              highlight.style.height = `${height}px`;
+              pageWrapper.appendChild(highlight);
             }
           }
+
+          return pageWrapper;
         }
+
+        // Render the matched page (or page 1) first so the reader sees the
+        // relevant passage immediately, then fill in the rest in order.
+        const priorityPage = foundPage ?? 1;
+        const priorityWrapper = await renderPage(priorityPage);
+        if (priorityWrapper) container.appendChild(priorityWrapper);
 
         setMatchedPage(foundPage);
         setStatus("ready");
@@ -112,6 +133,17 @@ export default function SourceViewerPage({
         if (foundPage) {
           const target = container.querySelector(`[data-page="${foundPage}"]`);
           target?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+
+        for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+          if (pageNum === priorityPage) continue;
+          const wrapper = await renderPage(pageNum);
+          if (!wrapper) continue;
+          // Keep pages in document order regardless of render completion order.
+          const next = Array.from(container.children).find(
+            (child) => Number((child as HTMLElement).dataset.page) > pageNum
+          );
+          container.insertBefore(wrapper, next ?? null);
         }
       } catch {
         setStatus("error");
