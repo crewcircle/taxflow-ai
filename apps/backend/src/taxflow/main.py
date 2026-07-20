@@ -15,6 +15,7 @@ from taxflow.routers import (
     annotations,
     ato_response,
     firm_clients,
+    engagements,
     firm_knowledge,
     knowledge,
     notifications,
@@ -70,6 +71,7 @@ app.include_router(documents.router)
 app.include_router(annotations.router)
 app.include_router(ato_response.router)
 app.include_router(firm_clients.router)
+app.include_router(engagements.router)
 app.include_router(firm_knowledge.router)
 app.include_router(knowledge.router)
 app.include_router(notifications.router)

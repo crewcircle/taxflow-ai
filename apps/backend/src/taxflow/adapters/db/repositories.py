@@ -130,6 +130,52 @@ def _set_clause(cols: list[str]) -> str:
     return ", ".join(f"{c} = %s" for c in cols)
 
 
+def _build_update(
+    table: str,
+    fields: dict,
+    *,
+    id_col: str = "id",
+    now_fields: tuple[str, ...] = (),
+    extra_now: tuple[str, ...] = (),
+    returning: bool = False,
+) -> tuple[str, list]:
+    """Build a client-scoped ``UPDATE`` statement from ``fields``.
+
+    Shared SET-clause builder for the repos' content-edit ``update`` methods.
+    Only a field named in the ``now_fields`` ALLOWLIST whose value is the
+    sentinel string ``"now()"`` is inlined as the SQL ``now()`` function call
+    (server-side timestamp) — those are backend-owned timestamp columns
+    (``edited_at``/``completed_at``/``resolved_at``) that would otherwise fail
+    the ``timestamptz`` cast. Every other field is bound as a literal param, so
+    user content that happens to equal the string ``"now()"`` (e.g.
+    ``{"content_md": "now()"}``) is stored verbatim, never emitted as SQL.
+    Columns named in ``extra_now`` are always appended as ``<col> = now()``
+    (e.g. a content edit unconditionally stamping ``edited_at``).
+
+    Every statement is scoped ``WHERE <id_col> = %s AND client_id = %s``; the
+    returned params end ``(..., <id>, <client_id>)`` for the caller to extend.
+    Returns ``(sql, params)`` — ``sql`` has no trailing id/client params filled,
+    so callers append ``[<id>, <client_id>]`` to ``params`` themselves.
+    """
+    assignments: list[str] = []
+    params: list = []
+    for c, value in fields.items():
+        if c in now_fields and value == "now()":
+            assignments.append(f"{c} = now()")
+        else:
+            assignments.append(f"{c} = %s")
+            params.append(_maybe_json(value))
+    for c in extra_now:
+        assignments.append(f"{c} = now()")
+    sql = (
+        f"UPDATE {table} SET {', '.join(assignments)} "
+        f"WHERE {id_col} = %s AND client_id = %s"
+    )
+    if returning:
+        sql += " RETURNING *"
+    return sql, params
+
+
 def _present_035_columns() -> set[str]:
     """Return which of the migration-035 observability columns
     (``cost_usd``/``citation_valid``/``model_id``) currently exist on
@@ -255,9 +301,9 @@ class QueriesRepo:
             """
             SELECT id, question, status, model_used, confidence_score,
                    verification_result, client_ref, context_note, topic_tag,
-                   session_id, re_research_status, created_at
+                   session_id, re_research_status, edited_at, created_at
             FROM queries
-            WHERE client_id = %s
+            WHERE client_id = %s AND deleted_at IS NULL
             ORDER BY created_at DESC
             LIMIT %s
             """,
@@ -275,33 +321,62 @@ class QueriesRepo:
     def update(self, client_id: str, query_id: str, fields: dict) -> None:
         if not fields:
             return
-        assignments = []
-        params: list = []
-        for c, value in fields.items():
-            if c == "completed_at" and value == "now()":
-                assignments.append(f"{c} = now()")
-            else:
-                assignments.append(f"{c} = %s")
-                params.append(_maybe_json(value))
-        params.extend([query_id, client_id])
-        _execute(
-            f"UPDATE queries SET {', '.join(assignments)} "
-            "WHERE id = %s AND client_id = %s",
-            params,
+        # Shared builder inlines the "now()" sentinel only for the backend-owned
+        # timestamp columns (completed_at/edited_at) — so `edited_at="now()"`
+        # from the edit route becomes SQL now(), while user content like
+        # `final_answer="now()"` is bound as a literal string. Scoped WHERE
+        # id=%s AND client_id=%s.
+        sql, params = _build_update(
+            "queries", fields, now_fields=("completed_at", "edited_at")
         )
+        params.extend([query_id, client_id])
+        _execute(sql, params)
 
     def get_for_client(self, client_id: str, query_id: str) -> dict | None:
+        # Soft-delete aware: archived (deleted_at IS NOT NULL) queries are hidden
+        # from every read path, so the ownership check on mutating routes 404s an
+        # already-archived query too.
         return _fetchone(
-            "SELECT * FROM queries WHERE id = %s AND client_id = %s",
+            "SELECT * FROM queries WHERE id = %s AND client_id = %s AND deleted_at IS NULL",
             (query_id, client_id),
         )
+
+    def delete(self, client_id: str, query_id: str) -> None:
+        # Soft-delete: queries feed admin analytics/cost/drift aggregates and are
+        # referenced by RESTRICT/CASCADE child FKs, so we archive rather than
+        # physically remove. Every read path filters `deleted_at IS NULL`.
+        # Scoped by BOTH id AND client_id so a client can only archive its own.
+        _execute(
+            "UPDATE queries SET deleted_at = now() "
+            "WHERE id = %s AND client_id = %s",
+            (query_id, client_id),
+        )
+
+    def delete_session(self, client_id: str, session_id: str) -> bool:
+        # Soft-delete every query in a conversation session. NOT a bare
+        # query_sessions delete — that table only holds the label; deleting it
+        # would leave every query visible with the label gone. Scoped by BOTH
+        # session_id AND client_id. RETURNING id so the route can 404 when the
+        # session has no live rows for this client (missing / foreign-owned /
+        # already-archived) rather than reporting false success. Only rows not
+        # already archived are re-stamped.
+        row = _execute(
+            "UPDATE queries SET deleted_at = now() "
+            "WHERE session_id = %s AND client_id = %s AND deleted_at IS NULL "
+            "RETURNING id",
+            (session_id, client_id),
+            returning=True,
+        )
+        return row is not None
 
     def get_question_citations(self, client_id: str, query_id: str) -> dict | None:
         # Scoped by BOTH id AND client_id: the pre-refactor documents.py read by
         # query_id only; the client predicate is added here to prevent one client
-        # from probing/using another client's query.
+        # from probing/using another client's query. Soft-delete aware so
+        # /documents/generate can't pull context from an archived query.
         return _fetchone(
-            "SELECT question, citations FROM queries WHERE id = %s AND client_id = %s",
+            "SELECT question, citations FROM queries "
+            "WHERE id = %s AND client_id = %s AND deleted_at IS NULL",
             (query_id, client_id),
         )
 
@@ -316,6 +391,7 @@ class QueriesRepo:
             FROM queries
             WHERE client_id = %s AND session_id = %s
               AND status = 'completed' AND final_answer IS NOT NULL
+              AND deleted_at IS NULL
             ORDER BY created_at DESC
             LIMIT %s
             """,
@@ -331,12 +407,15 @@ class QueriesRepo:
         Pins BOTH client_id and session_id: RLS gives no isolation, so the
         explicit ``WHERE client_id = %s`` is the only tenant scoping. The trace
         jsonb marker is read with the ``->'clarify'->>'asked' = 'true'``
-        predicate (no new column / migration).
+        predicate (no new column / migration). Soft-deleted turns
+        (``deleted_at IS NOT NULL``, Phase 3) are excluded so archived
+        clarify turns can't keep suppressing clarification on a reused session.
         """
         count = _fetchval(
             """
             SELECT COUNT(*) FROM queries
             WHERE client_id = %s AND session_id = %s
+              AND deleted_at IS NULL
               AND trace -> 'clarify' ->> 'asked' = 'true'
             """,
             (client_id, session_id),
@@ -355,12 +434,13 @@ class QueriesRepo:
     def get_answer_for_client(self, client_id: str, query_id: str) -> dict | None:
         # The async re-research worker reloads the original answer to re-run it.
         # Scoped by BOTH id AND client_id so one client's answer can never be
-        # re-researched under another client.
+        # re-researched under another client. Soft-delete aware so a queued
+        # re-research job can't reload/rewrite an archived answer.
         return _fetchone(
             """
             SELECT question, final_answer, citations, session_id, client_ref
             FROM queries
-            WHERE id = %s AND client_id = %s
+            WHERE id = %s AND client_id = %s AND deleted_at IS NULL
             """,
             (query_id, client_id),
         )
@@ -403,6 +483,10 @@ class QueriesRepo:
             "  AND (%(end)s::timestamptz IS NULL OR created_at < %(end)s)\n"
             "  AND (%(client_id)s::uuid IS NULL OR client_id = %(client_id)s)"
         )
+        # Soft-delete: archived queries (deleted_at IS NOT NULL) are excluded from
+        # every analytics aggregate over `queries`. The feedback CTE reads the
+        # separate `query_feedback` table (no deleted_at), so it keeps `window`.
+        q_window = window + "\n  AND deleted_at IS NULL"
         non_cache = "model_used <> 'cache'"
 
         # --- totals: query metrics in one CTE (NO feedback join), feedback in a
@@ -440,7 +524,7 @@ class QueriesRepo:
                         WHERE {non_cache} AND verification_result IS NOT NULL
                     ) AS non_cache_verified{cost_select}{citation_select}
                 FROM queries
-                WHERE {window}
+                WHERE {q_window}
             ),
             feedback AS (
                 SELECT
@@ -460,7 +544,7 @@ class QueriesRepo:
             SELECT verification_result->>'overall_status' AS overall_status,
                    count(*) AS count
             FROM queries
-            WHERE {window} AND {non_cache} AND verification_result IS NOT NULL
+            WHERE {q_window} AND {non_cache} AND verification_result IS NOT NULL
             GROUP BY verification_result->>'overall_status'
             """,
             params,
@@ -488,7 +572,7 @@ class QueriesRepo:
                    avg(wall_time_ms) FILTER (WHERE {non_cache}) AS avg_latency_ms,
                    avg(confidence_score) FILTER (WHERE {non_cache}) AS avg_confidence{model_cost_select}
             FROM queries
-            WHERE {window}
+            WHERE {q_window}
             GROUP BY {model_group}
             ORDER BY count(*) DESC
             """,
@@ -520,7 +604,7 @@ class QueriesRepo:
                    count(*) AS query_volume,
                    avg(wall_time_ms) FILTER (WHERE {non_cache}) AS avg_latency_ms{day_cost_select}
             FROM queries
-            WHERE {window}
+            WHERE {q_window}
             GROUP BY date_trunc('day', created_at)
             ORDER BY day
             """,
@@ -624,23 +708,13 @@ class AnnotationsRepo:
         )
 
     def update(self, client_id: str, annotation_id: str, fields: dict) -> dict | None:
-        assignments: list[str] = []
-        params: list = []
-        for c, value in fields.items():
-            if value == "now()":
-                assignments.append(f"{c} = now()")
-            else:
-                assignments.append(f"{c} = %s")
-                params.append(value)
-        if not assignments:
+        if not fields:
             return self.get_for_client(client_id, annotation_id)
-        params.extend([annotation_id, client_id])
-        return _execute(
-            f"UPDATE annotations SET {', '.join(assignments)} "
-            "WHERE id = %s AND client_id = %s RETURNING *",
-            params,
-            returning=True,
+        sql, params = _build_update(
+            "annotations", fields, now_fields=("resolved_at",), returning=True
         )
+        params.extend([annotation_id, client_id])
+        return _execute(sql, params, returning=True)
 
     def delete(self, client_id: str, annotation_id: str) -> None:
         _execute(
@@ -656,7 +730,7 @@ class DocumentsRepo:
             return _fetchall(
                 """
                 SELECT id, title, status, context_note, created_at,
-                       approved_by, approved_at
+                       edited_at, approved_by, approved_at
                 FROM documents
                 WHERE client_id = %s AND document_type = %s
                 ORDER BY created_at DESC
@@ -666,7 +740,7 @@ class DocumentsRepo:
         return _fetchall(
             """
             SELECT id, document_type, title, status, client_ref,
-                   context_note, created_at, approved_by, approved_at
+                   context_note, created_at, edited_at, approved_by, approved_at
             FROM documents
             WHERE client_id = %s
             ORDER BY created_at DESC
@@ -704,6 +778,35 @@ class DocumentsRepo:
             params,
         )
 
+    def update(self, client_id: str, document_id: str, fields: dict) -> dict | None:
+        """Full-content edit: set the provided cols (``content_md``/``title``)
+        plus ``edited_at = now()``, RETURNING the refreshed row. Scoped by BOTH
+        id AND client_id so a client can only edit its own document.
+
+        ``edited_at = now()`` is emitted server-side (via ``extra_now``, inlined
+        not parameterised) so the edit timestamp is the DB clock; all other
+        fields (the user-provided ``title``/``content_md``) are bound as literal
+        params — no ``now_fields`` allowlist here, so content equal to the
+        string ``"now()"`` is stored verbatim. Params end
+        ``(..., document_id, client_id)`` to match the WHERE clause.
+        """
+        sql, params = _build_update(
+            "documents", fields, extra_now=("edited_at",), returning=True
+        )
+        params.extend([document_id, client_id])
+        return _execute(sql, params, returning=True)
+
+    def delete(self, client_id: str, document_id: str) -> None:
+        """Hard delete, scoped by BOTH id AND client_id. Documents are referenced
+        by RESTRICT foreign keys (``knowledge_suggestions.source_document_id``,
+        ``engagement_context.document_id``); deleting a referenced document raises
+        a psycopg2 ``IntegrityError`` which the route catches and maps to 409.
+        """
+        _execute(
+            "DELETE FROM documents WHERE id = %s AND client_id = %s",
+            (document_id, client_id),
+        )
+
 
 # --- firm_clients (a firm's own client register, built organically) ---------
 class FirmClientsRepo:
@@ -718,6 +821,28 @@ class FirmClientsRepo:
             ON CONFLICT (client_id, lower(name)) DO NOTHING
             """,
             (client_id, name),
+        )
+
+    def create(self, client_id: str, name: str) -> dict:
+        """Get-or-create returning the row id (Phase 2 engagement picker).
+
+        Unlike ``upsert`` (no-op, returns nothing) this always returns a real
+        ``firm_clients.id`` whether the name is brand-new or already exists:
+        ``ON CONFLICT ... DO UPDATE SET name = EXCLUDED.name`` forces the
+        conflicting row to be returned. Scoped to the tenant via the
+        ``(client_id, lower(name))`` unique index — a name only ever resolves
+        within the caller's own client register.
+        """
+        return _execute(
+            """
+            INSERT INTO firm_clients (client_id, name)
+            VALUES (%s, %s)
+            ON CONFLICT (client_id, lower(name))
+                DO UPDATE SET name = EXCLUDED.name
+            RETURNING id, name
+            """,
+            (client_id, name.strip()),
+            returning=True,
         )
 
     def list_for_client(self, client_id: str, search: str | None = None) -> list[dict]:
@@ -794,6 +919,165 @@ class DocumentTemplatesRepo:
         )
 
 
+# --- engagements (first-class engagement entity, migration 039) --------------
+class EngagementsRepo:
+    """First-class engagements (migration 039).
+
+    Every statement carries ``WHERE client_id = %s`` — RLS is service-role-only
+    and gives no tenant isolation, so this predicate is the only boundary. An
+    engagement is always attributed to a real ``firm_clients`` row
+    (``firm_client_id``) belonging to the same tenant.
+
+    ``create`` allocates the per-firm-client sequential ``engagement_number`` and
+    inserts the engagement in a SINGLE transaction: the counter
+    ``UPDATE firm_clients ... RETURNING next_engagement_seq`` takes one row lock
+    on exactly the target firm-client row (tenant-scoped by
+    ``id = %s AND client_id = %s``), so concurrent creates for the same client
+    serialise cleanly while different clients never block each other, and the
+    first insert can never phantom. If the counter UPDATE returns 0 rows the
+    firm-client is unknown or belongs to another tenant — raise, insert nothing.
+    """
+
+    _COLS = (
+        "id, client_id, firm_client_id, engagement_number, description, "
+        "status, created_by, created_at"
+    )
+
+    def create(
+        self,
+        client_id: str,
+        firm_client_id: str,
+        description: str,
+        created_by: str | None = None,
+    ) -> dict:
+        # Single transaction: increment the per-firm-client counter (row lock),
+        # read the new value, then insert the engagement carrying it as
+        # engagement_number. One conn.commit() — NOT two _execute calls, which
+        # would commit separately and lose atomicity of the number allocation.
+        with get_pg_conn() as conn:
+            cur = _dict_cursor(conn)
+            cur.execute(
+                """
+                UPDATE firm_clients
+                   SET next_engagement_seq = next_engagement_seq + 1
+                 WHERE id = %s AND client_id = %s
+                RETURNING next_engagement_seq
+                """,
+                (firm_client_id, client_id),
+            )
+            seq_row = cur.fetchone()
+            if seq_row is None:
+                # Unknown firm-client OR one owned by another tenant — never
+                # allocate a number or insert an engagement for it.
+                cur.close()
+                raise ValueError(
+                    "firm_client not found for this client (unknown or wrong tenant)"
+                )
+            engagement_number = seq_row["next_engagement_seq"]
+            cur.execute(
+                """
+                INSERT INTO engagements
+                    (client_id, firm_client_id, engagement_number, description, created_by)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING *
+                """,
+                (client_id, firm_client_id, engagement_number, description, created_by),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            cur.close()
+            return dict(row)
+
+    def list_for_client(
+        self,
+        client_id: str,
+        firm_client_id: str | None = None,
+        status: str | None = None,
+    ) -> list[dict]:
+        sql = f"SELECT {self._COLS} FROM engagements WHERE client_id = %s"
+        params: list = [client_id]
+        if firm_client_id:
+            sql += " AND firm_client_id = %s"
+            params.append(firm_client_id)
+        if status:
+            sql += " AND status = %s"
+            params.append(status)
+        sql += " ORDER BY created_at DESC"
+        return _fetchall(sql, params)
+
+    def get_for_client(self, client_id: str, engagement_id: str) -> dict | None:
+        return _fetchone(
+            f"SELECT {self._COLS} FROM engagements WHERE id = %s AND client_id = %s",
+            (engagement_id, client_id),
+        )
+
+
+# --- engagement backfill (Phase 2, one-time guarded data step) ---------------
+class EngagementBackfillRepo:
+    """Read/link helpers for the one-time legacy backfill (scripts/backfill_
+    engagements.py). All SQL lives here (architecture gate); the script only
+    orchestrates. Every statement is client-scoped.
+
+    ``client_ref`` is normalised with ``NULLIF(TRIM(client_ref), '')`` so blank
+    and whitespace-only refs collapse to a single NULL "unattributed" bucket per
+    tenant (all legacy ATO uploads land here — they persist no client_ref). The
+    backfill only ever touches rows with ``engagement_id IS NULL``, so a second
+    run finds no buckets and links nothing — idempotent by construction.
+    """
+
+    def distinct_unlinked_buckets(self, client_id: str | None = None) -> list[dict]:
+        """Distinct ``(client_id, normalised client_ref)`` across ``queries`` +
+        ``documents`` with ``engagement_id IS NULL``. Each returned bucket is
+        guaranteed to have at least one unlinked row."""
+        client_pred = " AND client_id = %s" if client_id else ""
+        sql = f"""
+            SELECT DISTINCT client_id, NULLIF(TRIM(client_ref), '') AS client_ref
+            FROM (
+                SELECT client_id, client_ref FROM queries
+                 WHERE engagement_id IS NULL{client_pred}
+                UNION
+                SELECT client_id, client_ref FROM documents
+                 WHERE engagement_id IS NULL{client_pred}
+            ) t
+            ORDER BY client_id, client_ref NULLS FIRST
+        """
+        params: list = [client_id, client_id] if client_id else []
+        return _fetchall(sql, params)
+
+    def link_bucket(self, client_id: str, client_ref: str | None, engagement_id: str) -> int:
+        """Link every unlinked ``queries``/``documents`` row in a bucket to
+        ``engagement_id``. Returns the total number of rows linked. Scoped to the
+        tenant AND the normalised client_ref (NULL for the unattributed bucket);
+        only rows still ``engagement_id IS NULL`` are touched (idempotent)."""
+        # Build the client_ref predicate + params once: NULL uses IS NULL (no
+        # bound value), a real ref matches the normalised value. Both keep the
+        # tenant scope and the engagement_id IS NULL idempotent guard.
+        if client_ref is None:
+            ref_pred = "NULLIF(TRIM(client_ref), '') IS NULL"
+            ref_params: tuple = ()
+        else:
+            ref_pred = "NULLIF(TRIM(client_ref), '') = %s"
+            ref_params = (client_ref,)
+
+        total = 0
+        with get_pg_conn() as conn:
+            cur = conn.cursor()
+            for table in ("queries", "documents"):
+                cur.execute(
+                    f"""
+                    UPDATE {table} SET engagement_id = %s
+                     WHERE client_id = %s
+                       AND {ref_pred}
+                       AND engagement_id IS NULL
+                    """,
+                    (engagement_id, client_id, *ref_params),
+                )
+                total += cur.rowcount
+            conn.commit()
+            cur.close()
+        return total
+
+
 # --- query_sessions ------------------------------------------------------------
 class QuerySessionsRepo:
     def list_for_client(self, client_id: str) -> list[dict]:
@@ -845,10 +1129,32 @@ class FirmKnowledgeRepo:
             (item_id, client_id),
         )
 
-    def delete(self, client_id: str, item_id: str) -> None:
-        _execute(
-            "DELETE FROM firm_knowledge WHERE id = %s AND client_id = %s",
+    def delete(self, client_id: str, item_id: str) -> bool:
+        # Scoped by BOTH id AND client_id. RETURNING id so the route can 404 when
+        # nothing owned was deleted (missing / foreign-owned), rather than
+        # silently reporting success on a no-op delete.
+        row = _execute(
+            "DELETE FROM firm_knowledge WHERE id = %s AND client_id = %s "
+            "RETURNING id",
             (item_id, client_id),
+            returning=True,
+        )
+        return row is not None
+
+    def update(
+        self, client_id: str, item_id: str, content: str, embedding: list[float]
+    ) -> dict | None:
+        """Edit a firm-knowledge note's content and its embedding vector in one
+        UPDATE. The caller (route) re-runs ``embed(content)`` before calling this
+        so the stored vector stays consistent with the edited text. Scoped by
+        BOTH id AND client_id so a client can only edit its own note.
+        """
+        return _execute(
+            "UPDATE firm_knowledge SET content = %s, embedding = %s "
+            "WHERE id = %s AND client_id = %s "
+            "RETURNING id, file_name, file_type, content, usage_count, created_at",
+            (content, embedding, item_id, client_id),
+            returning=True,
         )
 
     def increment_usage(self, client_id: str, item_ids: list[str]) -> None:
@@ -1190,11 +1496,27 @@ class QueryCacheRepo:
             SELECT COUNT(*) FROM queries
             WHERE client_id = %s
               AND status = 'completed'
+              AND deleted_at IS NULL
               AND btrim(regexp_replace(lower(btrim(question)), '\s+', ' ', 'g'), E' \t\n?.!') = %s
             """,
             (client_id, question_norm),
         )
         return int(count) if count is not None else 0
+
+    def invalidate(self, client_id: str, question_norm: str) -> None:
+        """Delete cached answer rows for this client + normalised question.
+
+        Called on query soft-delete: the answer cache reads the SEPARATE
+        ``query_cache`` table, so filtering archived rows out of ``queries``
+        alone would NOT stop an exact re-ask returning the archived answer.
+        Removing the matching cache row(s) (across all knowledge_versions) makes
+        the next identical ask recompute rather than serve the archived answer.
+        Scoped by client_id so one client can never evict another's cache.
+        """
+        _execute(
+            "DELETE FROM query_cache WHERE client_id = %s AND question_norm = %s",
+            (client_id, question_norm),
+        )
 
 
 # --- knowledge_ingest --------------------------------------------------------
@@ -1292,7 +1614,7 @@ class KnowledgeIngestRepo:
             WITH citation_counts AS (
                 SELECT elem ->> 'citation' AS citation, count(*) AS cited_count
                 FROM queries, jsonb_array_elements(citations) AS elem
-                WHERE citations IS NOT NULL
+                WHERE citations IS NOT NULL AND deleted_at IS NULL
                 GROUP BY elem ->> 'citation'
             )
             SELECT
@@ -1490,6 +1812,18 @@ class NotificationsRepo:
             (notification_id, client_id),
         )
 
+    def delete(self, client_id: str, notification_id: str) -> bool:
+        # Scoped by BOTH id AND client_id so a client can only delete its own
+        # notification. RETURNING id so the route can 404 when nothing owned was
+        # deleted (missing / foreign-owned) rather than reporting false success.
+        row = _execute(
+            "DELETE FROM notifications WHERE id = %s AND client_id = %s "
+            "RETURNING id",
+            (notification_id, client_id),
+            returning=True,
+        )
+        return row is not None
+
 
 # --- ops notifications -------------------------------------------------------
 class OpsNotificationsRepo:
@@ -1582,6 +1916,8 @@ class Repositories:
         self.documents = DocumentsRepo()
         self.firm_clients = FirmClientsRepo()
         self.document_templates = DocumentTemplatesRepo()
+        self.engagements = EngagementsRepo()
+        self.engagement_backfill = EngagementBackfillRepo()
         self.query_sessions = QuerySessionsRepo()
         self.firm_knowledge = FirmKnowledgeRepo()
         self.knowledge_suggestions = KnowledgeSuggestionsRepo()

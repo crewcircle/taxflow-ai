@@ -18,6 +18,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ClientAutocomplete } from "@/components/ClientAutocomplete";
+import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
+import { ResourceRowActions } from "@/components/resource-actions/ResourceRowActions";
+import { ConfirmDialog } from "@/components/resource-actions/ConfirmDialog";
+import { ResourceEditDialog } from "@/components/resource-actions/ResourceEditDialog";
+import { useResourceMutation } from "@/components/resource-actions/useResourceMutation";
 
 interface DocumentRow {
   id: string;
@@ -29,6 +34,7 @@ interface DocumentRow {
   created_at: string;
   approved_by: string | null;
   approved_at: string | null;
+  edited_at?: string | null;
 }
 
 interface DocumentTemplate {
@@ -82,6 +88,14 @@ export default function DocumentsPage() {
   const [staffDirectory, setStaffDirectory] = useState<StaffMember[]>([]);
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [approvingAs, setApprovingAs] = useState("");
+  // Phase 2: optionally attribute a hand-written document to a first-class
+  // engagement. Selecting one mirrors the end-client name into form.client_ref.
+  const [engagement, setEngagement] = useState<EngagementSelection | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DocumentRow | null>(null);
+  const [editTarget, setEditTarget] = useState<
+    { id: string; title: string; content_md: string } | null
+  >(null);
+  const mutation = useResourceMutation({ onSuccess: loadDocuments });
   const [form, setForm] = useState({
     title: "",
     document_type: "advice_memo",
@@ -139,6 +153,22 @@ export default function DocumentsPage() {
     }
   }
 
+  async function openEdit(documentId: string) {
+    // The list row does not carry content_md; fetch the full document first.
+    try {
+      const res = await fetch(`/api/documents/${documentId}`);
+      if (!res.ok) throw new Error("Failed");
+      const doc = await res.json();
+      setEditTarget({
+        id: documentId,
+        title: doc.title ?? "",
+        content_md: doc.content_md ?? "",
+      });
+    } catch {
+      setError("Could not open this document for editing");
+    }
+  }
+
   async function handleCreate() {
     if (!form.title.trim() || !form.content_md.trim()) return;
     setSaving(true);
@@ -147,10 +177,15 @@ export default function DocumentsPage() {
       const response = await fetch("/api/documents/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, client_ref: form.client_ref.trim() || null }),
+        body: JSON.stringify({
+          ...form,
+          client_ref: form.client_ref.trim() || null,
+          engagement_id: engagement?.engagement.id ?? null,
+        }),
       });
       if (!response.ok) throw new Error("Failed");
       setForm({ title: "", document_type: "advice_memo", content_md: "", client_ref: "" });
+      setEngagement(null);
       setCreating(false);
       loadDocuments();
     } catch {
@@ -246,11 +281,21 @@ export default function DocumentsPage() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="doc-client-ref">Client (optional)</Label>
-              <ClientAutocomplete
-                value={form.client_ref}
-                onChange={(v) => setForm({ ...form, client_ref: v })}
-                placeholder="e.g. Smith Dental Practice"
-              />
+              <div className="flex items-center gap-2">
+                <ClientAutocomplete
+                  value={form.client_ref}
+                  onChange={(v) => setForm({ ...form, client_ref: v })}
+                  placeholder="e.g. Smith Dental Practice"
+                />
+                <EngagementPicker
+                  value={engagement}
+                  onChange={(selection) => {
+                    setEngagement(selection);
+                    if (selection) setForm((f) => ({ ...f, client_ref: selection.clientName }));
+                  }}
+                  triggerLabel="Attach engagement"
+                />
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="doc-content">Content</Label>
@@ -332,20 +377,14 @@ export default function DocumentsPage() {
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {new Date(doc.created_at).toLocaleDateString("en-AU")}
+                      {doc.edited_at && (
+                        <span className="mt-1 block text-[11px] text-muted-foreground">
+                          Edited {new Date(doc.edited_at).toLocaleDateString("en-AU")}
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-3">
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <a
-                              href={`/dashboard/documents/${doc.id}`}
-                              className="text-accent hover:underline"
-                            >
-                              View
-                            </a>
-                          </TooltipTrigger>
-                          <TooltipContent>Open the in-app viewer to read and annotate this document</TooltipContent>
-                        </Tooltip>
                         {doc.status !== "approved" &&
                           (approvingId === doc.id ? (
                             <div className="flex items-center gap-1.5">
@@ -391,17 +430,20 @@ export default function DocumentsPage() {
                               </TooltipContent>
                             </Tooltip>
                           ))}
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <a
-                              href={`/api/documents/${doc.id}/download?fmt=docx`}
-                              className="text-accent hover:underline"
-                            >
-                              Download
-                            </a>
-                          </TooltipTrigger>
-                          <TooltipContent>Downloads this document as a .docx file</TooltipContent>
-                        </Tooltip>
+                        <ResourceRowActions
+                          label="document"
+                          actions={{
+                            view: () => {
+                              window.location.href = `/dashboard/documents/${doc.id}`;
+                            },
+                            edit: () => openEdit(doc.id),
+                            delete: () => setDeleteTarget(doc),
+                            download: {
+                              docx: `/api/documents/${doc.id}/download?fmt=docx`,
+                              pdf: `/api/documents/${doc.id}/download?fmt=pdf`,
+                            },
+                          }}
+                        />
                       </div>
                     </TableCell>
                   </TableRow>
@@ -411,6 +453,49 @@ export default function DocumentsPage() {
           </div>
         );
       })()}
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        title="Delete document?"
+        description={
+          deleteTarget
+            ? `"${deleteTarget.title}" will be permanently deleted. This cannot be undone.`
+            : undefined
+        }
+        confirmLabel="Delete"
+        destructive
+        pending={mutation.pending}
+        onConfirm={async () => {
+          if (!deleteTarget) return;
+          const ok = await mutation.remove(
+            `/api/documents/${deleteTarget.id}`,
+            "Document deleted"
+          );
+          if (ok) setDeleteTarget(null);
+        }}
+      />
+
+      {editTarget && (
+        <ResourceEditDialog
+          open={!!editTarget}
+          onOpenChange={(open) => {
+            if (!open) setEditTarget(null);
+          }}
+          initial={{ title: editTarget.title, content_md: editTarget.content_md }}
+          pending={mutation.pending}
+          onSave={async (fields) => {
+            const ok = await mutation.patch(
+              `/api/documents/${editTarget.id}`,
+              fields,
+              "Document updated"
+            );
+            if (ok) setEditTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }

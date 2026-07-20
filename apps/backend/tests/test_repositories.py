@@ -444,6 +444,134 @@ def test_ops_notifications_mark_read_updates_by_id():
 # --- facade wiring ------------------------------------------------------------
 
 
+# --- engagements (migration 039) ---------------------------------------------
+
+
+class _SeqCursor:
+    """Fake cursor returning a queued sequence of fetchone() results, so the
+    two-statement ``EngagementsRepo.create`` transaction can hand back the
+    counter row then the inserted engagement row."""
+
+    def __init__(self, fetchone_results):
+        self.executed = []
+        self._results = list(fetchone_results)
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    def fetchone(self):
+        return self._results.pop(0) if self._results else None
+
+    def fetchall(self):
+        return []
+
+    def close(self):
+        pass
+
+
+def test_firm_clients_create_get_or_create_returns_id():
+    cur = _FakeCursor(fetchone={"id": "fc-1", "name": "Acme Pty Ltd"})
+    with _patch_conn(cur):
+        row = Repositories().firm_clients.create("client-1", "Acme Pty Ltd")
+    sql, params = cur.executed[0]
+    norm = " ".join(sql.split())
+    assert "INSERT INTO firm_clients" in norm
+    assert "ON CONFLICT (client_id, lower(name)) DO UPDATE" in norm
+    assert "RETURNING id, name" in norm
+    assert params == ("client-1", "Acme Pty Ltd")
+    assert row == {"id": "fc-1", "name": "Acme Pty Ltd"}
+
+
+def test_engagements_create_single_transaction_counter_then_insert():
+    cur = _SeqCursor(
+        [
+            {"next_engagement_seq": 7},  # counter UPDATE ... RETURNING
+            {"id": "eng-1", "engagement_number": 7},  # INSERT ... RETURNING *
+        ]
+    )
+    conn = _FakeConn(cur)
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _pool():
+        yield conn
+
+    with patch.object(repositories, "get_pg_conn", _pool):
+        row = Repositories().engagements.create("client-1", "fc-1", "Q3 advice")
+
+    assert len(cur.executed) == 2, "create must run exactly two statements"
+    update_sql, update_params = cur.executed[0]
+    assert "UPDATE firm_clients" in update_sql
+    assert "next_engagement_seq = next_engagement_seq + 1" in update_sql
+    assert "WHERE id = %s AND client_id = %s" in update_sql
+    assert "RETURNING next_engagement_seq" in update_sql
+    assert update_params == ("fc-1", "client-1")
+
+    insert_sql, insert_params = cur.executed[1]
+    assert "INSERT INTO engagements" in insert_sql
+    assert "RETURNING *" in insert_sql
+    # engagement_number carries the returned counter value.
+    assert insert_params == ("client-1", "fc-1", 7, "Q3 advice", None)
+
+    # Single transaction: exactly one commit for both statements.
+    assert conn.committed is True
+    assert row["engagement_number"] == 7
+
+
+def test_engagements_create_raises_and_skips_insert_when_counter_returns_no_rows():
+    # Counter UPDATE returns 0 rows -> firm_client is unknown or another tenant's.
+    cur = _SeqCursor([None])
+    conn = _FakeConn(cur)
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _pool():
+        yield conn
+
+    import pytest
+
+    with patch.object(repositories, "get_pg_conn", _pool):
+        with pytest.raises(ValueError):
+            Repositories().engagements.create("client-1", "foreign-fc", "desc")
+
+    # Only the counter UPDATE ran; NO INSERT and NO commit.
+    assert len(cur.executed) == 1
+    assert "UPDATE firm_clients" in cur.executed[0][0]
+    assert conn.committed is False
+
+
+def test_engagements_list_for_client_scoped_by_client():
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().engagements.list_for_client("client-1")
+    sql, params = cur.executed[0]
+    assert "FROM engagements" in sql
+    assert "WHERE client_id = %s" in sql
+    assert params[0] == "client-1"
+
+
+def test_engagements_list_for_client_filters_firm_client_and_status():
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().engagements.list_for_client("client-1", "fc-1", "active")
+    sql, params = cur.executed[0]
+    assert "FROM engagements" in sql
+    assert "WHERE client_id = %s" in sql
+    assert "firm_client_id = %s" in sql
+    assert "status = %s" in sql
+    assert list(params) == ["client-1", "fc-1", "active"]
+
+
+def test_engagements_get_for_client_scoped_by_client():
+    cur = _FakeCursor(fetchone={"id": "eng-1", "client_id": "client-1"})
+    with _patch_conn(cur):
+        Repositories().engagements.get_for_client("client-1", "eng-1")
+    sql, params = cur.executed[0]
+    assert "FROM engagements" in sql
+    assert "WHERE id = %s AND client_id = %s" in sql
+    assert list(params) == ["eng-1", "client-1"]
+
+
 def test_repositories_exposes_all_aggregates():
     repos = Repositories()
     for attr in (
@@ -453,6 +581,7 @@ def test_repositories_exposes_all_aggregates():
         "query_feedback",
         "documents",
         "firm_knowledge",
+        "engagements",
         "regulatory_alerts",
         "contact",
         "rate_limit",
@@ -856,6 +985,8 @@ def test_count_session_clarifications_scoped_and_marker():
     assert "session_id = %s" in sql
     # Counts the trace.clarify.asked marker (no new column / migration).
     assert "'clarify'" in sql and "'asked'" in sql
+    # Phase 3 soft-delete: archived turns must not keep suppressing clarify.
+    assert "deleted_at IS NULL" in sql
     assert params == ("client-1", "sess-1")
     assert result == 2
 
@@ -865,3 +996,277 @@ def test_count_session_clarifications_zero_when_none():
     with _patch_conn(cur):
         result = Repositories().queries.count_session_clarifications("client-1", "sess-1")
     assert result == 0
+# --- Phase 3: soft-delete + content-edit repo methods -------------------------
+
+
+def test_queries_get_for_client_excludes_archived():
+    cur = _FakeCursor(fetchone=None)
+    with _patch_conn(cur):
+        Repositories().queries.get_for_client("client-1", "q1")
+    sql, params = cur.executed[0]
+    assert "FROM queries" in sql
+    assert "WHERE id = %s AND client_id = %s AND deleted_at IS NULL" in sql
+    assert list(params) == ["q1", "client-1"]
+
+
+def test_queries_delete_soft_deletes_scoped_by_client():
+    cur = _FakeCursor()
+    with _patch_conn(cur):
+        Repositories().queries.delete("client-1", "q1")
+    sql, params = cur.executed[0]
+    assert "UPDATE queries SET deleted_at = now()" in sql
+    assert "WHERE id = %s AND client_id = %s" in sql
+    assert list(params) == ["q1", "client-1"]
+
+
+def test_queries_delete_session_soft_deletes_all_scoped_by_client():
+    cur = _FakeCursor()
+    with _patch_conn(cur):
+        Repositories().queries.delete_session("client-1", "sess-1")
+    sql, params = cur.executed[0]
+    assert "UPDATE queries SET deleted_at = now()" in sql
+    assert "WHERE session_id = %s AND client_id = %s" in sql
+    assert list(params) == ["sess-1", "client-1"]
+
+
+def test_queries_list_recent_excludes_archived():
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().queries.list_recent("client-1", 50)
+    sql, _ = cur.executed[0]
+    assert "FROM queries" in sql
+    assert "deleted_at IS NULL" in sql
+
+
+def test_queries_list_session_history_excludes_archived():
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().queries.list_session_history("client-1", "sess-1", 10)
+    sql, _ = cur.executed[0]
+    assert "FROM queries" in sql
+    assert "deleted_at IS NULL" in sql
+
+
+def test_count_prior_asks_excludes_archived():
+    cur = _FakeCursor(fetchone=(0,))
+    with _patch_conn(cur):
+        Repositories().query_cache.count_prior_asks("client-1", "how do i")
+    sql, _ = cur.executed[0]
+    assert "FROM queries" in sql
+    assert "deleted_at IS NULL" in sql
+
+
+def test_query_cache_invalidate_scoped_by_client():
+    cur = _FakeCursor()
+    with _patch_conn(cur):
+        Repositories().query_cache.invalidate("client-1", "how do i")
+    sql, params = cur.executed[0]
+    assert "DELETE FROM query_cache" in sql
+    assert "WHERE client_id = %s AND question_norm = %s" in sql
+    assert list(params) == ["client-1", "how do i"]
+
+
+def test_documents_update_content_scoped_by_client_and_stamps_edited_at():
+    cur = _FakeCursor(fetchone={"id": "d1"})
+    with _patch_conn(cur):
+        Repositories().documents.update(
+            "client-1", "d1", {"content_md": "new body", "title": "New"}
+        )
+    sql, params = cur.executed[0]
+    assert "UPDATE documents" in sql
+    assert "edited_at = now()" in sql
+    assert "WHERE id = %s AND client_id = %s RETURNING *" in sql
+    # edited_at is inlined (not parameterised); params end (document_id, client_id).
+    assert list(params[-2:]) == ["d1", "client-1"]
+
+
+def test_documents_delete_scoped_by_client():
+    cur = _FakeCursor()
+    with _patch_conn(cur):
+        Repositories().documents.delete("client-1", "d1")
+    sql, params = cur.executed[0]
+    assert "DELETE FROM documents" in sql
+    assert "WHERE id = %s AND client_id = %s" in sql
+    assert list(params) == ["d1", "client-1"]
+
+
+def test_notifications_delete_scoped_by_client():
+    cur = _FakeCursor(fetchone={"id": "n1"})
+    with _patch_conn(cur):
+        Repositories().notifications.delete("client-1", "n1")
+    sql, params = cur.executed[0]
+    assert "DELETE FROM notifications" in sql
+    assert "WHERE id = %s AND client_id = %s" in sql
+    assert "RETURNING id" in sql
+    assert list(params) == ["n1", "client-1"]
+
+
+# --- edited_at "now()" sentinel inlined, not bound (issue #1 / S9) ------------
+
+
+def test_queries_update_edited_at_inlined_not_bound():
+    # Regression for the edit-query 500: the shared _build_update must inline the
+    # "now()" sentinel as SQL now() for ANY field (not just completed_at), so the
+    # timestamptz column gets a server-side timestamp instead of the literal
+    # string "now()" bound as a param (which fails the cast).
+    cur = _FakeCursor()
+    with _patch_conn(cur):
+        Repositories().queries.update(
+            "client-1", "q1", {"final_answer": "edited", "edited_at": "now()"}
+        )
+    sql, params = cur.executed[0]
+    assert "UPDATE queries" in sql
+    assert "edited_at = now()" in sql
+    assert "WHERE id = %s AND client_id = %s" in sql
+    # The sentinel is inlined into SQL, never bound as a param.
+    assert "now()" not in params
+    # final_answer is bound; params end (query_id, client_id).
+    assert "edited" in params
+    assert list(params[-2:]) == ["q1", "client-1"]
+
+
+def test_queries_update_now_string_content_is_bound_not_inlined():
+    # A user editing their answer to the literal string "now()" must be stored
+    # verbatim: only the backend-owned timestamp columns are inlined as SQL
+    # now(); user content that happens to equal "now()" is bound as a param.
+    cur = _FakeCursor()
+    with _patch_conn(cur):
+        Repositories().queries.update(
+            "client-1", "q1", {"final_answer": "now()", "edited_at": "now()"}
+        )
+    sql, params = cur.executed[0]
+    assert "final_answer = %s" in sql
+    assert "final_answer = now()" not in sql
+    # edited_at (an allowlisted timestamp column) is still inlined.
+    assert "edited_at = now()" in sql
+    # The user's literal "now()" content is bound as a param.
+    assert "now()" in params
+
+
+def test_documents_update_now_string_content_is_bound_not_inlined():
+    # PATCH /documents/{id} with title/content_md == "now()" stores them
+    # verbatim; only edited_at (via extra_now) is emitted as SQL now().
+    cur = _FakeCursor(fetchone={"id": "d1"})
+    with _patch_conn(cur):
+        Repositories().documents.update(
+            "client-1", "d1", {"content_md": "now()", "title": "now()"}
+        )
+    sql, params = cur.executed[0]
+    assert "content_md = %s" in sql
+    assert "title = %s" in sql
+    assert "content_md = now()" not in sql
+    assert "title = now()" not in sql
+    assert "edited_at = now()" in sql
+    # Both literal "now()" values are bound as params (before id/client).
+    assert params[:2] == ["now()", "now()"]
+
+
+def test_annotations_update_now_string_body_is_bound_not_inlined():
+    # PATCH /annotations/{id} with body == "now()" is bound verbatim; only
+    # resolved_at is an allowlisted timestamp column.
+    cur = _FakeCursor(fetchone={"id": "a1"})
+    with _patch_conn(cur):
+        Repositories().annotations.update("client-1", "a1", {"body": "now()"})
+    sql, params = cur.executed[0]
+    assert "body = %s" in sql
+    assert "body = now()" not in sql
+    assert "now()" in params
+
+
+# --- soft-delete filtering on the two extra query read helpers (issue #2) -----
+
+
+def test_get_question_citations_excludes_archived():
+    # /documents/generate must not pull context from an archived query.
+    cur = _FakeCursor(fetchone=None)
+    with _patch_conn(cur):
+        Repositories().queries.get_question_citations("client-1", "q1")
+    sql, _ = cur.executed[0]
+    assert "FROM queries" in sql
+    assert "deleted_at IS NULL" in sql
+
+
+def test_get_answer_for_client_excludes_archived():
+    # A queued re-research job must not reload/rewrite an archived answer.
+    cur = _FakeCursor(fetchone=None)
+    with _patch_conn(cur):
+        Repositories().queries.get_answer_for_client("client-1", "q1")
+    sql, params = cur.executed[0]
+    assert "FROM queries" in sql
+    assert "deleted_at IS NULL" in sql
+    assert list(params) == ["q1", "client-1"]
+
+
+# --- delete methods report rowcount for 404 (issue #3) ------------------------
+
+
+def test_firm_knowledge_delete_returns_true_when_row_deleted():
+    cur = _FakeCursor(fetchone={"id": "fk1"})
+    with _patch_conn(cur):
+        deleted = Repositories().firm_knowledge.delete("client-1", "fk1")
+    sql, _ = cur.executed[0]
+    assert "RETURNING id" in sql
+    assert deleted is True
+
+
+def test_firm_knowledge_delete_returns_false_when_nothing_deleted():
+    cur = _FakeCursor(fetchone=None)
+    with _patch_conn(cur):
+        deleted = Repositories().firm_knowledge.delete("client-1", "foreign")
+    assert deleted is False
+
+
+def test_notifications_delete_returns_true_when_row_deleted():
+    cur = _FakeCursor(fetchone={"id": "n1"})
+    with _patch_conn(cur):
+        deleted = Repositories().notifications.delete("client-1", "n1")
+    assert deleted is True
+
+
+def test_notifications_delete_returns_false_when_nothing_deleted():
+    cur = _FakeCursor(fetchone=None)
+    with _patch_conn(cur):
+        deleted = Repositories().notifications.delete("client-1", "foreign")
+    assert deleted is False
+
+
+def test_delete_session_returns_true_when_rows_archived():
+    cur = _FakeCursor(fetchone={"id": "q1"})
+    with _patch_conn(cur):
+        deleted = Repositories().queries.delete_session("client-1", "sess-1")
+    sql, _ = cur.executed[0]
+    assert "RETURNING id" in sql
+    assert "deleted_at IS NULL" in sql
+    assert deleted is True
+
+
+def test_delete_session_returns_false_when_nothing_archived():
+    # Missing / foreign-owned / already-archived session -> no live rows.
+    cur = _FakeCursor(fetchone=None)
+    with _patch_conn(cur):
+        deleted = Repositories().queries.delete_session("client-1", "foreign")
+    assert deleted is False
+
+
+def test_firm_knowledge_update_scoped_by_client_reembeds():
+    cur = _FakeCursor(fetchone={"id": "fk1"})
+    with _patch_conn(cur):
+        Repositories().firm_knowledge.update(
+            "client-1", "fk1", "edited content", [0.1, 0.2, 0.3]
+        )
+    sql, params = cur.executed[0]
+    assert "UPDATE firm_knowledge SET content = %s, embedding = %s" in sql
+    assert "WHERE id = %s AND client_id = %s" in sql
+    # params: (content, embedding, item_id, client_id)
+    assert params[0] == "edited content"
+    assert params[1] == [0.1, 0.2, 0.3]
+    assert list(params[-2:]) == ["fk1", "client-1"]
+
+
+def test_stats_excludes_archived_queries():
+    cur = _RoutingCursor()
+    _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    sql = _stats_sql(cur)
+    # Every FROM queries aggregate must filter archived rows; the query_feedback
+    # CTE (no deleted_at column) must NOT reference it.
+    assert "deleted_at IS NULL" in sql

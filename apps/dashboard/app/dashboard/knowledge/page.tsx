@@ -6,6 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ResourceRowActions } from "@/components/resource-actions/ResourceRowActions";
+import { ConfirmDialog } from "@/components/resource-actions/ConfirmDialog";
+import { ResourceEditDialog } from "@/components/resource-actions/ResourceEditDialog";
+import { useResourceMutation } from "@/components/resource-actions/useResourceMutation";
 
 interface KnowledgeRow {
   id: string;
@@ -54,6 +58,12 @@ export default function KnowledgePage() {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [expandedSuggestionId, setExpandedSuggestionId] = useState<string | null>(null);
   const [decidingId, setDecidingId] = useState<string | null>(null);
+
+  const [deleteTarget, setDeleteTarget] = useState<KnowledgeRow | null>(null);
+  const [editTarget, setEditTarget] = useState<
+    { id: string; title: string; content_md: string } | null
+  >(null);
+  const mutation = useResourceMutation({ onSuccess: load });
 
   function load() {
     fetch("/api/firm-knowledge")
@@ -127,9 +137,20 @@ export default function KnowledgePage() {
     }
   }
 
-  async function handleDelete(id: string) {
-    await fetch(`/api/firm-knowledge/${id}`, { method: "DELETE" });
-    load();
+  async function openEdit(item: KnowledgeRow) {
+    // The list row does not carry content; fetch the full item first.
+    try {
+      const res = await fetch(`/api/firm-knowledge/${item.id}`);
+      if (!res.ok) throw new Error("Failed");
+      const full = await res.json();
+      setEditTarget({
+        id: item.id,
+        title: item.file_name,
+        content_md: full.content ?? "",
+      });
+    } catch {
+      setError("Could not open this document for editing");
+    }
   }
 
   return (
@@ -275,19 +296,13 @@ export default function KnowledgePage() {
                     {expandedId === item.id ? "Collapse this document" : "Expand to read the full saved content"}
                   </TooltipContent>
                 </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="link"
-                      size="sm"
-                      className="shrink-0 text-destructive"
-                      onClick={() => handleDelete(item.id)}
-                    >
-                      Remove
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Permanently removes this from Our Firm&apos;s Precedents - it will no longer be used in research answers</TooltipContent>
-                </Tooltip>
+                <ResourceRowActions
+                  label="precedent"
+                  actions={{
+                    edit: () => openEdit(item),
+                    delete: () => setDeleteTarget(item),
+                  }}
+                />
               </div>
               {expandedId === item.id && (
                 <div className="border-t border-border bg-muted/30 px-4 py-3">
@@ -303,6 +318,60 @@ export default function KnowledgePage() {
             </li>
           ))}
         </ul>
+      )}
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        title="Remove precedent?"
+        description={
+          deleteTarget
+            ? `"${deleteTarget.file_name}" will be permanently removed and no longer used in research answers. This cannot be undone.`
+            : undefined
+        }
+        confirmLabel="Remove"
+        destructive
+        pending={mutation.pending}
+        onConfirm={async () => {
+          if (!deleteTarget) return;
+          const deletedId = deleteTarget.id;
+          const ok = await mutation.remove(`/api/firm-knowledge/${deletedId}`, "Precedent removed");
+          if (ok) {
+            setDeleteTarget(null);
+            if (expandedId === deletedId) {
+              setExpandedId(null);
+              setDetail(null);
+            }
+          }
+        }}
+      />
+
+      {editTarget && (
+        <ResourceEditDialog
+          open={!!editTarget}
+          onOpenChange={(open) => {
+            if (!open) setEditTarget(null);
+          }}
+          initial={{ title: editTarget.title, content_md: editTarget.content_md }}
+          pending={mutation.pending}
+          onSave={async (fields) => {
+            // Firm-knowledge stores a single `content` field; the title here is
+            // the (read-only) file name, so only the body is persisted.
+            const ok = await mutation.patch(
+              `/api/firm-knowledge/${editTarget.id}`,
+              { content: fields.content_md },
+              "Precedent updated"
+            );
+            if (ok) {
+              setEditTarget(null);
+              if (expandedId === editTarget.id) {
+                setDetail((prev) => (prev ? { ...prev, content: fields.content_md } : prev));
+              }
+            }
+          }}
+        />
       )}
     </div>
   );
