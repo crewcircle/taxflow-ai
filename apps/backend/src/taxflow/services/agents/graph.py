@@ -276,6 +276,10 @@ async def generate(state: AgentState) -> dict:
         "answer": answer,
         "citations": citations,
         "confidence": confidence,
+        # Task 1c: the concrete resolved model id (a runtime resolve_model value,
+        # never a literal) so the router can persist queries.model_id alongside
+        # the abstract routed_tier stored in model_used.
+        "model_id": model,
         **stats,
         # Answer-flow trace (migration 022 / "why this answer?" UI): capture what
         # retrieval returned and what generation did on the first pass. Optional

@@ -4,6 +4,7 @@ All endpoints require valid Supabase JWT (enforced by auth middleware).
 """
 import asyncio
 import json
+import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,7 +17,11 @@ from taxflow.middleware.auth import get_current_client
 from taxflow.middleware.trial_gate import check_trial_gate, increment_usage
 from taxflow.services import answer_cache
 from taxflow.services.agents.graph import research_graph
+from taxflow.services.eval.citations import check_citation_validity
+from taxflow.services.eval.cost import run_cost
 from taxflow.services.knowledge.embedder import embed
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/query", tags=["query"])
 # The compiled research graph (Task A6) owns generation + the gated verify /
@@ -126,6 +131,56 @@ def _safe_to_cache(verification: dict | None) -> bool:
     if verification is None:
         return True
     return verification.get("overall_status") == "verified"
+
+
+def _observability_fields(answer: str, citations: list, trace: dict, meta: dict) -> dict:
+    """Task 1b: per-query citation-validity + dollar cost for a live generation.
+
+    Returns the additive observability columns (migration 035) for a
+    non-cache-hit answer: ``citation_valid`` / ``invalid_citations`` from the
+    deterministic citation checker and ``cost_usd`` from ``run_cost`` over the
+    generation's tier + token counters. ``model_used`` here is the abstract tier
+    ("haiku"/"sonnet") priced against ``EVAL_MODEL_PRICING``; None token counters
+    are coerced to 0 so a partial usage record never blows up.
+
+    Best-effort: the generation has already run (and been paid for) by the time
+    this is called, so an unexpected failure in the citation checker or cost
+    arithmetic must NEVER fail the request. On any exception we log a warning and
+    return NULL for every observability column, letting the query complete and
+    persist normally with those fields unmeasured.
+    """
+    try:
+        validity = check_citation_validity(
+            {"answer": answer, "citations": citations, "trace": trace}
+        )
+        invalid = {
+            "fabricated_markers": validity["fabricated_markers"],
+            "unmatched_citations": validity["unmatched_citations"],
+        }
+        cost = run_cost(
+            meta["model_used"],
+            meta.get("input_tokens") or 0,
+            meta.get("output_tokens") or 0,
+            cache_read=meta.get("cache_read_input_tokens") or 0,
+            cache_creation=meta.get("cache_creation_input_tokens") or 0,
+        )
+        return {
+            "citation_valid": validity["valid"],
+            # validity["valid"] is precisely "no fabricated and no unmatched", so
+            # store the detail only when the answer is invalid (else NULL).
+            "invalid_citations": None if validity["valid"] else invalid,
+            "cost_usd": cost,
+        }
+    except Exception:  # noqa: BLE001 — observability is best-effort, never fatal.
+        logger.warning(
+            "observability computation failed; persisting NULL observability fields",
+            exc_info=True,
+        )
+        return {
+            "citation_valid": None,
+            "invalid_citations": None,
+            "cost_usd": None,
+        }
 
 
 @router.get("")
@@ -269,6 +324,7 @@ async def submit_query(
         meta = corrected_meta or {
             "confidence": final["confidence"],
             "model_used": final["routed_tier"],
+            "model_id": final.get("model_id"),
             "input_tokens": final.get("input_tokens"),
             "output_tokens": final.get("output_tokens"),
             "cache_read_input_tokens": final.get("cache_read_input_tokens"),
@@ -290,6 +346,7 @@ async def submit_query(
             "citations": citations,
             "confidence_score": meta["confidence"],
             "model_used": meta["model_used"],
+            "model_id": meta.get("model_id"),
             "input_tokens": meta["input_tokens"],
             "output_tokens": meta["output_tokens"],
             "cache_read_input_tokens": meta.get("cache_read_input_tokens"),
@@ -297,6 +354,8 @@ async def submit_query(
             "wall_time_ms": int((time.time() - start) * 1000),
             "completed_at": "now()",
             "trace": trace,
+            # Task 1b: live citation-validity + dollar cost of this generation.
+            **_observability_fields(stored_answer, citations, trace, meta),
         }
         if verification is not None:
             update["verification_result"] = verification
@@ -342,7 +401,15 @@ def _persist_cached_query(
     db, client, question: str, module: str, cached: dict, start: float, extra: dict | None = None
 ) -> str:
     """Insert a completed queries row for a cache hit so history + metrics still
-    reflect the served answer (marked model_used='cache')."""
+    reflect the served answer (marked model_used='cache').
+
+    Task 1b/1c: a cache hit ran no pipeline (no tokens, no trace.retrieval, and
+    model_used='cache' is not a priced tier), so we do NOT call run_cost /
+    check_citation_validity. We store ``cost_usd = 0`` (a served-from-cache
+    answer genuinely cost nothing) and leave ``citation_valid`` /
+    ``invalid_citations`` / ``model_id`` NULL — validity/model attribution is
+    "not measured" for a cache hit.
+    """
     row = db.queries.insert(
         {
             "client_id": client["id"],
@@ -354,6 +421,7 @@ def _persist_cached_query(
             "citations": cached["citations"],
             "confidence_score": cached["confidence"],
             "model_used": "cache",
+            "cost_usd": 0,
             "wall_time_ms": int((time.time() - start) * 1000),
             "completed_at": "now()",
             "trace": _build_final_trace(None, None, None),
@@ -554,6 +622,7 @@ async def stream_query(
         if corrected_meta:
             confidence = corrected_meta["confidence"]
             model_used = corrected_meta["model_used"]
+            model_id = corrected_meta.get("model_id")
             input_tokens = corrected_meta["input_tokens"]
             output_tokens = corrected_meta["output_tokens"]
             cache_read = corrected_meta.get("cache_read_input_tokens")
@@ -561,6 +630,7 @@ async def stream_query(
         else:
             confidence = first_pass_confidence
             model_used = first_pass_model
+            model_id = final.get("model_id")
             input_tokens = final.get("input_tokens")
             output_tokens = final.get("output_tokens")
             cache_read = final.get("cache_read_input_tokens")
@@ -589,6 +659,7 @@ async def stream_query(
             "citations": citations,
             "confidence_score": confidence,
             "model_used": model_used,
+            "model_id": model_id,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cache_read_input_tokens": cache_read,
@@ -596,6 +667,19 @@ async def stream_query(
             "wall_time_ms": int((time.time() - start) * 1000),
             "completed_at": "now()",
             "trace": trace,
+            # Task 1b: live citation-validity + dollar cost of this generation.
+            **_observability_fields(
+                stored_answer,
+                citations,
+                trace,
+                {
+                    "model_used": model_used,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_read_input_tokens": cache_read,
+                    "cache_creation_input_tokens": cache_creation,
+                },
+            ),
         }
         if verification is not None:
             update["verification_result"] = verification
