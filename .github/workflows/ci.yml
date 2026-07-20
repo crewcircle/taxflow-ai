@@ -105,4 +105,7 @@ jobs:
       - name: Deploy backend to droplet
         env:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        # deploy_backend.sh is the deploy gate: it builds a sha-tagged image, runs a
+        # post-deploy /health smoke test, and rolls back to the previous tag + exits
+        # non-zero on failure, so this job goes red on a bad deploy (Decision #2487).
         run: doppler run --project taxflow --config prd -- bash scripts/deploy_backend.sh
