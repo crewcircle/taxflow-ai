@@ -56,6 +56,21 @@ class QueryFeedbackRepo(Protocol):
 
 
 @runtime_checkable
+class AnnotationsRepo(Protocol):
+    """Polymorphic line/word-level annotations & comments (migration 038).
+
+    Every method is client_id-scoped — RLS provides no tenant isolation, so the
+    ``WHERE client_id = %s`` predicate on each statement is the only boundary.
+    """
+
+    def list_for_target(self, client_id: str, target_type: str, target_id: str) -> list[dict]: ...
+    def insert(self, row: dict) -> dict: ...
+    def get_for_client(self, client_id: str, annotation_id: str) -> dict | None: ...
+    def update(self, client_id: str, annotation_id: str, fields: dict) -> dict | None: ...
+    def delete(self, client_id: str, annotation_id: str) -> None: ...
+
+
+@runtime_checkable
 class DocumentsRepo(Protocol):
     def list_for_client(self, client_id: str, kind_filter: str | None = None) -> list[dict]: ...
     def insert(self, row: dict) -> dict: ...
@@ -185,6 +200,7 @@ class RelationalDataPort(Protocol):
     trials: TrialsRepo
     queries: QueriesRepo
     query_feedback: QueryFeedbackRepo
+    annotations: AnnotationsRepo
     documents: DocumentsRepo
     firm_clients: FirmClientsRepo
     query_sessions: QuerySessionsRepo

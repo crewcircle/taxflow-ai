@@ -563,6 +563,71 @@ class QueryFeedbackRepo:
         )
 
 
+# --- annotations -------------------------------------------------------------
+class AnnotationsRepo:
+    """Polymorphic annotations/comments (migration 038).
+
+    Every statement carries ``WHERE client_id = %s`` — RLS is service-role-only
+    and gives no tenant isolation, so this predicate is the only boundary. The
+    ``ON DELETE CASCADE`` self-FK on ``parent_id`` means deleting a root comment
+    also removes its replies.
+    """
+
+    _COLS = (
+        "id, client_id, target_type, target_id, target_version, block_index, "
+        "start_offset, end_offset, quoted_text, author_kind, author_name, body, "
+        "parent_id, resolved_at, created_at"
+    )
+
+    def list_for_target(self, client_id: str, target_type: str, target_id: str) -> list[dict]:
+        return _fetchall(
+            f"""
+            SELECT {self._COLS}
+            FROM annotations
+            WHERE client_id = %s AND target_type = %s AND target_id = %s
+            ORDER BY created_at
+            """,
+            (client_id, target_type, target_id),
+        )
+
+    def insert(self, row: dict) -> dict:
+        cols = list(row.keys())
+        return _execute(
+            _insert_sql("annotations", cols), [row[c] for c in cols], returning=True
+        )
+
+    def get_for_client(self, client_id: str, annotation_id: str) -> dict | None:
+        return _fetchone(
+            f"SELECT {self._COLS} FROM annotations WHERE id = %s AND client_id = %s",
+            (annotation_id, client_id),
+        )
+
+    def update(self, client_id: str, annotation_id: str, fields: dict) -> dict | None:
+        assignments: list[str] = []
+        params: list = []
+        for c, value in fields.items():
+            if value == "now()":
+                assignments.append(f"{c} = now()")
+            else:
+                assignments.append(f"{c} = %s")
+                params.append(value)
+        if not assignments:
+            return self.get_for_client(client_id, annotation_id)
+        params.extend([annotation_id, client_id])
+        return _execute(
+            f"UPDATE annotations SET {', '.join(assignments)} "
+            "WHERE id = %s AND client_id = %s RETURNING *",
+            params,
+            returning=True,
+        )
+
+    def delete(self, client_id: str, annotation_id: str) -> None:
+        _execute(
+            "DELETE FROM annotations WHERE id = %s AND client_id = %s",
+            (annotation_id, client_id),
+        )
+
+
 # --- documents ---------------------------------------------------------------
 class DocumentsRepo:
     def list_for_client(self, client_id: str, kind_filter: str | None = None) -> list[dict]:
@@ -1226,6 +1291,10 @@ class DemoResetRepo:
             cur.execute("SELECT id FROM clients WHERE is_demo = true")
             demo_ids = [r[0] for r in cur.fetchall()]
             if demo_ids:
+                # annotations have NO FK to queries/documents (target_id is
+                # polymorphic), so nothing cascades — delete them explicitly
+                # BEFORE the queries/documents deletes to avoid orphan rows.
+                cur.execute("DELETE FROM annotations WHERE client_id = ANY(%s)", (demo_ids,))
                 cur.execute("DELETE FROM documents WHERE client_id = ANY(%s)", (demo_ids,))
                 # query_feedback FK cascades from queries (migration 020), but
                 # delete it explicitly first so the reset also works before that
@@ -1431,6 +1500,7 @@ class Repositories:
         self.trials = TrialsRepo()
         self.queries = QueriesRepo()
         self.query_feedback = QueryFeedbackRepo()
+        self.annotations = AnnotationsRepo()
         self.documents = DocumentsRepo()
         self.firm_clients = FirmClientsRepo()
         self.query_sessions = QuerySessionsRepo()

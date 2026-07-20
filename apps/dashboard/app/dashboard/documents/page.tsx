@@ -335,6 +335,17 @@ export default function DocumentsPage() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-3">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <a
+                              href={`/dashboard/documents/${doc.id}`}
+                              className="text-accent hover:underline"
+                            >
+                              View
+                            </a>
+                          </TooltipTrigger>
+                          <TooltipContent>Open the in-app viewer to read and annotate this document</TooltipContent>
+                        </Tooltip>
                         {doc.status !== "approved" &&
                           (approvingId === doc.id ? (
                             <div className="flex items-center gap-1.5">

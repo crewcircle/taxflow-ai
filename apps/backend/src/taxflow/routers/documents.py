@@ -180,6 +180,24 @@ async def approve_document(
     return await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
 
 
+@router.get("/{document_id}")
+async def get_document(
+    document_id: str,
+    client=Depends(get_current_client),
+    db=Depends(get_db),
+):
+    """Return a document's ``content_md`` + metadata for the in-app viewer.
+
+    Client_id-scoped (404 for a foreign doc); the download route stays for the
+    docx/pdf exports. ``get_for_client`` already ``SELECT *`` so content_md is
+    included with no repo change.
+    """
+    doc = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
+
+
 @router.get("/{document_id}/download")
 async def download_document(document_id: str, fmt: str = "docx", client=Depends(get_current_client), db=Depends(get_db)):
     doc = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)

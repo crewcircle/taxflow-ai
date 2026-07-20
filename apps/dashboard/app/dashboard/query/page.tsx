@@ -2,8 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   AlertTriangle,
   BookOpen,
@@ -27,6 +25,8 @@ import { AnswerTracePanel, type AnswerTrace } from "@/components/AnswerTracePane
 import { CollapsedPanelRail } from "@/components/CollapsedPanelRail";
 import { ClientAutocomplete } from "@/components/ClientAutocomplete";
 import { ReResearchBadge } from "@/components/ReResearchBadge";
+import { MarkdownDocument } from "@/components/MarkdownDocument";
+import { AnnotatableMarkdown } from "@/components/AnnotatableMarkdown";
 import { NOTIFICATIONS_UPDATED_EVENT } from "@/lib/useNotifications";
 import { cn } from "@/lib/utils";
 
@@ -56,92 +56,8 @@ interface QueryResult {
 
 const MAX_CHARS = 2000;
 
-// react-markdown treats "[1]" as plain text (it isn't valid link syntax on
-// its own) - rewrite citation markers into real markdown links pointing at
-// the matching source anchor before handing the text to the renderer.
-function linkifyCitations(text: string): string {
-  return text.replace(/\[(\d+)\]/g, "[[$1]](#source-$1)");
-}
-
-const STALE_AFTER_DAYS = 30;
-
-function daysSince(iso: string): number {
-  return Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
-}
-
-function formatRefreshedDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-AU", { year: "numeric", month: "short" });
-}
-
-// Every citation marker in the answer carries its own currency, not just the
-// sources panel off to the side - per the audit, the mechanism (last_scraped_at)
-// already existed but wasn't visible at the point a reader actually relies on
-// it. Fresh citations get a quiet hover date; stale ones (30+ days) also get an
-// amber dot so the flag is visible without hovering.
-function buildMarkdownComponents(citations: SourceCitation[]): Components {
-  return {
-    h1: ({ children }) => <h3 className="mt-4 mb-1.5 text-base font-semibold first:mt-0">{children}</h3>,
-    h2: ({ children }) => <h3 className="mt-4 mb-1.5 text-base font-semibold first:mt-0">{children}</h3>,
-    h3: ({ children }) => <h4 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h4>,
-    p: ({ children }) => <p className="mb-2 text-sm leading-relaxed last:mb-0">{children}</p>,
-    ul: ({ children }) => <ul className="mb-2 list-disc space-y-1 pl-5 text-sm">{children}</ul>,
-    ol: ({ children }) => <ol className="mb-2 list-decimal space-y-1 pl-5 text-sm">{children}</ol>,
-    li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-    strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
-    code: ({ children }) => <code className="rounded bg-muted px-1 py-0.5 text-xs">{children}</code>,
-    table: ({ children }) => (
-      <div className="mb-2 overflow-x-auto">
-        <table className="w-full border-collapse text-sm">{children}</table>
-      </div>
-    ),
-    th: ({ children }) => <th className="border border-border px-2 py-1 text-left font-semibold">{children}</th>,
-    td: ({ children }) => <td className="border border-border px-2 py-1">{children}</td>,
-    a: ({ href, children }) => {
-      const match = typeof href === "string" ? href.match(/^#source-(\d+)$/) : null;
-      if (!match) {
-        return (
-          <a href={href} className="font-medium text-accent hover:underline">
-            {children}
-          </a>
-        );
-      }
-      const citation = citations[Number(match[1]) - 1];
-      const refreshedIso = citation?.last_scraped_at ?? null;
-      const stale = refreshedIso ? daysSince(refreshedIso) > STALE_AFTER_DAYS : false;
-      const label = refreshedIso
-        ? `Refreshed ${formatRefreshedDate(refreshedIso)}${stale ? " - check for a newer version" : ""}`
-        : "Refresh date unavailable";
-      return (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <a
-              href={href}
-              className={cn(
-                "font-medium hover:underline",
-                stale ? "text-amber-700" : "text-accent"
-              )}
-            >
-              {children}
-              {stale && (
-                <span className="ml-0.5 inline-block size-1.5 rounded-full bg-amber-500 align-super" />
-              )}
-            </a>
-          </TooltipTrigger>
-          <TooltipContent>{label}</TooltipContent>
-        </Tooltip>
-      );
-    },
-  };
-}
-
 function AnswerWithCitationLinks({ text, citations }: { text: string; citations: SourceCitation[] }) {
-  return (
-    <div>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildMarkdownComponents(citations)}>
-        {linkifyCitations(text)}
-      </ReactMarkdown>
-    </div>
-  );
+  return <MarkdownDocument text={text} citations={citations} />;
 }
 
 interface FirmKnowledgeSuggestionProps {
@@ -578,6 +494,11 @@ export default function QueryPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<QueryResult | null>(null);
+  // True only once the answer is authoritative: a live stream has emitted
+  // [DONE] (after any correction/regeneration), or a persisted conversation was
+  // loaded from history. The annotation layer mounts ONLY when this is true, so
+  // offsets/hashes are never computed against a mid-stream buffer.
+  const [streamComplete, setStreamComplete] = useState(false);
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [verifying, setVerifying] = useState(false);
   const [verification, setVerification] = useState<Verification | null>(null);
@@ -673,6 +594,7 @@ export default function QueryPage() {
 
   function resetPane() {
     setResult(null);
+    setStreamComplete(false);
     setStreamedAnswer("");
     setVerification(null);
     setVerifying(false);
@@ -703,6 +625,9 @@ export default function QueryPage() {
         query_id: data.id ?? item.id,
         askedQuestion: data.question ?? item.question,
       });
+      // A restored conversation is already persisted and authoritative, so the
+      // annotation layer may mount immediately.
+      setStreamComplete(true);
       // Continue the restored conversation: reuse its session_id so a typed
       // follow-up folds into that session's context rather than starting a new
       // one. Fall back to a freshly-minted id if the row predates session_id.
@@ -809,6 +734,10 @@ export default function QueryPage() {
         source.onmessage = (event) => {
           if (event.data === "[DONE]") {
             source.close();
+            // Stream is finished and every correction has been applied, so the
+            // displayed answer now matches the persisted queries.final_answer.
+            // Only now is it safe to anchor annotations against it.
+            setStreamComplete(true);
             resolve();
             return;
           }
@@ -1058,7 +987,23 @@ export default function QueryPage() {
                 <VerificationIssuesPanel issues={verification.issues} />
               )}
 
-              <AnswerWithCitationLinks text={result.answer} citations={result.citations} />
+              {streamComplete && result.query_id ? (
+                // Annotation layer is enabled ONLY after the stream is [DONE]
+                // (streamComplete) and a persisted query_id exists — offsets/hash
+                // are computed against the final persisted answer, never the
+                // mid-stream buffer (a correction event can replace the whole
+                // answer). A restored history conversation sets streamComplete
+                // immediately since it is already persisted.
+                <AnnotatableMarkdown
+                  key={result.query_id}
+                  targetType="query_answer"
+                  targetId={result.query_id}
+                  sourceMarkdown={result.answer}
+                  citations={result.citations}
+                />
+              ) : (
+                <AnswerWithCitationLinks text={result.answer} citations={result.citations} />
+              )}
 
               {trace && (
                 <AnswerTracePanel
