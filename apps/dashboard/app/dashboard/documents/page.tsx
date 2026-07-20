@@ -18,6 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ClientAutocomplete } from "@/components/ClientAutocomplete";
+import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
 
 interface DocumentRow {
   id: string;
@@ -82,6 +83,9 @@ export default function DocumentsPage() {
   const [staffDirectory, setStaffDirectory] = useState<StaffMember[]>([]);
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [approvingAs, setApprovingAs] = useState("");
+  // Phase 2: optionally attribute a hand-written document to a first-class
+  // engagement. Selecting one mirrors the end-client name into form.client_ref.
+  const [engagement, setEngagement] = useState<EngagementSelection | null>(null);
   const [form, setForm] = useState({
     title: "",
     document_type: "advice_memo",
@@ -147,10 +151,15 @@ export default function DocumentsPage() {
       const response = await fetch("/api/documents/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, client_ref: form.client_ref.trim() || null }),
+        body: JSON.stringify({
+          ...form,
+          client_ref: form.client_ref.trim() || null,
+          engagement_id: engagement?.engagement.id ?? null,
+        }),
       });
       if (!response.ok) throw new Error("Failed");
       setForm({ title: "", document_type: "advice_memo", content_md: "", client_ref: "" });
+      setEngagement(null);
       setCreating(false);
       loadDocuments();
     } catch {
@@ -246,11 +255,21 @@ export default function DocumentsPage() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="doc-client-ref">Client (optional)</Label>
-              <ClientAutocomplete
-                value={form.client_ref}
-                onChange={(v) => setForm({ ...form, client_ref: v })}
-                placeholder="e.g. Smith Dental Practice"
-              />
+              <div className="flex items-center gap-2">
+                <ClientAutocomplete
+                  value={form.client_ref}
+                  onChange={(v) => setForm({ ...form, client_ref: v })}
+                  placeholder="e.g. Smith Dental Practice"
+                />
+                <EngagementPicker
+                  value={engagement}
+                  onChange={(selection) => {
+                    setEngagement(selection);
+                    if (selection) setForm((f) => ({ ...f, client_ref: selection.clientName }));
+                  }}
+                  triggerLabel="Attach engagement"
+                />
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="doc-content">Content</Label>

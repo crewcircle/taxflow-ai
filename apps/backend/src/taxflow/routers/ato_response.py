@@ -1,7 +1,7 @@
 import asyncio
 
 import pdfplumber
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
@@ -31,7 +31,13 @@ async def list_ato_responses(client=Depends(get_current_client), db=Depends(get_
 
 
 @router.post("/upload")
-async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client), db=Depends(get_db)):
+async def upload_ato_letter(
+    file: UploadFile,
+    engagement_id: str | None = Form(default=None),
+    client_ref: str | None = Form(default=None),
+    client=Depends(get_current_client),
+    db=Depends(get_db),
+):
     file_bytes = await file.read()
     extracted_text = _extract_text(file_bytes)
 
@@ -47,6 +53,17 @@ async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client)
         client_profile=build_client_profile(client),
     )
 
+    # Attribution fix (Phase 2): the ATO upload previously dropped client_ref +
+    # engagement_id entirely. Persist BOTH on the document so ATO responses are
+    # attributed to a real engagement/end-client like queries and generated
+    # documents. Mirror query/documents' best-effort firm_clients.upsert so the
+    # end-client register grows organically (never blocks the draft).
+    if client_ref:
+        try:
+            await asyncio.to_thread(db.firm_clients.upsert, client["id"], client_ref)
+        except Exception:  # noqa: BLE001 - never block returning the draft
+            pass
+
     result = await asyncio.to_thread(
         db.documents.insert,
         {
@@ -54,6 +71,8 @@ async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client)
             "document_type": "ato_response",
             "title": f"ATO Response - {classification['letter_type']}",
             "content_md": draft["response_letter"],
+            "client_ref": client_ref,
+            "engagement_id": engagement_id,
         },
     )
 

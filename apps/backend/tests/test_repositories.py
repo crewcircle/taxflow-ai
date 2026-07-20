@@ -444,6 +444,144 @@ def test_ops_notifications_mark_read_updates_by_id():
 # --- facade wiring ------------------------------------------------------------
 
 
+# --- engagements (migration 039) ---------------------------------------------
+
+
+class _SeqCursor:
+    """Fake cursor returning a queued sequence of fetchone() results, so the
+    two-statement ``EngagementsRepo.create`` transaction can hand back the
+    counter row then the inserted engagement row."""
+
+    def __init__(self, fetchone_results):
+        self.executed = []
+        self._results = list(fetchone_results)
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    def fetchone(self):
+        return self._results.pop(0) if self._results else None
+
+    def fetchall(self):
+        return []
+
+    def close(self):
+        pass
+
+
+def test_firm_clients_create_get_or_create_returns_id():
+    cur = _FakeCursor(fetchone={"id": "fc-1", "name": "Acme Pty Ltd"})
+    with _patch_conn(cur):
+        row = Repositories().firm_clients.create("client-1", "Acme Pty Ltd")
+    sql, params = cur.executed[0]
+    norm = " ".join(sql.split())
+    assert "INSERT INTO firm_clients" in norm
+    assert "ON CONFLICT (client_id, lower(name)) DO UPDATE" in norm
+    assert "RETURNING id, name" in norm
+    assert params == ("client-1", "Acme Pty Ltd")
+    assert row == {"id": "fc-1", "name": "Acme Pty Ltd"}
+
+
+def test_engagements_create_single_transaction_counter_then_insert():
+    cur = _SeqCursor(
+        [
+            {"next_engagement_seq": 7},  # counter UPDATE ... RETURNING
+            {"id": "eng-1", "engagement_number": 7},  # INSERT ... RETURNING *
+        ]
+    )
+    conn = _FakeConn(cur)
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _pool():
+        yield conn
+
+    with patch.object(repositories, "get_pg_conn", _pool):
+        row = Repositories().engagements.create("client-1", "fc-1", "Q3 advice")
+
+    assert len(cur.executed) == 2, "create must run exactly two statements"
+    update_sql, update_params = cur.executed[0]
+    assert "UPDATE firm_clients" in update_sql
+    assert "next_engagement_seq = next_engagement_seq + 1" in update_sql
+    assert "WHERE id = %s AND client_id = %s" in update_sql
+    assert "RETURNING next_engagement_seq" in update_sql
+    assert update_params == ("fc-1", "client-1")
+
+    insert_sql, insert_params = cur.executed[1]
+    assert "INSERT INTO engagements" in insert_sql
+    assert "RETURNING *" in insert_sql
+    # engagement_number carries the returned counter value.
+    assert insert_params == ("client-1", "fc-1", 7, "Q3 advice", None)
+
+    # Single transaction: exactly one commit for both statements.
+    assert conn.committed is True
+    assert row["engagement_number"] == 7
+
+
+def test_engagements_create_raises_and_skips_insert_when_counter_returns_no_rows():
+    # Counter UPDATE returns 0 rows -> firm_client is unknown or another tenant's.
+    cur = _SeqCursor([None])
+    conn = _FakeConn(cur)
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _pool():
+        yield conn
+
+    import pytest
+
+    with patch.object(repositories, "get_pg_conn", _pool):
+        with pytest.raises(ValueError):
+            Repositories().engagements.create("client-1", "foreign-fc", "desc")
+
+    # Only the counter UPDATE ran; NO INSERT and NO commit.
+    assert len(cur.executed) == 1
+    assert "UPDATE firm_clients" in cur.executed[0][0]
+    assert conn.committed is False
+
+
+def test_engagements_list_for_client_scoped_by_client():
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().engagements.list_for_client("client-1")
+    sql, params = cur.executed[0]
+    assert "FROM engagements" in sql
+    assert "WHERE client_id = %s" in sql
+    assert params[0] == "client-1"
+
+
+def test_engagements_list_for_client_filters_firm_client_and_status():
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().engagements.list_for_client("client-1", "fc-1", "active")
+    sql, params = cur.executed[0]
+    assert "FROM engagements" in sql
+    assert "WHERE client_id = %s" in sql
+    assert "firm_client_id = %s" in sql
+    assert "status = %s" in sql
+    assert list(params) == ["client-1", "fc-1", "active"]
+
+
+def test_engagements_get_for_client_scoped_by_client():
+    cur = _FakeCursor(fetchone={"id": "eng-1", "client_id": "client-1"})
+    with _patch_conn(cur):
+        Repositories().engagements.get_for_client("client-1", "eng-1")
+    sql, params = cur.executed[0]
+    assert "FROM engagements" in sql
+    assert "WHERE id = %s AND client_id = %s" in sql
+    assert list(params) == ["eng-1", "client-1"]
+
+
+def test_engagements_list_for_firm_client_scoped_by_client():
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().engagements.list_for_firm_client("client-1", "fc-1")
+    sql, params = cur.executed[0]
+    assert "FROM engagements" in sql
+    assert "WHERE client_id = %s AND firm_client_id = %s" in sql
+    assert list(params) == ["client-1", "fc-1"]
+
+
 def test_repositories_exposes_all_aggregates():
     repos = Repositories()
     for attr in (
@@ -453,6 +591,7 @@ def test_repositories_exposes_all_aggregates():
         "query_feedback",
         "documents",
         "firm_knowledge",
+        "engagements",
         "regulatory_alerts",
         "contact",
         "rate_limit",

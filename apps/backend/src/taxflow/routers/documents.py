@@ -42,6 +42,7 @@ class GenerateDocumentRequest(BaseModel):
     title: str
     content_md: str
     client_ref: str | None = None
+    engagement_id: str | None = None
 
 
 class ApproveDocumentRequest(BaseModel):
@@ -106,6 +107,7 @@ async def generate_document(
             "title": body.title,
             "content_md": content_md,
             "client_ref": body.client_ref,
+            "engagement_id": body.engagement_id,
         },
     )
 

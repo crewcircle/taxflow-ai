@@ -24,6 +24,7 @@ import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
 import { AnswerTracePanel, type AnswerTrace } from "@/components/AnswerTracePanel";
 import { CollapsedPanelRail } from "@/components/CollapsedPanelRail";
 import { ClientAutocomplete } from "@/components/ClientAutocomplete";
+import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
 import { ReResearchBadge } from "@/components/ReResearchBadge";
 import { MarkdownDocument } from "@/components/MarkdownDocument";
 import { AnnotatableMarkdown } from "@/components/AnnotatableMarkdown";
@@ -486,6 +487,10 @@ function VerificationIssuesPanel({ issues }: { issues: VerificationIssue[] }) {
 export default function QueryPage() {
   const [question, setQuestion] = useState("");
   const [clientRef, setClientRef] = useState("");
+  // Phase 2: the chosen first-class engagement. Selecting one also mirrors the
+  // end-client name into clientRef so the legacy client_ref plumbing (history
+  // highlighting, document tagging) keeps working alongside engagement_id.
+  const [engagement, setEngagement] = useState<EngagementSelection | null>(null);
   // Session memory (Task D3): a UUID minted per conversation and reused across
   // every follow-up so the backend can load prior turns for this session. Reset
   // to a fresh id on "new question" / when loading a different past query, so
@@ -693,8 +698,16 @@ export default function QueryPage() {
   function handleNewQuestion() {
     setQuestion("");
     setClientRef("");
+    setEngagement(null);
     setSessionId(crypto.randomUUID());
     resetPane();
+  }
+
+  // Selecting an engagement mirrors its end-client into clientRef so the legacy
+  // client_ref plumbing (document tagging, history highlighting) keeps working.
+  function handleEngagementChange(selection: EngagementSelection | null) {
+    setEngagement(selection);
+    if (selection) setClientRef(selection.clientName);
   }
 
   // Selecting a past question - from the sidebar or a scenario tag - shows
@@ -725,6 +738,8 @@ export default function QueryPage() {
 
       const streamUrl = `/api/query/stream?question=${encodeURIComponent(askedQuestion)}${
         clientRef.trim() ? `&client_ref=${encodeURIComponent(clientRef.trim())}` : ""
+      }${
+        engagement ? `&engagement_id=${encodeURIComponent(engagement.engagement.id)}` : ""
       }&session_id=${encodeURIComponent(sessionId)}`;
       const source = new EventSource(streamUrl);
       let answer = "";
@@ -868,6 +883,7 @@ export default function QueryPage() {
           title: result.askedQuestion.slice(0, 80),
           content_md: result.answer,
           client_ref: clientRef.trim() || null,
+          engagement_id: engagement?.engagement.id ?? null,
         }),
       });
       if (!response.ok) throw new Error("Failed");
@@ -1053,17 +1069,31 @@ export default function QueryPage() {
             placeholder={result ? "Ask a follow-up question..." : "Ask an Australian tax question..."}
           />
           <div className="mt-2 flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">
-              {question.length}/{MAX_CHARS} characters
-            </span>
+            <div className="flex items-center gap-2">
+              <EngagementPicker
+                value={engagement}
+                onChange={handleEngagementChange}
+                disabled={loading}
+              />
+              <span className="text-xs text-muted-foreground">
+                {question.length}/{MAX_CHARS} characters
+              </span>
+            </div>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button onClick={handleSubmit} disabled={loading || !question.trim()}>
+                <Button
+                  onClick={handleSubmit}
+                  disabled={loading || !question.trim() || (!engagement && !result)}
+                >
                   {loading ? "Thinking..." : "Ask TaxFlow"}
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                {result ? "Continues this engagement with your follow-up" : "Runs your question against the AU tax knowledge base"}
+                {!engagement && !result
+                  ? "Choose a client & engagement to start"
+                  : result
+                    ? "Continues this engagement with your follow-up"
+                    : "Runs your question against the AU tax knowledge base"}
               </TooltipContent>
             </Tooltip>
           </div>

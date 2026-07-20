@@ -436,6 +436,7 @@ async def stream_query(
     question: str,
     client_ref: str | None = None,
     session_id: str | None = None,
+    engagement_id: str | None = None,
     client=Depends(get_current_client),
     _trial=Depends(check_trial_gate),
     db=Depends(get_db),
@@ -471,6 +472,7 @@ async def stream_query(
                 "status": status,
                 "client_ref": client_ref,
                 "session_id": session_id,
+                "engagement_id": engagement_id,
                 **(extra or {}),
             }
         )
