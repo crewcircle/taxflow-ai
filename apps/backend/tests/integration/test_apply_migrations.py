@@ -15,11 +15,15 @@ the deploy gate's session-scoped ``_migrated_db`` state.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 import psycopg2
 import pytest
+
+from tests.integration.conftest import _ensure_auth_role_stub
 
 pytestmark = pytest.mark.deploygate
 
@@ -34,7 +38,51 @@ _MIGRATIONS_DIR = (
 # The migration runner requires a session-scoped (port-5432-style) URL and
 # hard-refuses a transaction-pooler URL on :6543. The local/CI Postgres is a
 # direct connection, so DATABASE_URL is a valid MIGRATION_DATABASE_URL here.
-_MIGRATION_URL = os.environ.get("DATABASE_URL", "")
+_BASE_URL = os.environ.get("DATABASE_URL", "")
+# Isolated database for this module so its per-scenario `DROP SCHEMA public
+# CASCADE` can never wipe the schema out from under test_deploy_gate.py's
+# session-scoped _migrated_db (both would otherwise target the same DB, and
+# cross-module pytest ordering in CI is not guaranteed). Set by _isolated_db.
+_MIGRATION_URL = ""
+_SELFTEST_DB = "taxflow_runner_selftest"
+
+
+def _swap_db_name(url: str, dbname: str) -> str:
+    """Return ``url`` with its database (path) replaced by ``dbname``."""
+    parsed = urlparse(url)
+    return urlunparse(parsed._replace(path=f"/{dbname}"))
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _isolated_db():
+    """Create a throwaway database for the runner self-test and point
+    ``_MIGRATION_URL`` at it, so this module never touches the gate's DB."""
+    global _MIGRATION_URL
+    if not _BASE_URL or shutil.which("psql") is None:
+        yield  # the per-test guard will skip; nothing to set up
+        return
+    try:
+        admin = psycopg2.connect(_BASE_URL)
+    except psycopg2.OperationalError:
+        yield  # unreachable DB; per-test guard skips
+        return
+    try:
+        admin.autocommit = True
+        with admin.cursor() as cur:
+            cur.execute(f'DROP DATABASE IF EXISTS "{_SELFTEST_DB}" WITH (FORCE)')
+            cur.execute(f'CREATE DATABASE "{_SELFTEST_DB}"')
+    finally:
+        admin.close()
+    _MIGRATION_URL = _swap_db_name(_BASE_URL, _SELFTEST_DB)
+    yield
+    _MIGRATION_URL = ""
+    admin = psycopg2.connect(_BASE_URL)
+    try:
+        admin.autocommit = True
+        with admin.cursor() as cur:
+            cur.execute(f'DROP DATABASE IF EXISTS "{_SELFTEST_DB}" WITH (FORCE)')
+    finally:
+        admin.close()
 
 
 def _expected_file_count() -> int:
@@ -43,7 +91,7 @@ def _expected_file_count() -> int:
 
 def _reset_public_schema() -> None:
     """Drop + recreate ``public`` and drop the runner's ledger schema so each
-    scenario starts from a clean, un-migrated database."""
+    scenario starts from a clean, un-migrated database (on the isolated DB)."""
     conn = psycopg2.connect(_MIGRATION_URL)
     try:
         conn.autocommit = True
@@ -52,12 +100,10 @@ def _reset_public_schema() -> None:
             cur.execute("CREATE SCHEMA public;")
             cur.execute("DROP SCHEMA IF EXISTS taxflow_internal CASCADE;")
             # The RLS-policy migrations reference auth.role(); stub it so the
-            # runner's CREATE POLICY DDL parses on bare Postgres.
-            cur.execute("CREATE SCHEMA IF NOT EXISTS auth;")
-            cur.execute(
-                "CREATE OR REPLACE FUNCTION auth.role() RETURNS text "
-                "LANGUAGE sql AS $$ SELECT 'service_role'::text $$;"
-            )
+            # runner's CREATE POLICY DDL parses. Reuse the conditional helper so
+            # this works on both CI's bare Postgres (creates it) and a local
+            # Supabase stack (function already exists, owned by supabase_admin).
+            _ensure_auth_role_stub(cur)
     finally:
         conn.close()
 
@@ -94,8 +140,21 @@ def _require_script_and_db():
             f"scripts/apply_migrations.sh not present yet ({_SCRIPT}); "
             "runner self-test will run once Group A's branch merges."
         )
-    if not _MIGRATION_URL:
+    if shutil.which("psql") is None:
+        pytest.skip(
+            "psql (postgresql-client) not installed; the shell runner needs it. "
+            "CI installs it in the test-backend job."
+        )
+    # The root tests/conftest.py always sets DATABASE_URL via setdefault, so we
+    # can't gate on it being unset — probe connectivity instead. CI points it at
+    # a live pgvector service; a sandbox/local run without a reachable Postgres
+    # skips cleanly so the full suite stays green.
+    if not _BASE_URL:
         pytest.skip("DATABASE_URL not set; runner self-test needs a real Postgres.")
+    try:
+        psycopg2.connect(_BASE_URL).close()
+    except psycopg2.OperationalError as exc:
+        pytest.skip(f"No reachable Postgres at DATABASE_URL for the runner self-test: {exc}")
 
 
 def test_fresh_run_applies_all_and_records_ledger():
@@ -135,12 +194,17 @@ def test_bootstrap_through_040_then_applies_only_041():
     applied_all = _run_script()
     assert applied_all.returncode == 0, applied_all.stderr
 
-    # 2. Wipe ONLY the ledger (schema stays) so the bootstrap preflight passes.
+    # 2. Wipe the ledger AND drop the 041-created objects so the DB genuinely
+    #    reflects the prod rollout state: schema applied through 040, 041 NOT yet
+    #    applied. (Applying everything in step 1 was only to satisfy the
+    #    bootstrap preflight that the ≤040 objects exist.)
     conn = psycopg2.connect(_MIGRATION_URL)
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("DROP SCHEMA IF EXISTS taxflow_internal CASCADE;")
+            cur.execute("DROP TABLE IF EXISTS document_templates CASCADE;")
+            cur.execute("ALTER TABLE documents DROP COLUMN IF EXISTS ato_letter_type;")
     finally:
         conn.close()
 

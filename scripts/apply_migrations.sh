@@ -70,6 +70,12 @@ while [ $# -gt 0 ]; do
 done
 
 # --- resolve + validate the migration DB URL --------------------------------
+if ! command -v psql >/dev/null 2>&1; then
+  echo "ERROR: psql (postgresql-client) is not installed." >&2
+  echo "       The deploy pipeline installs it before invoking this runner." >&2
+  exit 1
+fi
+
 if [ -z "${MIGRATION_DATABASE_URL:-}" ]; then
   echo "ERROR: MIGRATION_DATABASE_URL is not set." >&2
   echo "       Set it to the Supabase SESSION POOLER URL (port 5432) and run via:" >&2
@@ -90,7 +96,10 @@ case "$DB_URL" in
     ;;
 esac
 
-MIGRATIONS_DIR="$(cd "$(dirname "$0")/.." && pwd)/apps/backend/supabase/migrations"
+# Migrations dir defaults to the repo's supabase/migrations; an explicit
+# MIGRATIONS_DIR env override is honoured for testing the runner in isolation
+# (production/CI never set it, so the default path is always used there).
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-$(cd "$(dirname "$0")/.." && pwd)/apps/backend/supabase/migrations}"
 if [ ! -d "$MIGRATIONS_DIR" ]; then
   echo "ERROR: migrations directory not found: $MIGRATIONS_DIR" >&2
   exit 1
