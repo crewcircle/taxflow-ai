@@ -400,6 +400,47 @@ def test_repositories_exposes_all_aggregates():
         assert hasattr(repos, attr)
 
 
+# --- production snapshots (036) : operator-scoped, no client_id --------------
+
+
+def test_production_snapshots_insert_targets_table():
+    cur = _FakeCursor(fetchone={"id": "snap-1"})
+    with _patch_conn(cur):
+        Repositories().production_snapshots.insert(
+            {
+                "window_start": "2026-07-19T00:00:00Z",
+                "window_end": "2026-07-20T00:00:00Z",
+                "metrics": {"overall": {"avg_confidence": 0.8}},
+                "diff": {"regressions": []},
+                "has_regressions": False,
+            }
+        )
+    sql, params = cur.executed[0]
+    assert "INSERT INTO production_quality_snapshots" in sql
+    assert "RETURNING *" in sql
+    # jsonb columns are serialised to strings by _maybe_json.
+    assert any(isinstance(p, str) and "avg_confidence" in p for p in params)
+
+
+def test_production_snapshots_latest_orders_created_at_desc():
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().production_snapshots.latest(5)
+    sql, params = cur.executed[0]
+    assert "FROM production_quality_snapshots" in sql
+    assert "ORDER BY created_at DESC" in sql
+    assert params == (5,)
+
+
+def test_production_snapshots_baseline_window_uses_half_open_range():
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().production_snapshots.baseline_window("2026-07-01", "2026-07-08")
+    sql, params = cur.executed[0]
+    assert "FROM production_quality_snapshots" in sql
+    # explicit [start, end) window: lower bound inclusive, upper exclusive.
+    assert "created_at >= %s AND created_at < %s" in sql
+    assert params == ("2026-07-01", "2026-07-08")
 # --- QueriesRepo.stats (Task 2b) ---------------------------------------------
 #
 # stats() runs several statements (the 035-column probe, the totals CTE, and the

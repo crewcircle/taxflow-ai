@@ -1376,9 +1376,53 @@ class OpsNotificationsRepo:
         )
 
 
+# --- production quality snapshots --------------------------------------------
+class ProductionSnapshotsRepo:
+    """Production-drift snapshots (036_production_quality_snapshots).
+
+    Operator-scoped (no client_id): one row per drift-monitor run, holding the
+    rolled-up ``metrics`` + ``diff`` jsonb blobs and the denormalised
+    ``has_regressions`` flag the admin dashboard / ops alert read directly.
+    """
+
+    def insert(self, row: dict) -> dict:
+        cols = list(row.keys())
+        return _execute(
+            _insert_sql("production_quality_snapshots", cols),
+            [_maybe_json(row[c]) for c in cols],
+            returning=True,
+        )
+
+    def latest(self, limit: int = 30) -> list[dict]:
+        return _fetchall(
+            """
+            SELECT id, window_start, window_end, baseline_start, baseline_end,
+                   metrics, diff, has_regressions, created_at
+            FROM production_quality_snapshots
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+
+    def baseline_window(self, start, end) -> list[dict]:
+        # Snapshots whose run landed in an explicit [start, end) window — used to
+        # look back over a trailing baseline period. Mirrors the [start, end)
+        # windowed contract QueriesRepo.stats uses.
+        return _fetchall(
+            """
+            SELECT id, window_start, window_end, baseline_start, baseline_end,
+                   metrics, diff, has_regressions, created_at
+            FROM production_quality_snapshots
+            WHERE created_at >= %s AND created_at < %s
+            ORDER BY created_at DESC
+            """,
+            (start, end),
+        )
+
+
 class Repositories:
     """Concrete ``RelationalDataPort`` facade wiring one repo per aggregate."""
-
     def __init__(self) -> None:
         self.clients = ClientsRepo()
         self.trials = TrialsRepo()
@@ -1400,3 +1444,4 @@ class Repositories:
         self.re_research_jobs = ReResearchJobsRepo()
         self.notifications = NotificationsRepo()
         self.ops_notifications = OpsNotificationsRepo()
+        self.production_snapshots = ProductionSnapshotsRepo()
