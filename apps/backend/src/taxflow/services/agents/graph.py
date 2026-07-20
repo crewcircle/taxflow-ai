@@ -22,13 +22,20 @@ from langgraph.graph import END, START, StateGraph
 
 from taxflow import providers
 from taxflow.config import settings
+from taxflow.services.agents.clarify import (
+    ClarifyAgent,
+    clarify_model_for,
+    should_clarify,
+)
 from taxflow.services.agents.research import (
     ResearchAgent,
     _compute_knowledge_as_of,
     _system_blocks,
     build_firm_items,
     build_session_fragment,
+    follow_up_instruction,
     route_model,
+    split_follow_ups,
 )
 from taxflow.services.agents.verify import (
     VerifyAgent,
@@ -43,6 +50,7 @@ from taxflow.services.agents.verify import (
 # with fake ports by swapping these out.
 research_agent = ResearchAgent()
 verifier = VerifyAgent()
+clarifier = ClarifyAgent()
 
 
 class AgentState(TypedDict, total=False):
@@ -78,6 +86,17 @@ class AgentState(TypedDict, total=False):
     re_reason: str | None
     re_detail: str | None
     streaming: bool
+    # Phase 4 clarify: ``clarifications`` carries the user's selected answers on
+    # the round-trip request (None / empty on the first turn); when present the
+    # clarify gate is skipped and generation proceeds. ``clarify_decision`` is the
+    # classifier verdict (dict), set by the clarify node; when it needs
+    # clarification and clears the confidence threshold the graph short-circuits
+    # to END emitting a clarify event and NEVER generating. Phase 4 follow-ups:
+    # ``follow_ups`` carries the 2-3 suggested next questions parsed out of the
+    # generate output (inline strategy) so the router can emit them after `final`.
+    clarifications: list[dict] | None
+    clarify_decision: dict | None
+    follow_ups: list[str]
     # Optional trace-assembly inputs (workstreams B/C thread real values in
     # later; A1 wires them through null-safe). ``firm``/``session`` are the
     # already-merged trace fragments; ``knowledge_as_of`` the freshness stamp;
@@ -174,6 +193,49 @@ def route_model_node(state: AgentState) -> dict:
     return {"routed_tier": route_model(state["signals"])}
 
 
+async def clarify(state: AgentState) -> dict:
+    """Ambiguity gate (Phase 4). Runs ONLY on the first turn of a session (the
+    conditional edge routes here only when CLARIFY_ENABLED and the request
+    carries no clarifications).
+
+    A free pure-Python pre-filter (``should_clarify``) runs first; a clear
+    question returns ``{"clarify_decision": None}`` with NO LLM call. Only a
+    candidate-ambiguous question reaches the Haiku classifier, and only THEN do
+    we spend an indexed DB read on the session clarify-count. If the session has
+    already asked a clarifying question, the verdict is forced to
+    needs_clarification=False (at-most-once-per-session guardrail).
+    """
+    question = state["question"]
+    signals = state.get("signals", {})
+    prior_turns_used = state.get("prior_turns_used", 0)
+    has_clarifications = bool(state.get("clarifications"))
+    if not should_clarify(question, signals, prior_turns_used, has_clarifications):
+        return {"clarify_decision": None}
+
+    decision = await clarifier.run(question, signals, model=clarify_model_for())
+
+    # Session cap: at most one clarify round per session. Only read the DB after
+    # the pre-filter + classifier have flagged an ambiguous question.
+    if decision.get("needs_clarification"):
+        import asyncio
+
+        import psycopg2
+
+        session_id = state.get("session_id")
+        if session_id:
+            try:
+                prior = await asyncio.to_thread(
+                    providers.get_relational_data().queries.count_session_clarifications,
+                    state["client_id"],
+                    session_id,
+                )
+            except (psycopg2.Error, OSError):
+                prior = 0
+            if prior >= 1:
+                decision = {**decision, "needs_clarification": False}
+    return {"clarify_decision": decision}
+
+
 async def generate(state: AgentState) -> dict:
     """Single generation pass with an EXPLICIT streaming/non-streaming switch.
 
@@ -189,9 +251,15 @@ async def generate(state: AgentState) -> dict:
     model = providers.resolve_model(state["routed_tier"])
 
     context, citation_map = research_agent._build_context_string(chunks)
-    messages = [
-        {"role": "user", "content": research_agent._user_content(question, context, steering)}
-    ]
+    user_content = research_agent._user_content(question, context, steering)
+    # Phase 4 follow-ups (inline strategy): append the trailing-block instruction
+    # to the USER content (NOT the cached system prompt, which test_prompt_caching
+    # pins byte-for-byte). "" when follow-ups are disabled, so the prompt is
+    # unchanged on the dark-launch default.
+    follow_instruction = follow_up_instruction()
+    if follow_instruction:
+        user_content = f"{user_content}\n\n{follow_instruction}"
+    messages = [{"role": "user", "content": user_content}]
     llm = research_agent._llm
 
     if state["streaming"] is False:
@@ -202,11 +270,21 @@ async def generate(state: AgentState) -> dict:
             max_tokens=1500,
             temperature=0,
         )
-        answer = result.text
+        raw_answer = result.text
         usage = result.usage
     else:
         writer = get_stream_writer()
         parts: list[str] = []
+        # Phase 4: when follow-ups are folded inline, hold back tokens that could
+        # be the start of the follow-up sentinel so the trailing block is NEVER
+        # emitted as an answer `token` event. Once the sentinel appears we stop
+        # emitting; the block is parsed off after the stream completes. When
+        # follow-ups are OFF (default), stream tokens verbatim (no buffering).
+        from taxflow.services.agents.research import FOLLOW_UP_SENTINEL
+
+        buffering = bool(follow_instruction)
+        emitted_len = 0
+        sentinel_seen = False
         usage = None
         async for chunk in llm.stream(
             messages=messages,
@@ -217,10 +295,33 @@ async def generate(state: AgentState) -> dict:
         ):
             if chunk.text:
                 parts.append(chunk.text)
-                writer({"token": chunk.text})
+                if not buffering:
+                    writer({"token": chunk.text})
+                elif not sentinel_seen:
+                    acc = "".join(parts)
+                    idx = acc.find(FOLLOW_UP_SENTINEL)
+                    if idx != -1:
+                        # Emit everything strictly before the sentinel, then stop.
+                        safe_upto = idx
+                        sentinel_seen = True
+                    else:
+                        # Hold back a tail that could be a partial sentinel prefix.
+                        safe_upto = max(0, len(acc) - (len(FOLLOW_UP_SENTINEL) - 1))
+                    if safe_upto > emitted_len:
+                        writer({"token": acc[emitted_len:safe_upto]})
+                        emitted_len = safe_upto
             if chunk.done:
                 usage = chunk.usage
-        answer = "".join(parts)
+        raw_answer = "".join(parts)
+        # Flush any held-back tail when the sentinel never appeared (the held-back
+        # chars are genuine answer content, not a follow-up block).
+        if buffering and not sentinel_seen and len(raw_answer) > emitted_len:
+            writer({"token": raw_answer[emitted_len:]})
+
+    # Phase 4: split the trailing follow-up block off the answer (tolerant — no
+    # block yields the answer unchanged + []). The CLEAN answer feeds citation
+    # parsing/confidence so `[N]` handling is unaffected.
+    answer, follow_ups = split_follow_ups(raw_answer)
 
     citations = research_agent._parse_citations(answer, citation_map)
     confidence = research_agent._estimate_confidence(answer, chunks, citations)
@@ -293,6 +394,9 @@ async def generate(state: AgentState) -> dict:
         # via state.get in _build_final_trace, so it survives the corrective pass
         # overwriting state["confidence"].
         "first_pass": trace["generation"],
+        # Phase 4: the parsed follow-up questions (inline strategy). Empty list
+        # when disabled or when the model emitted no follow-up block.
+        "follow_ups": follow_ups,
     }
 
 
@@ -370,6 +474,27 @@ def route_after_retrieve(state: AgentState) -> str:
     return "route_model"
 
 
+def route_after_route_model(state: AgentState) -> str:
+    """Phase 4: route into the clarify gate only when CLARIFY_ENABLED and this is
+    a first turn (the request carries no clarifications). The round-trip answer
+    (clarifications present) and the dark-launch default both go straight to
+    generate, so behaviour is unchanged when the flag is off."""
+    if settings.CLARIFY_ENABLED and not state.get("clarifications"):
+        return "clarify"
+    return "generate"
+
+
+def route_after_clarify(state: AgentState) -> str:
+    """Short-circuit to END (emit clarify event, NO generation) when the decision
+    needs clarification AND clears the confidence threshold; otherwise answer."""
+    decision = state.get("clarify_decision") or {}
+    if decision.get("needs_clarification") and (
+        decision.get("confidence", 0.0) >= settings.CLARIFY_CONFIDENCE_THRESHOLD
+    ):
+        return END
+    return "generate"
+
+
 def route_after_generate(state: AgentState) -> str:
     if should_verify(state["confidence"], state["citations"], state["answer"]):
         return "verify"
@@ -393,6 +518,7 @@ def build_research_graph() -> Any:
     g.add_node("retrieve", retrieve)
     g.add_node("re_retrieve", re_retrieve)
     g.add_node("route_model", route_model_node)
+    g.add_node("clarify", clarify)
     g.add_node("generate", generate)
     g.add_node("verify", verify)
     g.add_node("corrective_generate", corrective_generate)
@@ -405,7 +531,16 @@ def build_research_graph() -> Any:
         {"re_retrieve": "re_retrieve", "route_model": "route_model"},
     )
     g.add_edge("re_retrieve", "route_model")
-    g.add_edge("route_model", "generate")
+    g.add_conditional_edges(
+        "route_model",
+        route_after_route_model,
+        {"clarify": "clarify", "generate": "generate"},
+    )
+    g.add_conditional_edges(
+        "clarify",
+        route_after_clarify,
+        {"generate": "generate", END: END},
+    )
     g.add_conditional_edges(
         "generate", route_after_generate, {"verify": "verify", END: END}
     )

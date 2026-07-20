@@ -594,3 +594,192 @@ async def test_sse_first_pass_snapshot_matches_post(monkeypatch, base_state, fak
     # The reviewer widen fired and is threaded through state on the SSE path too.
     assert final["re_retrieved"] is True
     assert final["re_reason"] == "reviewer_flag"
+
+
+# --- Phase 4: clarify routing + follow-up parsing ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_clarify_disabled_routes_straight_to_generate(monkeypatch, base_state, fake_llm):
+    """Default (CLARIFY_ENABLED=False): the clarify node is never entered and
+    generation runs exactly once — behaviour identical to pre-Phase-4."""
+    monkeypatch.setattr(settings, "CLARIFY_ENABLED", False)
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(6), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+    clarify_run = AsyncMock()
+    monkeypatch.setattr(graph_mod.clarifier, "run", clarify_run)
+
+    out = await graph_mod.research_graph.ainvoke(base_state)
+
+    clarify_run.assert_not_awaited()
+    assert fake_llm.generate_calls == 1
+    assert out["answer"] == "Answer [1][2][3][4]"
+
+
+@pytest.mark.asyncio
+async def test_clarify_fires_short_circuits_before_generate(monkeypatch, base_state, fake_llm):
+    """When CLARIFY_ENABLED and the classifier needs clarification above the
+    threshold, the graph short-circuits to END: NO generation runs."""
+    monkeypatch.setattr(settings, "CLARIFY_ENABLED", True)
+    monkeypatch.setattr(settings, "CLARIFY_CONFIDENCE_THRESHOLD", 0.70)
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(6), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+    # Force the pre-filter to flag a candidate and the classifier to clarify.
+    monkeypatch.setattr(graph_mod, "should_clarify", lambda *a, **k: True)
+    decision = {
+        "needs_clarification": True,
+        "confidence": 0.9,
+        "questions": [{"prompt": "Which entity?", "options": [], "allow_free_text": True}],
+    }
+    monkeypatch.setattr(graph_mod.clarifier, "run", AsyncMock(return_value=decision))
+    # No session cap counting when session_id is None.
+
+    out = await graph_mod.research_graph.ainvoke(base_state)
+
+    assert fake_llm.generate_calls == 0
+    assert fake_llm.stream_calls == 0
+    assert out["clarify_decision"]["needs_clarification"] is True
+    assert "answer" not in out
+
+
+@pytest.mark.asyncio
+async def test_clarify_below_threshold_answers(monkeypatch, base_state, fake_llm):
+    """A low-confidence ambiguity verdict fails open — the graph answers."""
+    monkeypatch.setattr(settings, "CLARIFY_ENABLED", True)
+    monkeypatch.setattr(settings, "CLARIFY_CONFIDENCE_THRESHOLD", 0.70)
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(6), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+    monkeypatch.setattr(graph_mod, "should_clarify", lambda *a, **k: True)
+    decision = {"needs_clarification": True, "confidence": 0.4, "questions": []}
+    monkeypatch.setattr(graph_mod.clarifier, "run", AsyncMock(return_value=decision))
+
+    out = await graph_mod.research_graph.ainvoke(base_state)
+
+    assert fake_llm.generate_calls == 1
+    assert out["answer"] == "Answer [1][2][3][4]"
+
+
+@pytest.mark.asyncio
+async def test_clarify_skipped_when_clarifications_present(monkeypatch, base_state, fake_llm):
+    """The round-trip answer (clarifications present) skips the gate entirely and
+    generates once, even with CLARIFY_ENABLED."""
+    monkeypatch.setattr(settings, "CLARIFY_ENABLED", True)
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(6), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+    clarify_run = AsyncMock()
+    monkeypatch.setattr(graph_mod.clarifier, "run", clarify_run)
+
+    base_state["clarifications"] = [{"prompt": "Which entity?", "value": "company"}]
+    out = await graph_mod.research_graph.ainvoke(base_state)
+
+    clarify_run.assert_not_awaited()
+    assert fake_llm.generate_calls == 1
+    assert out["answer"] == "Answer [1][2][3][4]"
+
+
+@pytest.mark.asyncio
+async def test_clarify_session_cap_forces_answer(monkeypatch, base_state, fake_llm):
+    """When the session already asked a clarifying question, the verdict is forced
+    to needs_clarification=False and the graph answers."""
+    monkeypatch.setattr(settings, "CLARIFY_ENABLED", True)
+    monkeypatch.setattr(settings, "CLARIFY_CONFIDENCE_THRESHOLD", 0.70)
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(6), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+    monkeypatch.setattr(graph_mod, "should_clarify", lambda *a, **k: True)
+    decision = {"needs_clarification": True, "confidence": 0.9, "questions": []}
+    monkeypatch.setattr(graph_mod.clarifier, "run", AsyncMock(return_value=decision))
+
+    # Stub the session-clarify count to report a prior clarify round.
+    from unittest.mock import MagicMock as _MM
+
+    fake_rel = _MM()
+    fake_rel.queries.count_session_clarifications = lambda cid, sid: 1
+    monkeypatch.setattr(graph_mod.providers, "get_relational_data", lambda: fake_rel)
+
+    base_state["session_id"] = "sess-1"
+    out = await graph_mod.research_graph.ainvoke(base_state)
+
+    assert fake_llm.generate_calls == 1
+    assert out["answer"] == "Answer [1][2][3][4]"
+
+
+@pytest.mark.asyncio
+async def test_follow_ups_parsed_and_not_streamed(monkeypatch, base_state):
+    """With FOLLOW_UP_ENABLED, the streamed token events contain NO sentinel text
+    and the final state carries the parsed follow-ups."""
+    from taxflow.services.agents.research import FOLLOW_UP_SENTINEL
+
+    monkeypatch.setattr(settings, "FOLLOW_UP_ENABLED", True)
+    monkeypatch.setattr(settings, "FOLLOW_UP_STRATEGY", "inline")
+    monkeypatch.setattr(settings, "FOLLOW_UP_COUNT", 3)
+
+    answer_with_block = (
+        "Here is the answer [1][2][3][4].\n"
+        + FOLLOW_UP_SENTINEL
+        + "\nWhat about GST?\nHow is CGT applied?"
+    )
+    llm = FakeLLM(answer=answer_with_block)
+    monkeypatch.setattr(graph_mod.research_agent, "_llm", llm)
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_build_steering",
+        AsyncMock(return_value=("", None, 0)),
+    )
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(6), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+
+    base_state["streaming"] = True
+    tokens = []
+    final = {}
+    async for mode, chunk in graph_mod.research_graph.astream(
+        base_state, stream_mode=["custom", "values"]
+    ):
+        if mode == "custom":
+            tokens.append(chunk["token"])
+        elif mode == "values":
+            final = chunk
+
+    streamed = "".join(tokens)
+    assert FOLLOW_UP_SENTINEL not in streamed
+    assert "GST" not in streamed  # the follow-up block never leaks as tokens
+    assert final["follow_ups"] == ["What about GST?", "How is CGT applied?"]
+    assert final["answer"] == "Here is the answer [1][2][3][4]."
+
+
+@pytest.mark.asyncio
+async def test_follow_ups_disabled_no_block(monkeypatch, base_state, fake_llm):
+    """Default (FOLLOW_UP_ENABLED=False): no follow-ups are produced."""
+    monkeypatch.setattr(settings, "FOLLOW_UP_ENABLED", False)
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(6), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+
+    out = await graph_mod.research_graph.ainvoke(base_state)
+    assert out["follow_ups"] == []

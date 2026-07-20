@@ -774,3 +774,28 @@ def test_stats_all_035_columns_absent_nulls_all_optional_metrics():
     assert result["citation_validity_rate"] is None
     assert "model_id" not in result["by_model"][0]
     assert "avg_cost_usd" not in result["by_model"][0]
+
+
+# --- Phase 4: session clarify count (trace marker, tenant-scoped) -------------
+
+
+def test_count_session_clarifications_scoped_and_marker():
+    cur = _FakeCursor(fetchone=(2,))
+    with _patch_conn(cur):
+        result = Repositories().queries.count_session_clarifications("client-1", "sess-1")
+    sql, params = cur.executed[0]
+    assert "FROM queries" in sql
+    # Tenant scoping (RLS gives no isolation) + session scoping.
+    assert "WHERE client_id = %s" in sql
+    assert "session_id = %s" in sql
+    # Counts the trace.clarify.asked marker (no new column / migration).
+    assert "'clarify'" in sql and "'asked'" in sql
+    assert params == ("client-1", "sess-1")
+    assert result == 2
+
+
+def test_count_session_clarifications_zero_when_none():
+    cur = _FakeCursor(fetchone=None)
+    with _patch_conn(cur):
+        result = Repositories().queries.count_session_clarifications("client-1", "sess-1")
+    assert result == 0

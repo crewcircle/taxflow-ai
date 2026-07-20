@@ -10,6 +10,8 @@ import {
   CheckCircle2,
   Copy,
   FileDown,
+  HelpCircle,
+  MessageCircleQuestion,
   Pencil,
   ThumbsUp,
   ThumbsDown,
@@ -44,6 +46,19 @@ interface VerificationIssue {
 interface Verification {
   overall_status: "verified" | "needs_correction" | "unreliable" | "parse_error";
   issues: VerificationIssue[];
+}
+
+// Phase 4: clarifying questions. The backend returns 1-2 questions, each with
+// always-populated selectable options and an optional free-text escape.
+interface ClarifyOption {
+  label: string;
+  value: string;
+}
+
+interface ClarifyQuestionUI {
+  prompt: string;
+  options: ClarifyOption[];
+  allow_free_text: boolean;
 }
 
 interface QueryResult {
@@ -235,6 +250,145 @@ function FirmKnowledgeSuggestion({ repeatCount, defaultTitle, content }: FirmKno
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// Phase 4: the clarify card. Shown when the backend decides a first-turn
+// question is genuinely ambiguous. Each question shows always-populated,
+// selectable option chips plus an optional free-text input; a prominent
+// "Skip - just answer" button lets the user bypass clarifying entirely, so
+// they are never forced to respond. Submitting re-asks on the SAME session.
+function ClarifyCard({
+  questions,
+  onSubmit,
+  onSkip,
+  disabled,
+}: {
+  questions: ClarifyQuestionUI[];
+  onSubmit: (answers: { prompt: string; value: string }[]) => void;
+  onSkip: () => void;
+  disabled: boolean;
+}) {
+  const [selected, setSelected] = useState<Record<number, string>>({});
+  const [freeText, setFreeText] = useState<Record<number, string>>({});
+
+  function answerFor(idx: number): string {
+    // A typed free-text answer takes precedence over a selected option.
+    const typed = (freeText[idx] ?? "").trim();
+    if (typed) return typed;
+    return selected[idx] ?? "";
+  }
+
+  function handleContinue() {
+    const answers = questions
+      .map((q, idx) => ({ prompt: q.prompt, value: answerFor(idx) }))
+      .filter((a) => a.value);
+    onSubmit(answers);
+  }
+
+  const hasAnyAnswer = questions.some((_, idx) => answerFor(idx));
+
+  return (
+    <Card className="border-accent/30 bg-accent/5">
+      <CardContent className="space-y-4 py-4">
+        <div className="space-y-1">
+          <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+            <MessageCircleQuestion className="size-4 text-accent" />
+            A couple of quick details will sharpen this answer
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Answer what you can — or skip and I&apos;ll answer with reasonable
+            assumptions.
+          </p>
+        </div>
+
+        {questions.map((q, idx) => (
+          <div key={idx} className="space-y-2">
+            <p className="text-sm font-medium text-foreground">{q.prompt}</p>
+            {q.options.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {q.options.map((opt) => {
+                  const isSelected =
+                    selected[idx] === opt.value && !(freeText[idx] ?? "").trim();
+                  return (
+                    <Button
+                      key={opt.value}
+                      type="button"
+                      size="sm"
+                      variant={isSelected ? "default" : "outline"}
+                      disabled={disabled}
+                      onClick={() => {
+                        setSelected((prev) => ({ ...prev, [idx]: opt.value }));
+                        setFreeText((prev) => ({ ...prev, [idx]: "" }));
+                      }}
+                    >
+                      {opt.label}
+                    </Button>
+                  );
+                })}
+              </div>
+            )}
+            {q.allow_free_text && (
+              <Input
+                value={freeText[idx] ?? ""}
+                onChange={(e) =>
+                  setFreeText((prev) => ({ ...prev, [idx]: e.target.value }))
+                }
+                placeholder="Or type your own answer..."
+                className="h-8 max-w-md text-sm"
+                disabled={disabled}
+              />
+            )}
+          </div>
+        ))}
+
+        <div className="flex flex-wrap gap-2 pt-1">
+          <Button size="sm" disabled={disabled || !hasAnyAnswer} onClick={handleContinue}>
+            Continue
+          </Button>
+          <Button variant="ghost" size="sm" disabled={disabled} onClick={onSkip}>
+            Skip &amp; answer anyway
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Phase 4: suggested follow-up chips rendered beneath a finished answer.
+// Clicking a chip re-asks that question on the SAME session (conversation
+// continuity), just like typing a follow-up.
+function FollowUpChips({
+  questions,
+  onPick,
+  disabled,
+}: {
+  questions: string[];
+  onPick: (question: string) => void;
+  disabled: boolean;
+}) {
+  if (questions.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <HelpCircle className="size-3.5" />
+        Ask a follow-up
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {questions.map((q, idx) => (
+          <Button
+            key={idx}
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => onPick(q)}
+          >
+            {q}
+          </Button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -583,6 +737,11 @@ export default function QueryPage() {
   const [verification, setVerification] = useState<Verification | null>(null);
   const [verificationExpanded, setVerificationExpanded] = useState(false);
   const [trace, setTrace] = useState<AnswerTrace | null>(null);
+  // Phase 4: the clarify card (shown instead of an answer when the backend asks
+  // for clarification) and the follow-up chips (shown beneath a finished answer).
+  const [clarifyQuestions, setClarifyQuestions] = useState<ClarifyQuestionUI[] | null>(null);
+  const [clarifyAskedQuestion, setClarifyAskedQuestion] = useState("");
+  const [followUps, setFollowUps] = useState<string[]>([]);
   const [promoteState, setPromoteState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [repeatCount, setRepeatCount] = useState(0);
   const [copied, setCopied] = useState(false);
@@ -683,6 +842,10 @@ export default function QueryPage() {
     setSavedDocId(null);
     setDocType("advice_memo");
     setError(null);
+    // Phase 4: clear any prior clarify card / follow-up chips.
+    setClarifyQuestions(null);
+    setClarifyAskedQuestion("");
+    setFollowUps([]);
   }
 
   // Fetches a past query's full detail (answer + citations + verification)
@@ -783,13 +946,19 @@ export default function QueryPage() {
     loadConversation(item);
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(options?: {
+    questionOverride?: string;
+    clarifications?: { prompt: string; value: string }[];
+  }) {
     setLoading(true);
     resetPane();
     // Snapshot the question text now - the textarea stays editable for a
     // follow-up while this streams, and the result must stay tied to what
     // was actually asked, not whatever the box holds when the stream ends.
-    const askedQuestion = question;
+    // Phase 4: a clarify round-trip / follow-up chip re-asks a specific
+    // question (questionOverride) that may differ from the textarea contents.
+    const askedQuestion = options?.questionOverride ?? question;
+    const clarifications = options?.clarifications;
 
     try {
       const gate = await fetch("/api/query/stream?question=", { method: "HEAD" }).catch(() => null);
@@ -800,7 +969,11 @@ export default function QueryPage() {
 
       const streamUrl = `/api/query/stream?question=${encodeURIComponent(askedQuestion)}${
         clientRef.trim() ? `&client_ref=${encodeURIComponent(clientRef.trim())}` : ""
-      }&session_id=${encodeURIComponent(sessionId)}`;
+      }&session_id=${encodeURIComponent(sessionId)}${
+        clarifications
+          ? `&clarifications=${encodeURIComponent(JSON.stringify(clarifications))}`
+          : ""
+      }`;
       const source = new EventSource(streamUrl);
       let answer = "";
       let citations: SourceCitation[] = [];
@@ -823,6 +996,7 @@ export default function QueryPage() {
             overall_status?: Verification["overall_status"];
             issues?: VerificationIssue[];
             count?: number;
+            questions?: ClarifyQuestionUI[] | string[];
             retrieval?: AnswerTrace["retrieval"];
             generation?: AnswerTrace["generation"];
             verification?: AnswerTrace["verification"];
@@ -836,6 +1010,17 @@ export default function QueryPage() {
           if (parsed.type === "token" && parsed.text) {
             answer += parsed.text;
             setStreamedAnswer(answer);
+          } else if (parsed.type === "clarify") {
+            // Phase 4: the backend asked a clarifying question instead of
+            // answering. Stop the spinner and render the clarify card; the
+            // round-trip re-asks THIS same question on the same session.
+            setClarifyQuestions((parsed.questions as ClarifyQuestionUI[]) ?? []);
+            setClarifyAskedQuestion(askedQuestion);
+            setVerifying(false);
+          } else if (parsed.type === "follow_ups") {
+            // Phase 4: suggested next questions, rendered as chips beneath the
+            // finished answer once it arrives.
+            setFollowUps((parsed.questions as string[]) ?? []);
           } else if (parsed.type === "final") {
             citations = parsed.citations ?? [];
             // A cache hit streams the whole answer as one token event, so pick it
@@ -1039,6 +1224,27 @@ export default function QueryPage() {
             <p className="whitespace-pre-wrap text-sm">{streamedAnswer}</p>
           )}
 
+          {clarifyQuestions && !result && (
+            <ClarifyCard
+              questions={clarifyQuestions}
+              disabled={loading}
+              onSubmit={(answers) =>
+                handleSubmit({
+                  questionOverride: clarifyAskedQuestion,
+                  clarifications: answers,
+                })
+              }
+              onSkip={() =>
+                handleSubmit({
+                  questionOverride: clarifyAskedQuestion,
+                  // An empty clarifications array marks a deliberate skip so the
+                  // backend answers directly (skips the clarify gate).
+                  clarifications: [],
+                })
+              }
+            />
+          )}
+
           {result && (
             <div className="space-y-4">
               {result.askedQuestion && (
@@ -1072,6 +1278,15 @@ export default function QueryPage() {
                 repeatCount={repeatCount}
                 defaultTitle={result.askedQuestion.slice(0, 80) || "Saved answer"}
                 content={result.answer}
+              />
+
+              <FollowUpChips
+                questions={followUps}
+                disabled={loading}
+                onPick={(q) => {
+                  setQuestion(q);
+                  handleSubmit({ questionOverride: q });
+                }}
               />
 
               <AnswerActionsBar
@@ -1113,7 +1328,7 @@ export default function QueryPage() {
             </span>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button onClick={handleSubmit} disabled={loading || !question.trim()}>
+                <Button onClick={() => handleSubmit()} disabled={loading || !question.trim()}>
                   {loading ? "Thinking..." : "Ask TaxFlow"}
                 </Button>
               </TooltipTrigger>
