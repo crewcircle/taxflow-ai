@@ -22,6 +22,7 @@ import {
   resolveOffsetsInBlock,
   reanchor,
   sourceHash,
+  occurrenceBeforeOffset,
   type AnchorOffsets,
 } from "@/lib/annotations/tokenizer";
 
@@ -182,34 +183,69 @@ export function AnnotatableMarkdown({
   const resolvedCount = threads.length - openCount;
 
   // --- selection -> offsets --------------------------------------------------
-  // On mouseup inside the article, resolve the browser selection to
-  // (block_index, start/end offset) in the SOURCE markdown by locating the
-  // selected text across the source blocks (clamped to a single block; the
-  // full quoted_text is stored for fuzzy fallback). Offsets are computed
-  // against the source, before citation linkification, so highlighting and
-  // citation links compose.
+  // On mouseup inside the article, map the actual DOM selection back to
+  // (block_index, start/end offset) in the SOURCE markdown. We locate the
+  // rendered [data-block-index] wrapper the selection STARTS in (not a top-down
+  // scan for the selected string), so selecting the 2nd of two identical spans
+  // anchors the 2nd. When the selection crosses block wrappers we clamp to the
+  // first block per the plan: offsets cover the first block's selected
+  // substring, quoted_text keeps the full selection for fuzzy fallback. Offsets
+  // are computed against the source, before citation linkification, so
+  // highlighting and citation links compose.
   const handleMouseUp = useCallback(() => {
     if (isEmpty) return;
     const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) return;
-    const selected = selection.toString();
-    if (!selected.trim()) return;
-    if (articleRef.current && selection.anchorNode) {
-      if (!articleRef.current.contains(selection.anchorNode)) return;
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    const fullSelected = selection.toString();
+    if (!fullSelected.trim()) return;
+    const range = selection.getRangeAt(0);
+    const article = articleRef.current;
+    if (!article || !article.contains(range.startContainer)) return;
+
+    const startBlockEl = closestBlockEl(range.startContainer);
+    const endBlockEl = closestBlockEl(range.endContainer);
+    if (!startBlockEl) return;
+    const firstBlockIndex = Number(startBlockEl.getAttribute("data-block-index"));
+    const block = blocks[firstBlockIndex];
+    if (!block) return;
+
+    const crossesBlocks = endBlockEl !== startBlockEl;
+    // Text actually selected within the first block: the whole selection for a
+    // single-block drag, or (selection start → end of first block) when it
+    // crosses into later blocks.
+    let selectedInBlock = fullSelected;
+    if (crossesBlocks) {
+      const r = document.createRange();
+      r.setStart(range.startContainer, range.startOffset);
+      r.setEnd(startBlockEl, startBlockEl.childNodes.length);
+      selectedInBlock = r.toString();
     }
-    // Find the first block containing the selection.
-    for (const block of blocks) {
-      const anchor = resolveOffsetsInBlock(block, selected);
-      if (anchor) {
-        void sourceHash(sourceMarkdown).then((version) => {
-          setPending({ anchor, version });
-          setComposerKind("user");
-          setComposerBody("");
-        });
-        return;
-      }
+    if (!selectedInBlock.trim()) return;
+
+    // Which occurrence of the selected text within this block did the user pick?
+    // Count non-overlapping matches in the rendered text before the selection
+    // start so repeated spans disambiguate by position.
+    const prefixRange = document.createRange();
+    prefixRange.setStart(startBlockEl, 0);
+    prefixRange.setEnd(range.startContainer, range.startOffset);
+    const occurrence = countOccurrences(prefixRange.toString(), selectedInBlock.trim());
+
+    const anchor = resolveOffsetsInBlock(block, selectedInBlock, occurrence);
+    if (!anchor) {
+      toast.error("Couldn't anchor that selection — try selecting within a single paragraph");
+      return;
     }
-    toast.error("Couldn't anchor that selection — try selecting within a single paragraph");
+    // Preserve the full multi-block selection as the quoted text for fuzzy
+    // fallback + gutter display, while offsets stay clamped to the first block.
+    if (crossesBlocks) {
+      const full = fullSelected.trim();
+      if (full) anchor.quotedText = full;
+    }
+    void sourceHash(sourceMarkdown).then((version) => {
+      setPending({ anchor, version });
+      setComposerKind("user");
+      setComposerBody("");
+    });
   }, [blocks, isEmpty, sourceMarkdown]);
 
   // --- CRUD ------------------------------------------------------------------
@@ -300,9 +336,13 @@ export function AnnotatableMarkdown({
   }
 
   // --- inline highlight decoration -------------------------------------------
-  // After render, wrap each anchored thread's quoted_text in a <mark> inside the
-  // article DOM (Range API over text nodes). Runs whenever the visible threads
-  // or the rendered source change. Clicking a mark activates its gutter thread.
+  // After render, wrap each anchored thread's quoted_text in <mark>s inside the
+  // article DOM. The search is scoped to the thread's resolved SOURCE block
+  // (rendered in its own [data-block-index] wrapper) and to the specific
+  // occurrence of the quoted text within that block, so repeated text (e.g.
+  // "$120,000" appearing twice) highlights the span the comment actually
+  // anchored to rather than the first match in the whole article. Clicking a
+  // mark activates its gutter thread.
   useEffect(() => {
     const root = articleRef.current;
     if (!root) return;
@@ -319,29 +359,36 @@ export function AnnotatableMarkdown({
       if (!thread.anchor) continue;
       const quoted = thread.anchor.quotedText.trim();
       if (!quoted) continue;
-      const range = findTextRange(root, quoted);
-      if (!range) continue;
-      try {
+      const blockEl = root.querySelector<HTMLElement>(
+        `[data-block-index="${thread.anchor.blockIndex}"]`
+      );
+      if (!blockEl) continue;
+      // Which occurrence of the quoted text within this block did the anchor
+      // point at? Derive it from the stored source offset so the same span is
+      // re-highlighted after reload.
+      const srcBlock = blocks[thread.anchor.blockIndex];
+      const occurrence = srcBlock
+        ? occurrenceBeforeOffset(srcBlock.text, thread.anchor.startOffset, quoted)
+        : 0;
+      const kindClass =
+        thread.root.resolved_at != null
+          ? "bg-slate-200/60 text-muted-foreground"
+          : thread.root.author_kind === "user"
+            ? "bg-accent/15 shadow-[inset_0_-2px_0_theme(colors.accent.DEFAULT)]"
+            : "bg-slate-400/20 shadow-[inset_0_-2px_0_theme(colors.slate.500)]";
+      markOccurrenceInBlock(blockEl, quoted, occurrence, () => {
         const mark = document.createElement("mark");
         mark.dataset.annotation = thread.root.id;
-        const kindClass =
-          thread.root.resolved_at != null
-            ? "bg-slate-200/60 text-muted-foreground"
-            : thread.root.author_kind === "user"
-              ? "bg-accent/15 shadow-[inset_0_-2px_0_theme(colors.accent.DEFAULT)]"
-              : "bg-slate-400/20 shadow-[inset_0_-2px_0_theme(colors.slate.500)]";
         mark.className = cn(
           "cursor-pointer rounded-sm",
           kindClass,
           activeThreadId === thread.root.id && "ring-2 ring-accent"
         );
         mark.addEventListener("click", () => setActiveThreadId(thread.root.id));
-        range.surroundContents(mark);
-      } catch {
-        // surroundContents throws if the range partially crosses elements; skip.
-      }
+        return mark;
+      });
     }
-  }, [visibleThreads, sourceMarkdown, activeThreadId]);
+  }, [visibleThreads, blocks, sourceMarkdown, activeThreadId]);
 
   return (
     <div className="flex gap-4">
@@ -354,7 +401,16 @@ export function AnnotatableMarkdown({
         {isEmpty ? (
           <p className="text-sm text-muted-foreground">This document has no content to display.</p>
         ) : (
-          <MarkdownDocument text={sourceMarkdown} citations={citations} />
+          // Render each source block in its own wrapper tagged with the block's
+          // index. This makes the DOM source-block-aware: selection→offset
+          // mapping and highlight rendering resolve WITHIN the intended block
+          // (and occurrence) instead of scanning the whole article for a quoted
+          // string, so repeated text (e.g. "$120,000" twice) anchors correctly.
+          blocks.map((block) => (
+            <div key={block.index} data-block-index={block.index}>
+              <MarkdownDocument text={block.text} citations={citations} />
+            </div>
+          ))
         )}
       </div>
 
@@ -608,25 +664,87 @@ export function AnnotatableMarkdown({
 }
 
 /**
- * Find a DOM Range spanning the first occurrence of `needle` within a single
- * text node under `root`. Returns null if the text isn't found in one node
- * (multi-node matches are skipped — the gutter still shows the thread). Kept
- * DOM-local; all offset math for persistence lives in the tokenizer module.
+ * Walk up from a DOM node to the nearest ancestor tagged with a source
+ * `data-block-index` (the per-block wrapper we render). Returns null if the
+ * node is outside any block wrapper.
  */
-function findTextRange(root: HTMLElement, needle: string): Range | null {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    const text = node.textContent ?? "";
-    const idx = text.indexOf(needle);
-    if (idx !== -1) {
-      const range = document.createRange();
-      range.setStart(node, idx);
-      range.setEnd(node, idx + needle.length);
-      return range;
-    }
+function closestBlockEl(node: Node): HTMLElement | null {
+  let el: Node | null = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
+  while (el && el instanceof HTMLElement) {
+    if (el.hasAttribute("data-block-index")) return el;
+    el = el.parentNode;
   }
   return null;
+}
+
+/**
+ * Count non-overlapping occurrences of `needle` in `haystack`. Used to derive
+ * which occurrence of a repeated span the user selected, from the rendered text
+ * preceding the selection start.
+ */
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) return count;
+    count += 1;
+    from = at + needle.length;
+  }
+}
+
+/**
+ * Wrap the `occurrence`-th (0-based) instance of `needle` within a single text
+ * node under `blockEl` using a freshly built <mark> (from `makeMark`). Occurrence
+ * counting spans all text nodes in the block so a repeated span highlights the
+ * intended one. Multi-node matches are skipped (the gutter still shows the
+ * thread); this mirrors the prior single-text-node constraint but scoped to the
+ * source block + occurrence rather than the whole article.
+ */
+function markOccurrenceInBlock(
+  blockEl: HTMLElement,
+  needle: string,
+  occurrence: number,
+  makeMark: () => HTMLElement
+): void {
+  const walker = document.createTreeWalker(blockEl, NodeFilter.SHOW_TEXT);
+  let seen = 0;
+  let node: Node | null;
+  let firstNode: Node | null = null;
+  let firstIdx = -1;
+  while ((node = walker.nextNode())) {
+    const text = node.textContent ?? "";
+    let from = 0;
+    for (;;) {
+      const idx = text.indexOf(needle, from);
+      if (idx === -1) break;
+      if (firstNode === null) {
+        firstNode = node;
+        firstIdx = idx;
+      }
+      if (seen === occurrence) {
+        wrapRange(node, idx, needle.length, makeMark);
+        return;
+      }
+      seen += 1;
+      from = idx + needle.length;
+    }
+  }
+  // Requested occurrence not found (e.g. rendered text differs from source):
+  // fall back to the first match so the highlight still appears.
+  if (firstNode) wrapRange(firstNode, firstIdx, needle.length, makeMark);
+}
+
+function wrapRange(node: Node, start: number, length: number, makeMark: () => HTMLElement): void {
+  try {
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, start + length);
+    range.surroundContents(makeMark());
+  } catch {
+    // surroundContents throws if the range partially crosses elements; skip.
+  }
 }
 
 

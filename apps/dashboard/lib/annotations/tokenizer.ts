@@ -75,15 +75,22 @@ export function splitBlocks(md: string): MarkdownBlock[] {
  * indexOf first, then a normalised fuzzy match, so a selection that spans
  * rendered markup (e.g. bold/citation syntax) still anchors. Returns null when
  * the text can't be located in the block.
+ *
+ * `occurrence` (0-based) disambiguates repeated text WITHIN the block: when the
+ * same string appears more than once, pass the index of the occurrence the user
+ * actually selected (derived from the DOM position) so the anchor lands on the
+ * right span instead of always the first. It applies to the exact path; the
+ * fuzzy fallback ignores it (repeats after normalisation are vanishingly rare).
  */
 export function resolveOffsetsInBlock(
   block: MarkdownBlock,
-  selectedText: string
+  selectedText: string,
+  occurrence = 0
 ): AnchorOffsets | null {
   const raw = selectedText.trim();
   if (!raw) return null;
 
-  const exact = block.text.indexOf(raw);
+  const exact = nthIndexOf(block.text, raw, occurrence);
   if (exact !== -1) {
     return {
       blockIndex: block.index,
@@ -91,6 +98,19 @@ export function resolveOffsetsInBlock(
       endOffset: exact + raw.length,
       quotedText: raw,
     };
+  }
+  // If the requested occurrence doesn't exist, fall back to the first one so a
+  // selection that repeats fewer times than expected still anchors.
+  if (occurrence > 0) {
+    const first = block.text.indexOf(raw);
+    if (first !== -1) {
+      return {
+        blockIndex: block.index,
+        startOffset: first,
+        endOffset: first + raw.length,
+        quotedText: raw,
+      };
+    }
   }
 
   // Fuzzy: locate the normalised needle inside the normalised block text, then
@@ -109,6 +129,40 @@ export function resolveOffsetsInBlock(
     endOffset: rawEnd,
     quotedText: block.text.slice(rawStart, rawEnd),
   };
+}
+
+/**
+ * Index of the `occurrence`-th (0-based) instance of `needle` in `haystack`, or
+ * -1 if there are fewer than `occurrence + 1` matches. Used to disambiguate
+ * repeated spans by their ordinal position.
+ */
+export function nthIndexOf(haystack: string, needle: string, occurrence: number): number {
+  if (!needle) return -1;
+  let from = 0;
+  for (let i = 0; i <= occurrence; i++) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) return -1;
+    if (i === occurrence) return at;
+    from = at + needle.length;
+  }
+  return -1;
+}
+
+/**
+ * How many times `needle` occurs in `blockText` strictly before `offset`. Used
+ * to derive the ordinal of a stored anchor so the highlighter can re-find the
+ * SAME occurrence in the rendered DOM instead of always the first.
+ */
+export function occurrenceBeforeOffset(blockText: string, offset: number, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const at = blockText.indexOf(needle, from);
+    if (at === -1 || at >= offset) return count;
+    count += 1;
+    from = at + needle.length;
+  }
 }
 
 /**

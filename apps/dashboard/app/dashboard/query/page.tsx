@@ -494,6 +494,11 @@ export default function QueryPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<QueryResult | null>(null);
+  // True only once the answer is authoritative: a live stream has emitted
+  // [DONE] (after any correction/regeneration), or a persisted conversation was
+  // loaded from history. The annotation layer mounts ONLY when this is true, so
+  // offsets/hashes are never computed against a mid-stream buffer.
+  const [streamComplete, setStreamComplete] = useState(false);
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [verifying, setVerifying] = useState(false);
   const [verification, setVerification] = useState<Verification | null>(null);
@@ -589,6 +594,7 @@ export default function QueryPage() {
 
   function resetPane() {
     setResult(null);
+    setStreamComplete(false);
     setStreamedAnswer("");
     setVerification(null);
     setVerifying(false);
@@ -619,6 +625,9 @@ export default function QueryPage() {
         query_id: data.id ?? item.id,
         askedQuestion: data.question ?? item.question,
       });
+      // A restored conversation is already persisted and authoritative, so the
+      // annotation layer may mount immediately.
+      setStreamComplete(true);
       // Continue the restored conversation: reuse its session_id so a typed
       // follow-up folds into that session's context rather than starting a new
       // one. Fall back to a freshly-minted id if the row predates session_id.
@@ -725,6 +734,10 @@ export default function QueryPage() {
         source.onmessage = (event) => {
           if (event.data === "[DONE]") {
             source.close();
+            // Stream is finished and every correction has been applied, so the
+            // displayed answer now matches the persisted queries.final_answer.
+            // Only now is it safe to anchor annotations against it.
+            setStreamComplete(true);
             resolve();
             return;
           }
@@ -974,11 +987,13 @@ export default function QueryPage() {
                 <VerificationIssuesPanel issues={verification.issues} />
               )}
 
-              {result.query_id ? (
+              {streamComplete && result.query_id ? (
                 // Annotation layer is enabled ONLY after the stream is [DONE]
-                // and a persisted query_id exists — offsets/hash are computed
-                // against the final persisted answer, never the mid-stream
-                // buffer (a correction event can replace the whole answer).
+                // (streamComplete) and a persisted query_id exists — offsets/hash
+                // are computed against the final persisted answer, never the
+                // mid-stream buffer (a correction event can replace the whole
+                // answer). A restored history conversation sets streamComplete
+                // immediately since it is already persisted.
                 <AnnotatableMarkdown
                   key={result.query_id}
                   targetType="query_answer"
