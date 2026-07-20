@@ -7,3 +7,13 @@ export async function GET(request: NextRequest) {
   const response = await proxyToBackend(path);
   return forwardResponse(response);
 }
+
+export async function POST(request: Request) {
+  const body = await request.text();
+  const response = await proxyToBackend("/firm-clients", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+  return forwardResponse(response);
+}

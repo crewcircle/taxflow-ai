@@ -5,6 +5,11 @@ import { Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
+import { ResourceRowActions } from "@/components/resource-actions/ResourceRowActions";
+import { ConfirmDialog } from "@/components/resource-actions/ConfirmDialog";
+import { ResourceEditDialog } from "@/components/resource-actions/ResourceEditDialog";
+import { useResourceMutation } from "@/components/resource-actions/useResourceMutation";
 
 interface UploadResult {
   document_id: string;
@@ -52,7 +57,26 @@ export default function AtoResponsePage() {
   const [detail, setDetail] = useState<HistoryDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [approving, setApproving] = useState(false);
+  // Phase 2: attribute the uploaded letter to a first-class engagement. This is
+  // the fix for the flow that previously dropped attribution entirely — both
+  // engagement_id and the end-client name (client_ref) are now sent on upload.
+  const [engagement, setEngagement] = useState<EngagementSelection | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<HistoryRow | HistoryDetail | null>(null);
+  const [editTarget, setEditTarget] = useState<
+    { id: string; title: string; content_md: string } | null
+  >(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  function resetDetailView() {
+    setActiveId(null);
+    setDetail(null);
+  }
+
+  const mutation = useResourceMutation({
+    onSuccess: () => {
+      loadHistory();
+    },
+  });
 
   function loadHistory() {
     fetch("/api/ato-response")
@@ -107,6 +131,10 @@ export default function AtoResponsePage() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      if (engagement) {
+        formData.append("engagement_id", engagement.engagement.id);
+        formData.append("client_ref", engagement.clientName);
+      }
       const response = await fetch("/api/ato-response/upload", { method: "POST", body: formData });
       if (!response.ok) throw new Error("Upload failed");
       setResult(await response.json());
@@ -131,7 +159,13 @@ export default function AtoResponsePage() {
         <CardContent className="flex flex-col items-center gap-4 py-4 text-center">
           <Upload className="size-6 text-muted-foreground" />
           <input ref={fileInput} type="file" accept="application/pdf" className="text-sm" />
-          <Button onClick={handleUpload} disabled={uploading}>
+          <EngagementPicker
+            value={engagement}
+            onChange={setEngagement}
+            triggerLabel="Choose client & engagement"
+            disabled={uploading}
+          />
+          <Button onClick={handleUpload} disabled={uploading || !engagement}>
             {uploading ? "Analysing letter..." : "Upload and analyse"}
           </Button>
         </CardContent>
@@ -201,7 +235,7 @@ export default function AtoResponsePage() {
               </p>
             </div>
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {detail.status !== "approved" && (
                 <Button size="sm" disabled={approving} onClick={handleApprove}>
                   {approving ? "Approving..." : "Approve"}
@@ -210,6 +244,22 @@ export default function AtoResponsePage() {
               <Button asChild variant="outline" size="sm">
                 <a href={`/api/documents/${detail.id}/download?fmt=docx`}>Download as .docx</a>
               </Button>
+              <ResourceRowActions
+                label="ATO response"
+                actions={{
+                  edit: () =>
+                    setEditTarget({
+                      id: detail.id,
+                      title: detail.title,
+                      content_md: detail.content_md,
+                    }),
+                  delete: () => setDeleteTarget(detail),
+                  download: {
+                    docx: `/api/documents/${detail.id}/download?fmt=docx`,
+                    pdf: `/api/documents/${detail.id}/download?fmt=pdf`,
+                  },
+                }}
+              />
             </div>
           </CardContent>
         </Card>
@@ -220,12 +270,10 @@ export default function AtoResponsePage() {
           <p className="mb-2 text-xs font-semibold text-muted-foreground">HISTORY</p>
           <ul className="divide-y divide-border rounded-lg border border-border text-sm">
             {history.map((h) => (
-              <li key={h.id}>
+              <li key={h.id} className={`flex items-center gap-1 ${h.id === activeId ? "bg-muted" : ""}`}>
                 <button
                   onClick={() => handleSelectHistory(h.id)}
-                  className={`flex w-full items-start justify-between gap-4 px-4 py-2 text-left transition-colors hover:bg-muted ${
-                    h.id === activeId ? "bg-muted" : ""
-                  }`}
+                  className="flex min-w-0 flex-1 items-start justify-between gap-4 px-4 py-2 text-left transition-colors hover:bg-muted"
                 >
                   <span className="min-w-0">
                     <span className="flex items-center gap-2">
@@ -242,10 +290,68 @@ export default function AtoResponsePage() {
                     {new Date(h.created_at).toLocaleDateString("en-AU")}
                   </span>
                 </button>
+                <div className="pr-2">
+                  <ResourceRowActions
+                    label="ATO response"
+                    actions={{ delete: () => setDeleteTarget(h) }}
+                  />
+                </div>
               </li>
             ))}
           </ul>
         </div>
+      )}
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        title="Delete ATO response?"
+        description={
+          deleteTarget
+            ? `"${humanizeTitle(deleteTarget.title)}" will be permanently deleted. This cannot be undone.`
+            : undefined
+        }
+        confirmLabel="Delete"
+        destructive
+        pending={mutation.pending}
+        onConfirm={async () => {
+          if (!deleteTarget) return;
+          const deletedId = deleteTarget.id;
+          const ok = await mutation.remove(
+            `/api/ato-response/${deletedId}`,
+            "ATO response deleted"
+          );
+          if (ok) {
+            setDeleteTarget(null);
+            if (activeId === deletedId) resetDetailView();
+          }
+        }}
+      />
+
+      {editTarget && (
+        <ResourceEditDialog
+          open={!!editTarget}
+          onOpenChange={(open) => {
+            if (!open) setEditTarget(null);
+          }}
+          initial={{ title: editTarget.title, content_md: editTarget.content_md }}
+          pending={mutation.pending}
+          onSave={async (fields) => {
+            const ok = await mutation.patch(
+              `/api/ato-response/${editTarget.id}`,
+              fields,
+              "ATO response updated"
+            );
+            if (ok) {
+              setEditTarget(null);
+              if (detail && detail.id === editTarget.id) {
+                setDetail({ ...detail, title: fields.title, content_md: fields.content_md });
+              }
+            }
+          }}
+        />
       )}
     </div>
   );

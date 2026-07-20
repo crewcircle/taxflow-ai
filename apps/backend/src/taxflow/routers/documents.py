@@ -1,5 +1,6 @@
 import asyncio
 
+import psycopg2
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -8,6 +9,7 @@ from taxflow.config import settings
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.providers import get_document_renderer
+from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
 from taxflow.services.agents.document_graph import document_graph
 from taxflow.services.knowledge.embedder import embed
 
@@ -42,10 +44,16 @@ class GenerateDocumentRequest(BaseModel):
     title: str
     content_md: str
     client_ref: str | None = None
+    engagement_id: str | None = None
 
 
 class ApproveDocumentRequest(BaseModel):
     approved_by: str
+
+
+class UpdateDocumentRequest(BaseModel):
+    title: str | None = None
+    content_md: str | None = None
 
 
 @router.get("/templates")
@@ -65,11 +73,10 @@ async def generate_document(
     if body.document_type not in TEMPLATE_REGISTRY:
         raise HTTPException(status_code=400, detail=f"Unknown document_type: {body.document_type}")
 
-    if body.client_ref:
-        try:
-            await asyncio.to_thread(db.firm_clients.upsert, client["id"], body.client_ref)
-        except Exception:  # noqa: BLE001 - never block saving the document
-            pass
+    # Reject a spoofed engagement_id that belongs to another tenant.
+    await ensure_engagement_owned(db, client["id"], body.engagement_id)
+
+    await register_firm_client(db, client["id"], body.client_ref)
 
     # Chat answers are the raw research answer, not a formal memo/letter - only
     # reformat here, on demand, when actually saving one as a specific document
@@ -106,6 +113,7 @@ async def generate_document(
             "title": body.title,
             "content_md": content_md,
             "client_ref": body.client_ref,
+            "engagement_id": body.engagement_id,
         },
     )
 
@@ -196,6 +204,63 @@ async def get_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return doc
+
+
+@router.patch("/{document_id}")
+async def update_document(
+    document_id: str,
+    body: UpdateDocumentRequest,
+    client=Depends(get_current_client),
+    db=Depends(get_db),
+):
+    """Full-content edit of a document (``content_md`` and/or ``title``), setting
+    ``edited_at = now()``. At least one field must be present (else 400).
+    Client-scoped (404 for a foreign doc). Does NOT re-run ``document_graph`` —
+    the edit is the user's literal content, not a regeneration.
+    """
+    fields: dict = {}
+    if body.title is not None:
+        fields["title"] = body.title
+    if body.content_md is not None:
+        fields["content_md"] = body.content_md
+    if not fields:
+        raise HTTPException(
+            status_code=400, detail="Provide at least one of title, content_md"
+        )
+
+    doc = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return await asyncio.to_thread(
+        db.documents.update, client["id"], document_id, fields
+    )
+
+
+@router.delete("/{document_id}")
+async def delete_document(
+    document_id: str, client=Depends(get_current_client), db=Depends(get_db)
+):
+    """Hard-delete a document, scoped by client_id (404 for a foreign doc).
+
+    Documents are referenced by RESTRICT foreign keys
+    (``knowledge_suggestions.source_document_id``,
+    ``engagement_context.document_id``); deleting a referenced document raises a
+    psycopg2 ``IntegrityError`` which we map to 409 "in use" (no cascade).
+    """
+    doc = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        await asyncio.to_thread(db.documents.delete, client["id"], document_id)
+    except psycopg2.IntegrityError as e:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete: this document is referenced by another record "
+            "(a knowledge suggestion or engagement-context entry).",
+        ) from e
+    return {"status": "deleted", "document_id": document_id}
 
 
 @router.get("/{document_id}/download")

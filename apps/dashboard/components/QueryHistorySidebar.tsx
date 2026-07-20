@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ReResearchBadge } from "@/components/ReResearchBadge";
+import { ResourceRowActions } from "@/components/resource-actions/ResourceRowActions";
 import { cn } from "@/lib/utils";
 
 export interface QueryListItem {
@@ -29,6 +30,10 @@ interface QueryHistorySidebarProps {
   onSelect: (id: string) => void;
   onNewQuestion: () => void;
   onHide: () => void;
+  // Delete a single past question.
+  onDeleteQuery: (id: string) => void;
+  // Delete an entire multi-turn engagement (session) at once.
+  onDeleteSession: (sessionId: string) => void;
   // Set briefly (e.g. from a topic-tag click) to scroll to and highlight one
   // specific item without hiding the rest of the list.
   highlightedId?: string | null;
@@ -98,6 +103,8 @@ export function QueryHistorySidebar({
   onSelect,
   onNewQuestion,
   onHide,
+  onDeleteQuery,
+  onDeleteSession,
   highlightedId,
   sessionLabels = {},
 }: QueryHistorySidebarProps) {
@@ -183,15 +190,15 @@ export function QueryHistorySidebar({
                   const isHighlighted = item.id === highlightedId || matchedIds?.has(item.id);
                   const isDimmed = matchedIds !== null && !matchedIds.has(item.id);
                   return (
+                    <div key={item.id} className="group/qrow flex items-start gap-0.5">
                     <button
-                      key={item.id}
                       ref={(el) => {
                         if (el) itemRefs.current.set(item.id, el);
                         else itemRefs.current.delete(item.id);
                       }}
                       onClick={() => onSelect(item.id)}
                       className={cn(
-                        "flex w-full items-start gap-2 rounded-lg border-l-2 border-transparent px-2 py-2 text-left text-sm transition-all",
+                        "flex min-w-0 flex-1 items-start gap-2 rounded-lg border-l-2 border-transparent px-2 py-2 text-left text-sm transition-all",
                         "text-foreground hover:bg-muted",
                         isHighlighted && "border-accent bg-accent/10",
                         isDimmed && "opacity-40"
@@ -212,28 +219,43 @@ export function QueryHistorySidebar({
                         )}
                       </span>
                     </button>
+                    <div className="pt-1 opacity-0 transition-opacity group-hover/qrow:opacity-100">
+                      <ResourceRowActions
+                        label="question"
+                        actions={{ delete: () => onDeleteQuery(item.id) }}
+                      />
+                    </div>
+                    </div>
                   );
                 }
 
                 return (
                   <div key={row.sessionId} className="mb-1">
-                    <p className="line-clamp-1 px-2 py-1 text-[11px] font-medium text-muted-foreground">
-                      {row.label}
-                    </p>
+                    <div className="group/qsession flex items-center justify-between gap-1">
+                      <p className="line-clamp-1 px-2 py-1 text-[11px] font-medium text-muted-foreground">
+                        {row.label}
+                      </p>
+                      <div className="opacity-0 transition-opacity group-hover/qsession:opacity-100">
+                        <ResourceRowActions
+                          label="engagement"
+                          actions={{ delete: () => onDeleteSession(row.sessionId) }}
+                        />
+                      </div>
+                    </div>
                     <div className="space-y-0.5 border-l border-border pl-2">
                       {row.items.map((item) => {
                         const isHighlighted = item.id === highlightedId || matchedIds?.has(item.id);
                         const isDimmed = matchedIds !== null && !matchedIds.has(item.id);
                         return (
+                          <div key={item.id} className="group/qrow flex items-start gap-0.5">
                           <button
-                            key={item.id}
                             ref={(el) => {
                               if (el) itemRefs.current.set(item.id, el);
                               else itemRefs.current.delete(item.id);
                             }}
                             onClick={() => onSelect(item.id)}
                             className={cn(
-                              "flex w-full items-start gap-2 rounded-lg border-l-2 border-transparent px-2 py-1.5 text-left text-sm transition-all",
+                              "flex min-w-0 flex-1 items-start gap-2 rounded-lg border-l-2 border-transparent px-2 py-1.5 text-left text-sm transition-all",
                               "text-foreground hover:bg-muted",
                               isHighlighted && "border-accent bg-accent/10",
                               isDimmed && "opacity-40"
@@ -254,6 +276,13 @@ export function QueryHistorySidebar({
                               )}
                             </span>
                           </button>
+                          <div className="pt-1 opacity-0 transition-opacity group-hover/qrow:opacity-100">
+                            <ResourceRowActions
+                              label="question"
+                              actions={{ delete: () => onDeleteQuery(item.id) }}
+                            />
+                          </div>
+                          </div>
                         );
                       })}
                     </div>

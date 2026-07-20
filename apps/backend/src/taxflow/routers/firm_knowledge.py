@@ -15,6 +15,10 @@ class FromTextRequest(BaseModel):
     content: str
 
 
+class UpdateFirmKnowledgeRequest(BaseModel):
+    content: str
+
+
 class CreateSuggestionRequest(BaseModel):
     title: str
     content: str
@@ -254,5 +258,38 @@ async def upload_firm_knowledge(file: UploadFile, client=Depends(get_current_cli
 
 @router.delete("/{knowledge_id}")
 async def delete_firm_knowledge(knowledge_id: str, client=Depends(get_current_client), db=Depends(get_db)):
-    await asyncio.to_thread(db.firm_knowledge.delete, client["id"], knowledge_id)
+    deleted = await asyncio.to_thread(
+        db.firm_knowledge.delete, client["id"], knowledge_id
+    )
+    if not deleted:
+        # Missing or foreign-owned — the SQL scoping already blocked any
+        # cross-tenant delete; surface 404 instead of a false success.
+        raise HTTPException(status_code=404, detail="Firm knowledge not found")
     return {"status": "deleted"}
+
+
+@router.patch("/{knowledge_id}")
+async def update_firm_knowledge(
+    knowledge_id: str,
+    body: UpdateFirmKnowledgeRequest,
+    client=Depends(get_current_client),
+    db=Depends(get_db),
+):
+    """Edit a firm-knowledge note's content in-app. Re-runs ``embed(content)``
+    before the UPDATE so the stored embedding stays consistent with the edited
+    text (retrieval would otherwise match against the old vector). Client-scoped
+    (404 for a foreign note)."""
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Content cannot be empty")
+
+    owned = await asyncio.to_thread(
+        db.firm_knowledge.get_for_client, client["id"], knowledge_id
+    )
+    if not owned:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    embedding = await embed(content)
+    return await asyncio.to_thread(
+        db.firm_knowledge.update, client["id"], knowledge_id, content, embedding
+    )

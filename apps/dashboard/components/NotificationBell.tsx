@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Bell, Check } from "lucide-react";
+import { Bell, Check, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -18,7 +18,7 @@ function relativeTime(iso: string): string {
 }
 
 export function NotificationBell() {
-  const { notifications, unreadCount, markRead } = useNotifications();
+  const { notifications, unreadCount, markRead, remove } = useNotifications();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -133,6 +133,15 @@ export function NotificationBell() {
                         <Check className="size-3.5" />
                       </Button>
                     )}
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-6 shrink-0"
+                      aria-label="Delete notification"
+                      onClick={() => remove(n.id)}
+                    >
+                      <X className="size-3.5" />
+                    </Button>
                   </div>
                 );
               })

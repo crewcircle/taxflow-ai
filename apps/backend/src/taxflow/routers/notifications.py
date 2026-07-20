@@ -7,7 +7,7 @@ existing ``get_current_client`` dependency like every other router.
 """
 import asyncio
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
@@ -29,3 +29,18 @@ async def mark_notification_read(
     its own notifications."""
     await asyncio.to_thread(db.notifications.mark_read, client["id"], notification_id)
     return {"id": notification_id, "read": True}
+
+
+@router.delete("/{notification_id}")
+async def delete_notification(
+    notification_id: str, client=Depends(get_current_client), db=Depends(get_db)
+):
+    """Delete a notification. Scoped by client_id so a client can only delete
+    its own notification. 404 when nothing owned was deleted (missing /
+    foreign-owned) rather than reporting a false success."""
+    deleted = await asyncio.to_thread(
+        db.notifications.delete, client["id"], notification_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"status": "deleted", "id": notification_id}

@@ -22,10 +22,20 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHistorySidebar";
+import { ConfirmDialog } from "@/components/resource-actions/ConfirmDialog";
+import { useResourceMutation } from "@/components/resource-actions/useResourceMutation";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
 import { AnswerTracePanel, type AnswerTrace } from "@/components/AnswerTracePanel";
 import { CollapsedPanelRail } from "@/components/CollapsedPanelRail";
 import { ClientAutocomplete } from "@/components/ClientAutocomplete";
+import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
 import { ReResearchBadge } from "@/components/ReResearchBadge";
 import { MarkdownDocument } from "@/components/MarkdownDocument";
 import { AnnotatableMarkdown } from "@/components/AnnotatableMarkdown";
@@ -321,6 +331,7 @@ interface AnswerActionsBarProps {
   onSave: () => void;
   clientRef: string;
   onClientRefChange: (v: string) => void;
+  onEditAnswer: () => void;
 }
 
 // Everything you can do with a finished answer, in one row: rate it (Task
@@ -343,6 +354,7 @@ function AnswerActionsBar({
   onSave,
   clientRef,
   onClientRefChange,
+  onEditAnswer,
 }: AnswerActionsBarProps) {
   const [rating, setRating] = useState<"up" | "down" | null>(null);
   const [note, setNote] = useState("");
@@ -502,6 +514,20 @@ function AnswerActionsBar({
               Copies the plain answer text to your clipboard - handy for pasting into an email or another document
             </TooltipContent>
           </Tooltip>
+
+          {queryId && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="outline" size="sm" onClick={onEditAnswer}>
+                  <Pencil className="size-3.5" />
+                  Edit
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Edit this answer&apos;s text - saving clears the automated verification badge, since it no longer describes your edited wording
+              </TooltipContent>
+            </Tooltip>
+          )}
         </div>
 
         {queryId && (
@@ -640,6 +666,10 @@ function VerificationIssuesPanel({ issues }: { issues: VerificationIssue[] }) {
 export default function QueryPage() {
   const [question, setQuestion] = useState("");
   const [clientRef, setClientRef] = useState("");
+  // Phase 2: the chosen first-class engagement. Selecting one also mirrors the
+  // end-client name into clientRef so the legacy client_ref plumbing (history
+  // highlighting, document tagging) keeps working alongside engagement_id.
+  const [engagement, setEngagement] = useState<EngagementSelection | null>(null);
   // Session memory (Task D3): a UUID minted per conversation and reused across
   // every follow-up so the backend can load prior turns for this session. Reset
   // to a fresh id on "new question" / when loading a different past query, so
@@ -679,6 +709,11 @@ export default function QueryPage() {
   const [savingDoc, setSavingDoc] = useState(false);
   const [savedDocId, setSavedDocId] = useState<string | null>(null);
   const [highlightedHistoryId, setHighlightedHistoryId] = useState<string | null>(null);
+  const [deleteQueryTarget, setDeleteQueryTarget] = useState<QueryListItem | null>(null);
+  const [deleteSessionTarget, setDeleteSessionTarget] = useState<string | null>(null);
+  const [editingAnswer, setEditingAnswer] = useState(false);
+  const [answerDraft, setAnswerDraft] = useState("");
+  const [savingAnswer, setSavingAnswer] = useState(false);
 
   const hasAutoLoaded = useRef(false);
 
@@ -690,6 +725,8 @@ export default function QueryPage() {
   }, []);
 
   useEffect(loadHistory, [loadHistory]);
+
+  const mutation = useResourceMutation({ onSuccess: loadHistory });
 
   const loadSessionLabels = useCallback(() => {
     fetch("/api/query/sessions")
@@ -856,8 +893,16 @@ export default function QueryPage() {
   function handleNewQuestion() {
     setQuestion("");
     setClientRef("");
+    setEngagement(null);
     setSessionId(crypto.randomUUID());
     resetPane();
+  }
+
+  // Selecting an engagement mirrors its end-client into clientRef so the legacy
+  // client_ref plumbing (document tagging, history highlighting) keeps working.
+  function handleEngagementChange(selection: EngagementSelection | null) {
+    setEngagement(selection);
+    if (selection) setClientRef(selection.clientName);
   }
 
   // Selecting a past question - from the sidebar or a scenario tag - shows
@@ -869,6 +914,40 @@ export default function QueryPage() {
     // loadConversation restores the item's answer/sources AND its session_id, so
     // a follow-up continues that conversation's context (D3 session memory).
     loadConversation(item);
+  }
+
+  function openEditAnswer() {
+    if (!result) return;
+    setAnswerDraft(result.answer);
+    setEditingAnswer(true);
+  }
+
+  async function saveAnswerEdit() {
+    if (!result?.query_id) return;
+    const edited = answerDraft.trim();
+    if (!edited) return;
+    setSavingAnswer(true);
+    try {
+      const response = await fetch(`/api/query/${result.query_id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ final_answer: edited }),
+      });
+      if (!response.ok) throw new Error("Failed");
+      // Reflect the edit locally and clear the now-stale verification UI: the
+      // backend has cleared verification_result + citation validity + the
+      // trace's verification block, so drop them from the pane too.
+      setResult((prev) => (prev ? { ...prev, answer: edited } : prev));
+      setVerification(null);
+      setVerificationExpanded(false);
+      setTrace((prev) => (prev ? { ...prev, verification: { ran: false } } : prev));
+      setEditingAnswer(false);
+      loadHistory();
+    } catch {
+      setError("Could not save your edit - please try again");
+    } finally {
+      setSavingAnswer(false);
+    }
   }
 
   async function handleSubmit(options?: {
@@ -894,6 +973,8 @@ export default function QueryPage() {
 
       const streamUrl = `/api/query/stream?question=${encodeURIComponent(askedQuestion)}${
         clientRef.trim() ? `&client_ref=${encodeURIComponent(clientRef.trim())}` : ""
+      }${
+        engagement ? `&engagement_id=${encodeURIComponent(engagement.engagement.id)}` : ""
       }&session_id=${encodeURIComponent(sessionId)}${
         clarifications
           ? `&clarifications=${encodeURIComponent(JSON.stringify(clarifications))}`
@@ -1053,6 +1134,7 @@ export default function QueryPage() {
           title: result.askedQuestion.slice(0, 80),
           content_md: result.answer,
           client_ref: clientRef.trim() || null,
+          engagement_id: engagement?.engagement.id ?? null,
         }),
       });
       if (!response.ok) throw new Error("Failed");
@@ -1081,6 +1163,11 @@ export default function QueryPage() {
             onSelect={handleSelectHistory}
             onNewQuestion={handleNewQuestion}
             onHide={() => setHistoryOpen(false)}
+            onDeleteQuery={(id) => {
+              const item = history.find((h) => h.id === id) ?? null;
+              setDeleteQueryTarget(item);
+            }}
+            onDeleteSession={(sid) => setDeleteSessionTarget(sid)}
             highlightedId={highlightedHistoryId}
             sessionLabels={sessionLabels}
           />
@@ -1248,6 +1335,7 @@ export default function QueryPage() {
                 onSave={handleSaveAsDocument}
                 clientRef={clientRef}
                 onClientRefChange={setClientRef}
+                onEditAnswer={openEditAnswer}
               />
             </div>
           )}
@@ -1268,17 +1356,31 @@ export default function QueryPage() {
             placeholder={result ? "Ask a follow-up question..." : "Ask an Australian tax question..."}
           />
           <div className="mt-2 flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">
-              {question.length}/{MAX_CHARS} characters
-            </span>
+            <div className="flex items-center gap-2">
+              <EngagementPicker
+                value={engagement}
+                onChange={handleEngagementChange}
+                disabled={loading}
+              />
+              <span className="text-xs text-muted-foreground">
+                {question.length}/{MAX_CHARS} characters
+              </span>
+            </div>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button onClick={() => handleSubmit()} disabled={loading || !question.trim()}>
+                <Button
+                  onClick={() => handleSubmit()}
+                  disabled={loading || !question.trim() || (!engagement && !result)}
+                >
                   {loading ? "Thinking..." : "Ask TaxFlow"}
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                {result ? "Continues this engagement with your follow-up" : "Runs your question against the AU tax knowledge base"}
+                {!engagement && !result
+                  ? "Choose a client & engagement to start"
+                  : result
+                    ? "Continues this engagement with your follow-up"
+                    : "Runs your question against the AU tax knowledge base"}
               </TooltipContent>
             </Tooltip>
           </div>
@@ -1290,6 +1392,90 @@ export default function QueryPage() {
       ) : (
         <CollapsedPanelRail side="right" label="Show sources" onShow={() => setSourcesOpen(true)} />
       )}
+
+      <ConfirmDialog
+        open={!!deleteQueryTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteQueryTarget(null);
+        }}
+        title="Delete question?"
+        description={
+          deleteQueryTarget
+            ? `"${deleteQueryTarget.question.slice(0, 100)}" will be removed from your history. This cannot be undone.`
+            : undefined
+        }
+        confirmLabel="Delete"
+        destructive
+        pending={mutation.pending}
+        onConfirm={async () => {
+          if (!deleteQueryTarget) return;
+          const deletedId = deleteQueryTarget.id;
+          const ok = await mutation.remove(`/api/query/${deletedId}`, "Question deleted");
+          if (ok) {
+            setDeleteQueryTarget(null);
+            if (result?.query_id === deletedId) resetPane();
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!deleteSessionTarget}
+        onOpenChange={(open) => {
+          if (!open) setDeleteSessionTarget(null);
+        }}
+        title="Delete engagement?"
+        description="Every question in this engagement will be removed from your history. This cannot be undone."
+        confirmLabel="Delete engagement"
+        destructive
+        pending={mutation.pending}
+        onConfirm={async () => {
+          if (!deleteSessionTarget) return;
+          const deletedSession = deleteSessionTarget;
+          const ok = await mutation.remove(
+            `/api/query/sessions/${deletedSession}`,
+            "Engagement deleted"
+          );
+          if (ok) {
+            setDeleteSessionTarget(null);
+            if (sessionId === deletedSession) resetPane();
+          }
+        }}
+      />
+
+      <Dialog
+        open={editingAnswer}
+        onOpenChange={(open) => {
+          if (!open) setEditingAnswer(false);
+        }}
+      >
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit answer</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            Saving replaces the stored answer with your edited text and clears the automated
+            verification badge, since it no longer describes your wording. This does not re-run
+            research.
+          </p>
+          <Textarea
+            value={answerDraft}
+            onChange={(e) => setAnswerDraft(e.target.value)}
+            className="min-h-64 font-mono text-xs"
+          />
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setEditingAnswer(false)}
+              disabled={savingAnswer}
+            >
+              Cancel
+            </Button>
+            <Button onClick={saveAnswerEdit} disabled={savingAnswer || !answerDraft.trim()}>
+              {savingAnswer ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

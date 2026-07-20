@@ -15,7 +15,9 @@ from taxflow.config import settings
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.middleware.trial_gate import check_trial_gate, increment_usage
+from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
 from taxflow.services import answer_cache
+from taxflow.services.answer_cache import normalise_question
 from taxflow.services.agents.graph import research_graph
 from taxflow.services.agents.research import build_effective_question
 from taxflow.services.eval.citations import check_citation_validity
@@ -234,6 +236,10 @@ class SessionLabelRequest(BaseModel):
     label: str
 
 
+class UpdateQueryRequest(BaseModel):
+    final_answer: str
+
+
 @router.get("/sessions")
 async def list_sessions(client=Depends(get_current_client), db=Depends(get_db)):
     """Labels for this client's named conversation threads - unlabelled
@@ -253,6 +259,43 @@ async def rename_session(
     if not label:
         raise HTTPException(status_code=400, detail="Label cannot be empty")
     return await asyncio.to_thread(db.query_sessions.upsert_label, client["id"], session_id, label)
+
+
+# Declared ABOVE the /{query_id} wildcard (FastAPI matches in declaration order,
+# same gotcha as /stream and /sessions) so DELETE /query/sessions/{id} is not
+# swallowed as query_id="sessions".
+@router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: str, client=Depends(get_current_client), db=Depends(get_db)
+):
+    """Soft-delete every query in a conversation session (archives the rows;
+    the query_sessions label row, if any, is also removed). Also invalidates the
+    answer cache for each affected question so an exact re-ask recomputes rather
+    than serving an archived answer.
+    """
+    # Collect the affected questions BEFORE archiving so we can invalidate their
+    # cache entries (the cache reads the separate query_cache table, which is not
+    # filtered by queries.deleted_at).
+    history = await asyncio.to_thread(
+        db.queries.list_session_history, client["id"], session_id, 1000
+    )
+    deleted = await asyncio.to_thread(
+        db.queries.delete_session, client["id"], session_id
+    )
+    if not deleted:
+        # No live rows for this client under this session (missing /
+        # foreign-owned / already-archived) — report 404 rather than a false
+        # success.
+        raise HTTPException(status_code=404, detail="Session not found")
+    for row in history:
+        question = row.get("question")
+        if question:
+            await asyncio.to_thread(
+                db.query_cache.invalidate,
+                client["id"],
+                normalise_question(question),
+            )
+    return {"status": "deleted", "session_id": session_id}
 
 
 @router.post("")
@@ -507,6 +550,7 @@ async def stream_query(
     client_ref: str | None = None,
     session_id: str | None = None,
     clarifications: str | None = None,
+    engagement_id: str | None = None,
     client=Depends(get_current_client),
     _trial=Depends(check_trial_gate),
     db=Depends(get_db),
@@ -544,15 +588,15 @@ async def stream_query(
             parsed_clarifications = None
     effective_question = build_effective_question(question, parsed_clarifications)
 
+    # Reject a spoofed engagement_id that belongs to another tenant (Postgres
+    # only checks the FK exists, not that its client_id matches).
+    await ensure_engagement_owned(db, client["id"], engagement_id)
+
     # Client register (Settings audit follow-up): grows organically from real
     # use rather than requiring firms to pre-seed a client list. Upsert is a
     # no-op on repeat names (ON CONFLICT DO NOTHING) and must never block the
     # question being answered.
-    if client_ref:
-        try:
-            await asyncio.to_thread(db.firm_clients.upsert, client["id"], client_ref)
-        except Exception:  # noqa: BLE001
-            pass
+    await register_firm_client(db, client["id"], client_ref)
 
     def _insert_query_row(status: str, extra: dict | None = None) -> str:
         row = db.queries.insert(
@@ -564,6 +608,7 @@ async def stream_query(
                 "status": status,
                 "client_ref": client_ref,
                 "session_id": session_id,
+                "engagement_id": engagement_id,
                 **(extra or {}),
             }
         )
@@ -592,7 +637,7 @@ async def stream_query(
             "research",
             cached,
             start,
-            {"client_ref": client_ref},
+            {"client_ref": client_ref, "engagement_id": engagement_id},
         )
         await increment_usage(client["id"], "queries")
 
@@ -959,3 +1004,84 @@ async def get_query(query_id: str, client=Depends(get_current_client), db=Depend
     if not result:
         raise HTTPException(status_code=404, detail="Query not found")
     return result
+
+
+@router.patch("/{query_id}")
+async def edit_query(
+    query_id: str,
+    body: UpdateQueryRequest,
+    client=Depends(get_current_client),
+    db=Depends(get_db),
+):
+    """Edit a query's answer body in-app.
+
+    Sets ``queries.final_answer`` + ``edited_at = now()`` and marks the
+    verification/citation state STALE (clears ``verification_result`` and the
+    stored ``trace``'s verification badge) — an edited answer is the user's
+    literal content, so the prior automated verification no longer describes it.
+    Does NOT re-run the generation graph. Client-scoped (404 for a foreign
+    query) and also invalidates the answer cache for this question so an exact
+    re-ask returns the edited answer, not the stale cached one.
+    """
+    final_answer = body.final_answer.strip()
+    if not final_answer:
+        raise HTTPException(status_code=400, detail="final_answer cannot be empty")
+
+    owned = await asyncio.to_thread(db.queries.get_for_client, client["id"], query_id)
+    if not owned:
+        raise HTTPException(status_code=404, detail="Query not found")
+
+    # The prior automated verification/citation checks described the previous
+    # answer, not this hand-edited body — clear/replace ALL of them so nothing
+    # stale is shown against the new content. This includes the persisted
+    # trace's verification block (rewritten to "did not run"), which the
+    # "why this answer?" UI reads independently of verification_result.
+    stale_trace = owned.get("trace")
+    if isinstance(stale_trace, dict):
+        stale_trace = dict(stale_trace)
+        stale_trace["verification"] = {"ran": False}
+
+    await asyncio.to_thread(
+        db.queries.update,
+        client["id"],
+        query_id,
+        {
+            "final_answer": final_answer,
+            "edited_at": "now()",
+            # Stale every verification/citation signal: they described the
+            # previous answer, not this hand-edited one.
+            "verification_result": None,
+            "citation_valid": None,
+            "invalid_citations": None,
+            "trace": stale_trace,
+        },
+    )
+    # Invalidate the answer cache for this question (the cache reads the separate
+    # query_cache table, which queries.deleted_at/edited_at do not touch).
+    question = owned.get("question")
+    if question:
+        await asyncio.to_thread(
+            db.query_cache.invalidate, client["id"], normalise_question(question)
+        )
+    return await asyncio.to_thread(db.queries.get_for_client, client["id"], query_id)
+
+
+@router.delete("/{query_id}")
+async def delete_query(
+    query_id: str, client=Depends(get_current_client), db=Depends(get_db)
+):
+    """Soft-delete (archive) a query. Client-scoped (404 for a foreign query).
+    Also invalidates the answer cache for this question so an exact re-ask does
+    not return the archived answer.
+    """
+    owned = await asyncio.to_thread(db.queries.get_for_client, client["id"], query_id)
+    if not owned:
+        raise HTTPException(status_code=404, detail="Query not found")
+
+    await asyncio.to_thread(db.queries.delete, client["id"], query_id)
+    question = owned.get("question")
+    if question:
+        await asyncio.to_thread(
+            db.query_cache.invalidate, client["id"], normalise_question(question)
+        )
+    return {"status": "deleted", "query_id": query_id}

@@ -102,7 +102,17 @@ export function useNotifications() {
     }
   }, []);
 
+  const remove = useCallback(async (id: string) => {
+    // Optimistic removal so the item disappears immediately.
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    try {
+      await fetch(`/api/notifications/${id}`, { method: "DELETE" });
+    } catch {
+      // Best-effort; the next poll reconciles server state.
+    }
+  }, []);
+
   const unread = notifications.filter((n) => !n.read_at);
 
-  return { notifications, unread, unreadCount: unread.length, markRead, refresh };
+  return { notifications, unread, unreadCount: unread.length, markRead, remove, refresh };
 }
