@@ -176,7 +176,6 @@ def _build_update(
     return sql, params
 
 
-
 def _present_035_columns() -> set[str]:
     """Return which of the migration-035 observability columns
     (``cost_usd``/``citation_valid``/``model_id``) currently exist on
