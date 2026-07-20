@@ -3,9 +3,9 @@
 Firms can edit the drafting "template" (the system prompt body) for each
 document type in Settings. Resolution is: **firm override body** (a
 ``document_templates`` row for ``(client_id, template_key)`` with a non-empty
-body and ``is_active``) **else the code-owned system default** — the current
-hardcoded prompt string, moved here verbatim so there is exactly one source of
-truth and the fallback is byte-identical to today.
+body) **else the code-owned system default** — the current hardcoded prompt
+string, moved here verbatim so there is exactly one source of truth and the
+fallback is byte-identical to today.
 
 Editable keys = 18 total (Decision #2523):
   - 3 base types that actually have a drafting prompt today: ``advice_memo``,
@@ -14,8 +14,17 @@ Editable keys = 18 total (Decision #2523):
     ``LETTER_TYPES``. ATO resolution is subtype-first:
     ``ato_response:{letter_type}`` -> base ``ato_response`` -> system default.
 
-The AU-English fix + ``REQUIRED_SECTIONS`` section-presence retry stay OUTSIDE
-the editable body and always run (code-owned guardrails a firm cannot disable).
+Flags-off / code-owned parity (review B1 + B2):
+  - The fixed **role line** is code-owned (``*_ROLE``) and is NOT part of the
+    editable body, so the composed prompt keeps the original
+    ``role line -> voice_instruction -> rest`` ordering — byte-identical to
+    pre-Phase-5 output even for a firm with a ``voice_sample`` and the flag off.
+  - The **AU-English guardrail** is a code-owned constant enforced at the
+    drafting sites via ``ensure_au_english()`` (OUTSIDE ``resolve_template``), so
+    a firm override can never remove or contradict it — it ALWAYS runs. The
+    default bodies retain the guardrail inline solely to preserve byte-identical
+    flag-off output; ``ensure_au_english`` is idempotent (a no-op when already
+    present) and only appends it when a firm's override omits it.
 
 The whole feature is gated behind ``settings.DOCUMENT_TEMPLATES_ENABLED`` so it
 can ship dark: when off, ``resolve_template`` always returns the system default.
@@ -34,12 +43,51 @@ from taxflow.services.ato_correspondence.classifier import LETTER_TYPES
 
 logger = logging.getLogger(__name__)
 
-# --- system-default prompt bodies (moved verbatim from the drafting sites) ----
+# --- code-owned AU-English guardrail (review B2) -----------------------------
+# Pulled out of the editable template body: enforced at the drafting sites
+# (draft.py, document_graph.py) regardless of the flag or any firm override, so
+# a firm can never disable the AU-English drafting instruction.
+AU_ENGLISH_MARKER = "Use Australian English"
+AU_ENGLISH_GUARDRAIL = (
+    "Use Australian English: organisation, recognise, licence (noun), practise (verb), "
+    "lodgement, cheque, programme, centre, labour, behaviour."
+)
 
-# advice_memo — from services/agents/draft.py (the static part; the per-firm
-# voice_instruction is prepended by the drafting site, not part of the body).
+
+def ensure_au_english(system: str) -> str:
+    """Guarantee the code-owned AU-English guardrail is present in a composed
+    system prompt. Idempotent: when the guardrail is already present (the
+    code-owned default bodies keep it inline for byte-identical flag-off parity)
+    this is a no-op; when a firm's override omitted it, the guardrail is
+    appended so it ALWAYS runs."""
+    if AU_ENGLISH_MARKER in system:
+        return system
+    if system.endswith("\n\n"):
+        sep = ""
+    elif system.endswith("\n"):
+        sep = "\n"
+    else:
+        sep = "\n\n"
+    return f"{system}{sep}{AU_ENGLISH_GUARDRAIL}"
+
+
+# --- code-owned fixed role lines (review B1) ---------------------------------
+# Kept out of the editable body so the composed prompt preserves the original
+# ``role line -> voice_instruction -> rest`` ordering.
+ADVICE_MEMO_ROLE = "You are drafting a tax advice memo for an Australian accounting firm.\n"
+CLIENT_LETTER_ROLE = (
+    "You are drafting a letter from an Australian accounting firm directly to their client.\n"
+)
+
+
+# --- system-default prompt bodies (the editable "rest", moved verbatim) -------
+# These are everything AFTER the code-owned role line + voice_instruction. They
+# still contain the AU-English guardrail inline so that, with the flag off, the
+# composed prompt is byte-identical to the pre-Phase-5 string; ensure_au_english
+# guarantees the guardrail for firm overrides that omit it.
+
+# advice_memo — from services/agents/draft.py (post role line + voice).
 ADVICE_MEMO_DEFAULT = (
-    "You are drafting a tax advice memo for an Australian accounting firm.\n"
     "Structure requirements (all sections mandatory):\n"
     "1. SUMMARY (2-3 sentences): Direct answer to the question asked.\n"
     "2. LEGISLATIVE FRAMEWORK: Key legislation and ATO positions that apply.\n"
@@ -54,10 +102,8 @@ ADVICE_MEMO_DEFAULT = (
     "American spellings, passive voice without justification."
 )
 
-# client_letter — from services/agents/document_graph.py (static part; the
-# per-firm voice_instruction is prepended by the drafting site).
+# client_letter — from services/agents/document_graph.py (post role line + voice).
 CLIENT_LETTER_DEFAULT = (
-    "You are drafting a letter from an Australian accounting firm directly to their client.\n"
     "This is a CLIENT-FACING letter, not an internal working paper - write it accordingly:\n"
     "- Open with a plain-English greeting and state the purpose in the first paragraph.\n"
     "- Explain the advice in plain English. Do not use internal section headers like "
@@ -71,7 +117,8 @@ CLIENT_LETTER_DEFAULT = (
     "spellings, or internal jargon a client wouldn't recognise."
 )
 
-# ato_response — from services/ato_correspondence/drafter.py SYSTEM_PROMPT.
+# ato_response — from services/ato_correspondence/drafter.py SYSTEM_PROMPT (no
+# voice/role split; used as the full system prompt).
 ATO_RESPONSE_DEFAULT = """You are drafting a formal letter to the Australian Taxation Office on behalf of
 an Australian taxpayer. This is a professional correspondence.
 
@@ -136,10 +183,19 @@ TEMPLATE_LABELS: dict[str, str] = {
 }
 
 
+def _row_body(row: dict | None) -> str | None:
+    """Return a usable override body from a template row, or None. A row counts
+    as an override when it has a non-empty body (there is no soft-delete state
+    today; see the ``is_active`` note in migration 041)."""
+    if row and (row.get("body") or "").strip():
+        return row["body"]
+    return None
+
+
 def _firm_body(client_id: str, template_key: str) -> str | None:
-    """Return the firm's active, non-empty override body for ``template_key`` or
-    None. Best-effort: on DB error, log and return None so callers fall back to
-    the system default (drafting must never be blocked by a template lookup)."""
+    """Return the firm's non-empty override body for ``template_key`` or None.
+    Best-effort: on DB error, log and return None so callers fall back to the
+    system default (drafting must never be blocked by a template lookup)."""
     if not settings.DOCUMENT_TEMPLATES_ENABLED:
         return None
     try:
@@ -147,13 +203,25 @@ def _firm_body(client_id: str, template_key: str) -> str | None:
     except Exception:  # noqa: BLE001 - never block drafting on a template lookup
         logger.exception("document_templates lookup failed for key=%s", template_key)
         return None
-    if row and row.get("is_active") and (row.get("body") or "").strip():
-        return row["body"]
-    return None
+    return _row_body(row)
+
+
+def _resolve_from(get_body, template_key: str) -> str:
+    """Shared subtype->base->system-default resolution over a ``get_body(key)``
+    lookup (a per-key DB call for ``resolve_template`` or an in-memory map
+    lookup for ``list_templates_for_client``)."""
+    if template_key.startswith("ato_response:"):
+        return (
+            get_body(template_key)
+            or get_body("ato_response")
+            or SYSTEM_DEFAULTS[template_key]
+        )
+    return get_body(template_key) or SYSTEM_DEFAULTS[template_key]
 
 
 def resolve_template(client_id: str, template_key: str) -> str:
-    """Resolve the system-prompt body for ``template_key``.
+    """Resolve the system-prompt BODY for ``template_key`` (the editable part,
+    excluding the code-owned role line + AU-English guardrail).
 
     For a per-ATO-subtype key ``ato_response:{letter_type}`` resolution is
     subtype-first: firm subtype row -> firm base ``ato_response`` row -> system
@@ -161,37 +229,26 @@ def resolve_template(client_id: str, template_key: str) -> str:
     ``KeyError`` (callers pass a key from ``SYSTEM_DEFAULTS``)."""
     if template_key not in SYSTEM_DEFAULTS:
         raise KeyError(f"unknown template_key: {template_key}")
-
-    # Subtype-first fallthrough for ATO subtype keys.
-    if template_key.startswith("ato_response:"):
-        body = _firm_body(client_id, template_key)
-        if body is not None:
-            return body
-        base = _firm_body(client_id, "ato_response")
-        if base is not None:
-            return base
-        return SYSTEM_DEFAULTS[template_key]
-
-    body = _firm_body(client_id, template_key)
-    if body is not None:
-        return body
-    return SYSTEM_DEFAULTS[template_key]
+    return _resolve_from(lambda key: _firm_body(client_id, key), template_key)
 
 
 def list_templates_for_client(client_id: str) -> list[dict]:
     """For each editable key, return the resolved body + whether the firm has a
-    custom row. Used by ``GET /settings/templates``."""
-    custom_keys: set[str] = set()
+    custom row. Used by ``GET /settings/templates``.
+
+    Single-query (review S1): the firm's rows are fetched once and resolution +
+    the ``is_custom`` flag are computed in-memory off that map, instead of
+    re-hitting the DB per key via ``resolve_template``."""
+    rows_by_key: dict[str, dict] = {}
     if settings.DOCUMENT_TEMPLATES_ENABLED:
         try:
-            rows = get_relational_data().document_templates.list_for_client(client_id)
-            custom_keys = {
-                r["template_key"]
-                for r in rows
-                if r.get("is_active") and (r.get("body") or "").strip()
-            }
+            for r in get_relational_data().document_templates.list_for_client(client_id):
+                rows_by_key[r["template_key"]] = r
         except Exception:  # noqa: BLE001 - degrade to defaults, never 500 the list
             logger.exception("document_templates list failed for client")
+
+    def get_body(key: str) -> str | None:
+        return _row_body(rows_by_key.get(key))
 
     out: list[dict] = []
     for key in SYSTEM_DEFAULTS:
@@ -199,8 +256,9 @@ def list_templates_for_client(client_id: str) -> list[dict]:
             {
                 "template_key": key,
                 "label": TEMPLATE_LABELS.get(key, key),
-                "body": resolve_template(client_id, key),
-                "is_custom": key in custom_keys,
+                "body": _resolve_from(get_body, key),
+                # is_custom = the firm has its OWN row for this exact key.
+                "is_custom": get_body(key) is not None,
             }
         )
     return out

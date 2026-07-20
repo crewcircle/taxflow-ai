@@ -150,8 +150,10 @@ def test_resolve_returns_firm_body_when_row_present():
         assert dt.resolve_template("cid", "advice_memo") == "FIRM CUSTOM MEMO"
 
 
-def test_resolve_ignores_empty_or_inactive_firm_body():
-    for row in ({"body": "   ", "is_active": True}, {"body": "x", "is_active": False}):
+def test_resolve_ignores_empty_firm_body():
+    # An empty/whitespace body always falls back to the system default. There is
+    # no soft-delete state today (review S3), so is_active is not consulted.
+    for row in ({"body": "   "}, {"body": ""}, {"body": None}):
         with patch.object(settings, "DOCUMENT_TEMPLATES_ENABLED", True), patch.object(
             dt, "get_relational_data", return_value=_fake_rd(row)
         ):
@@ -229,17 +231,37 @@ def test_ato_subtype_falls_through_to_system_default_when_both_unset():
 
 
 def test_list_templates_marks_custom_rows():
-    rows = [{"template_key": "advice_memo", "body": "custom", "is_active": True}]
+    rows = [{"template_key": "advice_memo", "body": "custom"}]
+    rd = _fake_rd(list_return=rows)
     with patch.object(settings, "DOCUMENT_TEMPLATES_ENABLED", True), patch.object(
-        dt, "get_relational_data", return_value=_fake_rd(get_for_key_return={"body": "custom", "is_active": True}, list_return=rows)
+        dt, "get_relational_data", return_value=rd
     ):
         out = dt.list_templates_for_client("cid")
     assert len(out) == 18
     memo = next(t for t in out if t["template_key"] == "advice_memo")
     assert memo["is_custom"] is True
+    assert memo["body"] == "custom"
     assert memo["label"] == "Tax advice memo"
     other = next(t for t in out if t["template_key"] == "client_letter")
     assert other["is_custom"] is False
+    assert other["body"] == dt.SYSTEM_DEFAULTS["client_letter"]
+
+
+def test_list_templates_uses_single_query_no_n_plus_1():
+    """S1: exactly ONE list_for_client query; resolution happens in-memory, so
+    get_for_key is never called per key."""
+    rd = _fake_rd(list_return=[{"template_key": "ato_response", "body": "base"}])
+    with patch.object(settings, "DOCUMENT_TEMPLATES_ENABLED", True), patch.object(
+        dt, "get_relational_data", return_value=rd
+    ):
+        out = dt.list_templates_for_client("cid")
+    assert rd.document_templates.list_for_client.call_count == 1
+    rd.document_templates.get_for_key.assert_not_called()
+    # In-memory subtype->base fallthrough: an unset subtype resolves to the
+    # firm's base ato_response row off the single-query map.
+    subtype = next(t for t in out if t["template_key"] == "ato_response:penalty_notice")
+    assert subtype["body"] == "base"
+    assert subtype["is_custom"] is False
 
 
 # --- Drafting sites use the firm body when present ---------------------------
@@ -308,6 +330,90 @@ async def test_ato_drafting_uses_firm_subtype_template():
         )
 
     assert "FIRM ATO SUBTYPE PROMPT" in str(captured["system"])
+
+
+# --- flags-off parity (review B1) + code-owned AU-English (review B2) ---------
+
+
+# The exact pre-Phase-5 advice-memo system prompt (role -> voice -> rest), used
+# to assert byte-identical output with the flag off AND a voice sample present.
+_VOICE_SAMPLE = "We write plainly and warmly."
+_LEGACY_ADVICE_MEMO_SYSTEM = (
+    "You are drafting a tax advice memo for an Australian accounting firm.\n"
+    f'The firm describes its own voice like this - match this tone:\n"{_VOICE_SAMPLE}"\n\n'
+    "Structure requirements (all sections mandatory):\n"
+    "1. SUMMARY (2-3 sentences): Direct answer to the question asked.\n"
+    "2. LEGISLATIVE FRAMEWORK: Key legislation and ATO positions that apply.\n"
+    "   Cite every section using the reference numbers from the research.\n"
+    "3. APPLICATION TO FACTS: How the law applies to this specific situation.\n"
+    "4. CONCLUSION AND RECOMMENDED ACTION: What the client should do.\n"
+    "5. IMPORTANT LIMITATIONS: Note that this is AI-assisted advice requiring\n"
+    "   professional review before reliance.\n\n"
+    "Use Australian English: organisation, recognise, licence (noun), practise (verb),\n"
+    "lodgement, cheque, programme, centre, labour, behaviour.\n\n"
+    "Do not include: generic disclaimers like 'this is general advice only',\n"
+    "American spellings, passive voice without justification."
+)
+
+
+async def _capture_advice_memo_system(voice_sample: str) -> str:
+    from taxflow.services.agents.draft import DraftAgent
+
+    fake_llm = MagicMock()
+    captured = {}
+
+    async def fake_generate(messages, system, model, max_tokens, temperature):
+        captured["system"] = system
+        res = MagicMock()
+        res.text = (
+            "SUMMARY\nLEGISLATIVE FRAMEWORK\nAPPLICATION TO FACTS\n"
+            "CONCLUSION AND RECOMMENDED ACTION\nIMPORTANT LIMITATIONS"
+        )
+        return res
+
+    fake_llm.generate = AsyncMock(side_effect=fake_generate)
+    agent = DraftAgent(llm=fake_llm)
+    with patch("taxflow.services.agents.draft.get_relational_data") as g:
+        g.return_value.clients.get_voice_sample.return_value = voice_sample
+        await agent.run({"answer": "a", "citations": []}, "q", "cid")
+    return captured["system"]
+
+
+@pytest.mark.asyncio
+async def test_flags_off_advice_memo_is_byte_identical_with_voice_sample():
+    """B1: with the flag OFF and a voice sample present, the composed system
+    prompt must be byte-identical to the pre-Phase-5 string (role line ->
+    voice_instruction -> rest)."""
+    with patch.object(settings, "DOCUMENT_TEMPLATES_ENABLED", False):
+        system = await _capture_advice_memo_system(_VOICE_SAMPLE)
+    assert system == _LEGACY_ADVICE_MEMO_SYSTEM
+
+
+@pytest.mark.asyncio
+async def test_au_english_always_present_even_if_firm_template_omits_it():
+    """B2: a firm override that drops the AU-English instruction still gets it —
+    the guardrail is code-owned and always enforced at the drafting site."""
+    row = {"body": "Write however you like. No spelling rules."}
+    with patch.object(settings, "DOCUMENT_TEMPLATES_ENABLED", True), patch.object(
+        dt, "get_relational_data", return_value=_fake_rd(row)
+    ):
+        system = await _capture_advice_memo_system("")
+    assert dt.AU_ENGLISH_MARKER in system
+    assert "organisation" in system and "recognise" in system
+
+
+def test_ensure_au_english_is_idempotent_on_default_body():
+    """B2: ensure_au_english is a no-op when the guardrail is already present, so
+    it never duplicates it in the code-owned default bodies."""
+    default = (
+        f"{dt.ADVICE_MEMO_ROLE}{dt.SYSTEM_DEFAULTS['advice_memo']}"
+    )
+    assert dt.ensure_au_english(default) == default
+    # Appends exactly once when absent.
+    stripped = "Draft nicely."
+    once = dt.ensure_au_english(stripped)
+    assert dt.AU_ENGLISH_MARKER in once
+    assert dt.ensure_au_english(once) == once
 
 
 # --- Settings routes ----------------------------------------------------------

@@ -660,7 +660,7 @@ class DocumentTemplatesRepo:
     def list_for_client(self, client_id: str) -> list[dict]:
         return _fetchall(
             """
-            SELECT id, template_key, name, body, is_active, version,
+            SELECT id, template_key, body, is_active, version,
                    updated_by, updated_at, created_at
             FROM document_templates
             WHERE client_id = %s
@@ -672,7 +672,7 @@ class DocumentTemplatesRepo:
     def get_for_key(self, client_id: str, template_key: str) -> dict | None:
         return _fetchone(
             """
-            SELECT id, template_key, name, body, is_active, version,
+            SELECT id, template_key, body, is_active, version,
                    updated_by, updated_at, created_at
             FROM document_templates
             WHERE client_id = %s AND template_key = %s
@@ -692,7 +692,7 @@ class DocumentTemplatesRepo:
                     version = document_templates.version + 1,
                     updated_by = EXCLUDED.updated_by,
                     updated_at = now()
-            RETURNING id, template_key, name, body, is_active, version,
+            RETURNING id, template_key, body, is_active, version,
                       updated_by, updated_at, created_at
             """,
             (client_id, template_key, body, updated_by),

@@ -25,7 +25,11 @@ from langgraph.graph import END, START, StateGraph
 from taxflow import providers
 from taxflow.providers import get_relational_data
 from taxflow.services.agents.draft import DraftAgent
-from taxflow.services.document_templates import resolve_template
+from taxflow.services.document_templates import (
+    CLIENT_LETTER_ROLE,
+    ensure_au_english,
+    resolve_template,
+)
 
 drafter = DraftAgent()
 
@@ -78,7 +82,11 @@ async def draft_client_letter(state: DocumentState) -> dict:
             if voice_sample
             else ""
         )
-        system = (
+        # Code-owned role line -> per-firm voice_instruction -> resolved body
+        # (review B1 ordering); AU-English guardrail enforced code-owned
+        # (review B2), idempotent so the default is byte-identical.
+        system = ensure_au_english(
+            f"{CLIENT_LETTER_ROLE}"
             f"{voice_instruction}"
             f"{resolve_template(state['client_id'], 'client_letter')}"
         )

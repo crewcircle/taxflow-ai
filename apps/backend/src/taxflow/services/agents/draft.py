@@ -3,7 +3,11 @@ import re
 
 from taxflow import providers
 from taxflow.providers import get_relational_data
-from taxflow.services.document_templates import resolve_template
+from taxflow.services.document_templates import (
+    ADVICE_MEMO_ROLE,
+    ensure_au_english,
+    resolve_template,
+)
 
 REQUIRED_SECTIONS = [
     "SUMMARY",
@@ -58,7 +62,12 @@ class DraftAgent:
             else ""
         )
 
-        system = (
+        # Code-owned role line -> per-firm voice_instruction -> resolved body,
+        # preserving the pre-Phase-5 ordering (review B1). The AU-English
+        # guardrail is enforced code-owned (review B2) so a firm override can
+        # never drop it; idempotent, so default bodies are byte-identical.
+        system = ensure_au_english(
+            f"{ADVICE_MEMO_ROLE}"
             f"{voice_instruction}"
             f"{resolve_template(client_id, 'advice_memo')}"
         )

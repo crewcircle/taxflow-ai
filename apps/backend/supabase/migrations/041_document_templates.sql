@@ -18,8 +18,11 @@ CREATE TABLE document_templates (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     client_id uuid NOT NULL REFERENCES clients(id),
     template_key text NOT NULL,
-    name text,
     body text NOT NULL,
+    -- Reserved for a future soft-delete/deactivate flow. Nothing writes false
+    -- today (reset-to-default removes the row), so it is NOT load-bearing for
+    -- resolution — kept only so a later phase can add deactivate without a
+    -- migration.
     is_active boolean NOT NULL DEFAULT true,
     version integer NOT NULL DEFAULT 1,
     updated_by text,
