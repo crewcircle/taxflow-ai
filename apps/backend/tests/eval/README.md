@@ -77,7 +77,7 @@ Flags:
 | `--k` | `settings.EVAL_RECALL_K` | recall@k cutoff |
 | `--output-dir` | `tests/eval/results` | runs.jsonl / latest.json / baseline.json |
 | `--gate` | off | exit non-zero when `diff["has_regressions"]` |
-| `--promote-baseline` | off | copy `latest.json` → `baseline.json` after a clean run |
+| `--promote-baseline` | off | copy `latest.json` → `baseline.json` after a **clean** run only (refuses + exits non-zero if the run has regressions, regardless of `--gate`) |
 
 `--gate` **replaces** the `EVAL_GATE_ON_REGRESSION` env toggle for the CLI /
 workflow path (the pytest test still honours `EVAL_GATE_ON_REGRESSION=1`).

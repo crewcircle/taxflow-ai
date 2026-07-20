@@ -207,7 +207,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--promote-baseline",
         action="store_true",
-        help="After a clean run (no gated regressions), copy latest.json -> baseline.json.",
+        help="Copy latest.json -> baseline.json after a CLEAN run only. Never promotes a "
+        "run with regressions, regardless of --gate.",
     )
     args = parser.parse_args(argv)
 
@@ -233,6 +234,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.promote_baseline:
+        # Promotion NEVER blesses a regressed run, independent of --gate: a
+        # dispatch with --promote-baseline and no --gate must not silently
+        # commit a regressed baseline.json to main.
+        if has_regressions:
+            print(
+                "\nRefusing to promote baseline: run has regressions "
+                + json.dumps(diff["overall"]["regressions"])
+            )
+            # If promotion was the sole requested action (no --gate), surface the
+            # refusal to the caller/CI with a non-zero exit; --gate has already
+            # returned 1 above when it would have.
+            return 1
         results_dir = Path(args.output_dir)
         latest = results_dir / "latest.json"
         baseline = results_dir / "baseline.json"

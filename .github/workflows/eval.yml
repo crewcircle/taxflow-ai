@@ -8,6 +8,9 @@
 #
 # Nightly always passes --gate (fail on regression) and NEVER --promote-baseline.
 # Manual dispatch derives both --gate and --promote-baseline from boolean inputs.
+# --promote-baseline NEVER promotes a run with regressions (independent of --gate):
+# a regressed run refuses to promote and exits non-zero, so a dispatch can't bless a
+# regressed baseline even with gate=false.
 # A promote rewrites baseline.json only in the ephemeral CI workspace, so the job
 # commits tests/eval/results/baseline.json back to main via the default
 # GITHUB_TOKEN (needs `permissions: contents: write`) — this only fires on an
@@ -22,7 +25,7 @@ on:
         type: boolean
         default: true
       promote_baseline:
-        description: "Promote a clean run to baseline.json (copy latest.json) and commit it back to main"
+        description: "Promote a clean run to baseline.json (copy latest.json) and commit it back to main. Never promotes a run with regressions"
         type: boolean
         default: false
   schedule:
