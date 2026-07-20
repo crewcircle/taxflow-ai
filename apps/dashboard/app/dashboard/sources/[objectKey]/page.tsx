@@ -131,8 +131,13 @@ export default function SourceViewerPage({
         setStatus("ready");
 
         if (foundPage) {
-          const target = container.querySelector(`[data-page="${foundPage}"]`);
-          target?.scrollIntoView({ behavior: "smooth", block: "center" });
+          // Scroll to the highlight itself, not just the page wrapper - a
+          // rendered page (scale 1.5) is routinely taller than the viewport,
+          // so centering the wrapper can leave the actual highlighted line
+          // off-screen when it sits low on the page.
+          const pageEl = container.querySelector(`[data-page="${foundPage}"]`);
+          const highlightEl = pageEl?.querySelector(".bg-amber-300\\/50");
+          (highlightEl ?? pageEl)?.scrollIntoView({ behavior: "smooth", block: "center" });
         }
 
         for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
