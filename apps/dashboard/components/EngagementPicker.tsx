@@ -207,13 +207,17 @@ export function EngagementPicker({
     // Otherwise create a new engagement (description optional → dated default).
     setCreatingEngagement(true);
     try {
+      // Send the description verbatim; only use trim() for the empty-check so a
+      // blank/whitespace-only value falls through to the backend's dated
+      // default, but a real description keeps its surrounding whitespace (R3).
+      const body = {
+        firm_client_id: selectedClient.id,
+        description: description.trim() === "" ? undefined : description,
+      };
       const response = await fetch("/api/engagements", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          firm_client_id: selectedClient.id,
-          description: description.trim() || undefined,
-        }),
+        body: JSON.stringify(body),
       });
       if (!response.ok) throw new Error("Failed");
       const created: Engagement = await response.json();

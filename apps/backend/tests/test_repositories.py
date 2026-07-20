@@ -572,16 +572,6 @@ def test_engagements_get_for_client_scoped_by_client():
     assert list(params) == ["eng-1", "client-1"]
 
 
-def test_engagements_list_for_firm_client_scoped_by_client():
-    cur = _FakeCursor(fetchall=[])
-    with _patch_conn(cur):
-        Repositories().engagements.list_for_firm_client("client-1", "fc-1")
-    sql, params = cur.executed[0]
-    assert "FROM engagements" in sql
-    assert "WHERE client_id = %s AND firm_client_id = %s" in sql
-    assert list(params) == ["client-1", "fc-1"]
-
-
 def test_repositories_exposes_all_aggregates():
     repos = Repositories()
     for attr in (

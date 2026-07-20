@@ -15,6 +15,7 @@ from taxflow.config import settings
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.middleware.trial_gate import check_trial_gate, increment_usage
+from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
 from taxflow.services import answer_cache
 from taxflow.services.agents.graph import research_graph
 from taxflow.services.eval.citations import check_citation_validity
@@ -452,15 +453,15 @@ async def stream_query(
     """
     start = time.time()
 
+    # Reject a spoofed engagement_id that belongs to another tenant (Postgres
+    # only checks the FK exists, not that its client_id matches).
+    await ensure_engagement_owned(db, client["id"], engagement_id)
+
     # Client register (Settings audit follow-up): grows organically from real
     # use rather than requiring firms to pre-seed a client list. Upsert is a
     # no-op on repeat names (ON CONFLICT DO NOTHING) and must never block the
     # question being answered.
-    if client_ref:
-        try:
-            await asyncio.to_thread(db.firm_clients.upsert, client["id"], client_ref)
-        except Exception:  # noqa: BLE001
-            pass
+    await register_firm_client(db, client["id"], client_ref)
 
     def _insert_query_row(status: str, extra: dict | None = None) -> str:
         row = db.queries.insert(
@@ -501,7 +502,7 @@ async def stream_query(
             "research",
             cached,
             start,
-            {"client_ref": client_ref},
+            {"client_ref": client_ref, "engagement_id": engagement_id},
         )
         await increment_usage(client["id"], "queries")
 

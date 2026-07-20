@@ -55,7 +55,12 @@ async def create_engagement(
     client=Depends(get_current_client),
     db=Depends(get_db),
 ):
-    description = (body.description or "").strip() or _default_description()
+    # Apply the default ONLY when the description is blank; a non-blank
+    # description is stored verbatim (surrounding whitespace preserved) — the
+    # contract is "default when blank, otherwise pass through unchanged".
+    description = body.description
+    if description is None or description.strip() == "":
+        description = _default_description()
     try:
         row = await asyncio.to_thread(
             db.engagements.create,

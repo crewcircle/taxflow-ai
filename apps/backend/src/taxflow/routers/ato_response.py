@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
+from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
 from taxflow.services.ato_correspondence.classifier import ATOLetterClassifier
 from taxflow.services.ato_correspondence.drafter import ATOResponseDrafter
 from taxflow.services.ato_correspondence.handlers import get_handler
@@ -39,6 +40,10 @@ async def upload_ato_letter(
     db=Depends(get_db),
 ):
     file_bytes = await file.read()
+
+    # Reject a spoofed engagement_id that belongs to another tenant.
+    await ensure_engagement_owned(db, client["id"], engagement_id)
+
     extracted_text = _extract_text(file_bytes)
 
     classification = await classifier.classify(extracted_text)
@@ -58,11 +63,7 @@ async def upload_ato_letter(
     # attributed to a real engagement/end-client like queries and generated
     # documents. Mirror query/documents' best-effort firm_clients.upsert so the
     # end-client register grows organically (never blocks the draft).
-    if client_ref:
-        try:
-            await asyncio.to_thread(db.firm_clients.upsert, client["id"], client_ref)
-        except Exception:  # noqa: BLE001 - never block returning the draft
-            pass
+    await register_firm_client(db, client["id"], client_ref)
 
     result = await asyncio.to_thread(
         db.documents.insert,

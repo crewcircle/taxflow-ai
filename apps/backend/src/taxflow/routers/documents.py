@@ -8,6 +8,7 @@ from taxflow.config import settings
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.providers import get_document_renderer
+from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
 from taxflow.services.agents.document_graph import document_graph
 from taxflow.services.knowledge.embedder import embed
 
@@ -66,11 +67,10 @@ async def generate_document(
     if body.document_type not in TEMPLATE_REGISTRY:
         raise HTTPException(status_code=400, detail=f"Unknown document_type: {body.document_type}")
 
-    if body.client_ref:
-        try:
-            await asyncio.to_thread(db.firm_clients.upsert, client["id"], body.client_ref)
-        except Exception:  # noqa: BLE001 - never block saving the document
-            pass
+    # Reject a spoofed engagement_id that belongs to another tenant.
+    await ensure_engagement_owned(db, client["id"], body.engagement_id)
+
+    await register_firm_client(db, client["id"], body.client_ref)
 
     # Chat answers are the raw research answer, not a formal memo/letter - only
     # reformat here, on demand, when actually saving one as a specific document

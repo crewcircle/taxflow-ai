@@ -60,6 +60,9 @@ jobs:
       - name: Lint dashboard
         working-directory: apps/dashboard
         run: pnpm lint
+      - name: Unit test dashboard
+        working-directory: apps/dashboard
+        run: pnpm test:unit
 
   deploy-dashboard:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'

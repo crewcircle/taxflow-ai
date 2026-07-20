@@ -72,6 +72,40 @@ def test_create_engagement_stores_description_verbatim(client):
         app.dependency_overrides.clear()
 
 
+def test_create_engagement_preserves_surrounding_whitespace(client):
+    """R3 contract: a non-blank description is stored verbatim — surrounding
+    whitespace must NOT be trimmed (default only applies when blank)."""
+    mock_db = MagicMock()
+    mock_db.engagements.create.return_value = {"id": "eng-3", "engagement_number": 3}
+    _override(CLIENT, mock_db)
+    try:
+        resp = client.post(
+            "/engagements",
+            json={"firm_client_id": "fc-1", "description": "  FY24 R&D  "},
+        )
+        assert resp.status_code == 201
+        args = mock_db.engagements.create.call_args.args
+        assert args[2] == "  FY24 R&D  "
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_engagement_whitespace_only_uses_default(client):
+    """A whitespace-only description is treated as blank → dated default."""
+    mock_db = MagicMock()
+    mock_db.engagements.create.return_value = {"id": "eng-4", "engagement_number": 4}
+    _override(CLIENT, mock_db)
+    try:
+        resp = client.post(
+            "/engagements", json={"firm_client_id": "fc-1", "description": "   "}
+        )
+        assert resp.status_code == 201
+        args = mock_db.engagements.create.call_args.args
+        assert args[2].startswith("General tax research — ")
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_create_engagement_foreign_firm_client_is_404(client):
     # The repo raises ValueError when the firm-client is unknown / another
     # tenant's; the router maps that to 404 so a caller cannot probe.
@@ -267,3 +301,122 @@ async def test_generate_document_insert_payload_includes_engagement_id():
 
     assert captured["engagement_id"] == "eng-1"
     assert captured["client_id"] == "client-1"
+
+
+# --- R2: cross-tenant engagement_id is rejected on every write path ----------
+
+
+def _foreign_engagement_db():
+    """A db whose engagements.get_for_client returns None — i.e. the supplied
+    engagement_id is unknown or belongs to another tenant."""
+    mock_db = MagicMock()
+    mock_db.engagements.get_for_client.return_value = None
+    return mock_db
+
+
+def test_document_generate_rejects_foreign_engagement_id(client):
+    mock_db = _foreign_engagement_db()
+    _override(CLIENT, mock_db)
+    try:
+        resp = client.post(
+            "/documents/generate",
+            json={
+                "document_type": "advice_memo",
+                "title": "Memo",
+                "content_md": "body",
+                "engagement_id": "foreign-eng",
+            },
+        )
+        assert resp.status_code == 404
+        # The insert must never run for a spoofed engagement.
+        mock_db.documents.insert.assert_not_called()
+        mock_db.engagements.get_for_client.assert_called_once_with(
+            "client-1", "foreign-eng"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ato_upload_rejects_foreign_engagement_id(client, monkeypatch):
+    import taxflow.routers.ato_response as ato
+
+    monkeypatch.setattr(ato, "_extract_text", lambda b: "letter text")
+
+    mock_db = _foreign_engagement_db()
+    _override(CLIENT, mock_db)
+    try:
+        resp = client.post(
+            "/ato-response/upload",
+            files={"file": ("letter.pdf", b"%PDF-1.4 fake", "application/pdf")},
+            data={"engagement_id": "foreign-eng", "client_ref": "Acme"},
+        )
+        assert resp.status_code == 404
+        mock_db.documents.insert.assert_not_called()
+        mock_db.engagements.get_for_client.assert_called_once_with(
+            "client-1", "foreign-eng"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_stream_query_rejects_foreign_engagement_id():
+    """The query stream must 404 (HTTPException) before inserting a row when the
+    engagement_id is not the caller's."""
+    import taxflow.routers.query as q
+    from fastapi import HTTPException
+
+    mock_db = _foreign_engagement_db()
+
+    with pytest.raises(HTTPException) as exc:
+        await q.stream_query(
+            question="q",
+            engagement_id="foreign-eng",
+            client=CLIENT,
+            _trial=CLIENT,
+            db=mock_db,
+        )
+    assert exc.value.status_code == 404
+    mock_db.queries.insert.assert_not_called()
+
+
+# --- R1: cache-hit path persists engagement_id (not just the live path) ------
+
+
+@pytest.mark.asyncio
+async def test_stream_query_cache_hit_persists_engagement_id():
+    """A cache hit persists a completed row via _persist_cached_query; it must
+    carry engagement_id (previously the cached extra payload dropped it)."""
+    import taxflow.routers.query as q
+
+    captured = {}
+    mock_db = MagicMock()
+    # Not a foreign engagement — get_for_client returns a row so validation passes.
+    mock_db.engagements.get_for_client.return_value = {"id": "eng-1"}
+
+    def _capture_insert(row):
+        captured.update(row)
+        return {"id": "query-cached"}
+
+    mock_db.queries.insert.side_effect = _capture_insert
+
+    cached = {"answer": "cached answer", "citations": [], "confidence": 0.9}
+
+    with patch.object(q, "increment_usage", new=AsyncMock()), \
+         patch.object(
+             q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=cached)
+         ), \
+         patch.object(
+             q.answer_cache, "count_prior_asks", new=AsyncMock(return_value=0)
+         ):
+        response = await q.stream_query(
+            question="q",
+            engagement_id="eng-1",
+            client=CLIENT,
+            _trial=CLIENT,
+            db=mock_db,
+        )
+        _ = [c async for c in response.body_iterator]
+
+    assert captured["engagement_id"] == "eng-1"
+    assert captured["model_used"] == "cache"

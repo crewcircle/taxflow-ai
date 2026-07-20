@@ -830,16 +830,6 @@ class EngagementsRepo:
             (engagement_id, client_id),
         )
 
-    def list_for_firm_client(self, client_id: str, firm_client_id: str) -> list[dict]:
-        return _fetchall(
-            f"""
-            SELECT {self._COLS} FROM engagements
-            WHERE client_id = %s AND firm_client_id = %s
-            ORDER BY engagement_number DESC
-            """,
-            (client_id, firm_client_id),
-        )
-
 
 # --- engagement backfill (Phase 2, one-time guarded data step) ---------------
 class EngagementBackfillRepo:
@@ -878,30 +868,29 @@ class EngagementBackfillRepo:
         ``engagement_id``. Returns the total number of rows linked. Scoped to the
         tenant AND the normalised client_ref (NULL for the unattributed bucket);
         only rows still ``engagement_id IS NULL`` are touched (idempotent)."""
+        # Build the client_ref predicate + params once: NULL uses IS NULL (no
+        # bound value), a real ref matches the normalised value. Both keep the
+        # tenant scope and the engagement_id IS NULL idempotent guard.
+        if client_ref is None:
+            ref_pred = "NULLIF(TRIM(client_ref), '') IS NULL"
+            ref_params: tuple = ()
+        else:
+            ref_pred = "NULLIF(TRIM(client_ref), '') = %s"
+            ref_params = (client_ref,)
+
         total = 0
         with get_pg_conn() as conn:
             cur = conn.cursor()
             for table in ("queries", "documents"):
-                if client_ref is None:
-                    cur.execute(
-                        f"""
-                        UPDATE {table} SET engagement_id = %s
-                         WHERE client_id = %s
-                           AND NULLIF(TRIM(client_ref), '') IS NULL
-                           AND engagement_id IS NULL
-                        """,
-                        (engagement_id, client_id),
-                    )
-                else:
-                    cur.execute(
-                        f"""
-                        UPDATE {table} SET engagement_id = %s
-                         WHERE client_id = %s
-                           AND NULLIF(TRIM(client_ref), '') = %s
-                           AND engagement_id IS NULL
-                        """,
-                        (engagement_id, client_id, client_ref),
-                    )
+                cur.execute(
+                    f"""
+                    UPDATE {table} SET engagement_id = %s
+                     WHERE client_id = %s
+                       AND {ref_pred}
+                       AND engagement_id IS NULL
+                    """,
+                    (engagement_id, client_id, *ref_params),
+                )
                 total += cur.rowcount
             conn.commit()
             cur.close()
