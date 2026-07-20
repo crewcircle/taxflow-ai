@@ -50,6 +50,16 @@ CITATION_PATTERN = re.compile(r"\[(\d+)\]")
 # FOLLOW_UP_COUNT follow-up questions, one per line. The block is stripped from
 # the answer (split_follow_ups) and emitted as a separate `follow_ups` SSE event,
 # so it never leaks into the answer text or the streamed token events.
+#
+# WHY an inline string delimiter rather than structured output (decision #2522):
+# follow-ups FOLD into the single generate call for ZERO extra LLM calls. Using
+# `response_format`/structured JSON here would force the WHOLE answer to be JSON
+# (breaking token streaming and the prose answer) or require a second, separate
+# LLM call — both rejected. The inline sentinel keeps generation a single
+# streaming call and is parsed out afterwards. (Structured output IS used, and
+# correct, for ClarifyDecision — a small standalone classifier call, not the
+# streamed answer.) The parse is deliberately tolerant: a garbled/missing block
+# leaves the answer unchanged with an empty follow-up list.
 FOLLOW_UP_SENTINEL = "===FOLLOW_UPS==="
 
 

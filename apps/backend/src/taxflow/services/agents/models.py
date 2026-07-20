@@ -120,17 +120,3 @@ class ClarifyDecision(BaseModel):
     needs_clarification: bool
     confidence: float = 0.0
     questions: list[ClarifyQuestion] = []
-
-
-# --- Phase 4: suggested follow-ups -------------------------------------------
-
-
-class FollowUpSuggestions(BaseModel):
-    """Structured follow-up questions (async strategy only).
-
-    The default ``inline`` strategy folds follow-ups into the generate call and
-    parses them with ``research.split_follow_ups``; this model backs the
-    documented ``async`` Haiku strategy's ``generate_structured`` call.
-    """
-
-    questions: list[str] = []

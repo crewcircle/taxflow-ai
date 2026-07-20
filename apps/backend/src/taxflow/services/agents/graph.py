@@ -15,8 +15,10 @@ The compiled graph is a module-level singleton (like today's
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, TypedDict
 
+import psycopg2
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
@@ -24,10 +26,10 @@ from taxflow import providers
 from taxflow.config import settings
 from taxflow.services.agents.clarify import (
     ClarifyAgent,
-    clarify_model_for,
     should_clarify,
 )
 from taxflow.services.agents.research import (
+    FOLLOW_UP_SENTINEL,
     ResearchAgent,
     _compute_knowledge_as_of,
     _system_blocks,
@@ -212,15 +214,11 @@ async def clarify(state: AgentState) -> dict:
     if not should_clarify(question, signals, prior_turns_used, has_clarifications):
         return {"clarify_decision": None}
 
-    decision = await clarifier.run(question, signals, model=clarify_model_for())
+    decision = await clarifier.run(question, signals)
 
     # Session cap: at most one clarify round per session. Only read the DB after
     # the pre-filter + classifier have flagged an ambiguous question.
     if decision.get("needs_clarification"):
-        import asyncio
-
-        import psycopg2
-
         session_id = state.get("session_id")
         if session_id:
             try:
@@ -280,8 +278,6 @@ async def generate(state: AgentState) -> dict:
         # emitted as an answer `token` event. Once the sentinel appears we stop
         # emitting; the block is parsed off after the stream completes. When
         # follow-ups are OFF (default), stream tokens verbatim (no buffering).
-        from taxflow.services.agents.research import FOLLOW_UP_SENTINEL
-
         buffering = bool(follow_instruction)
         emitted_len = 0
         sentinel_seen = False
@@ -476,10 +472,16 @@ def route_after_retrieve(state: AgentState) -> str:
 
 def route_after_route_model(state: AgentState) -> str:
     """Phase 4: route into the clarify gate only when CLARIFY_ENABLED and this is
-    a first turn (the request carries no clarifications). The round-trip answer
-    (clarifications present) and the dark-launch default both go straight to
-    generate, so behaviour is unchanged when the flag is off."""
-    if settings.CLARIFY_ENABLED and not state.get("clarifications"):
+    a genuine first turn — i.e. the ``clarifications`` param is ABSENT (``None``).
+
+    We distinguish "param absent" (``None``) from "present but empty" (``[]``).
+    An empty list is a DELIBERATE "skip & answer anyway" from the clarify card,
+    so it must go straight to generate and never re-enter clarification — even
+    with no session context to fall back on (B3). A populated list is the normal
+    round-trip answer and likewise goes to generate. Only ``None`` (no answer
+    provided at all) may reach the clarify gate.
+    """
+    if settings.CLARIFY_ENABLED and state.get("clarifications") is None:
         return "clarify"
     return "generate"
 

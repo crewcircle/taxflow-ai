@@ -62,6 +62,12 @@ _INTENT_PATTERN = re.compile(
 )
 _WORD_PATTERN = re.compile(r"\b\w+\b")
 
+# Short-question threshold: a question of this many words or fewer is a
+# clarification candidate ("GST?", "Div 7A"). Kept as a local constant (not a
+# config field) so the heuristic stays local to the gate; tune here if eval
+# shows drift.
+_CLARIFY_MIN_WORDS = 4
+
 
 def should_clarify(
     question: str,
@@ -88,7 +94,7 @@ def should_clarify(
     text = (question or "").strip()
     words = _WORD_PATTERN.findall(text)
     # Very short questions are the classic under-specified case ("GST?", "Div 7A").
-    if len(words) <= settings_clarify_min_words():
+    if len(words) <= _CLARIFY_MIN_WORDS:
         return True
     # No clear intent verb -> likely a bare topic/entity rather than a question.
     if not _INTENT_PATTERN.search(text):
@@ -100,13 +106,6 @@ def should_clarify(
     return False
 
 
-def settings_clarify_min_words() -> int:
-    """Short-question threshold. A question of this many words or fewer is a
-    clarification candidate. Kept as a helper (not a config field) so the
-    heuristic stays local to the gate; tune here if eval shows drift."""
-    return 4
-
-
 def clarify_model_for() -> str:
     """The clarify classifier model — resolved via the tier abstraction so no
     model id is hardcoded in services (architecture gate)."""
@@ -114,18 +113,31 @@ def clarify_model_for() -> str:
 
 
 def enforce_option_caps(decision: ClarifyDecision) -> ClarifyDecision:
-    """Trim a decision to CLARIFY_MAX_QUESTIONS / CLARIFY_MAX_OPTIONS.
+    """Trim AND validate a decision, then fail open if it is unusable.
 
     Anti-annoyance guardrail: even if the classifier over-produces, we present at
-    most the configured number of questions, each with at most the configured
-    number of options. Returns a new ClarifyDecision (does not mutate in place).
+    most ``CLARIFY_MAX_QUESTIONS`` questions, each with at most
+    ``CLARIFY_MAX_OPTIONS`` options.
+
+    Validity guardrail (B1): a terminal clarify outcome is only useful if it can
+    render selectable chips. So when ``needs_clarification`` is true we DROP any
+    question that has no options, and if nothing usable remains (no questions, or
+    every question was optionless) we FAIL OPEN to ``_no_clarify()`` — answering
+    directly rather than short-circuiting the graph into a dead-end clarify card
+    with no choices. Returns a new ClarifyDecision (does not mutate in place).
     """
     max_q = settings.CLARIFY_MAX_QUESTIONS
     max_o = settings.CLARIFY_MAX_OPTIONS
     trimmed_questions = []
     for question in decision.questions[:max_q]:
-        question = question.model_copy(update={"options": question.options[:max_o]})
-        trimmed_questions.append(question)
+        options = question.options[:max_o]
+        # Drop optionless questions when clarifying — they cannot render chips.
+        if decision.needs_clarification and not options:
+            continue
+        trimmed_questions.append(question.model_copy(update={"options": options}))
+    if decision.needs_clarification and not trimmed_questions:
+        # Nothing usable to ask — answer directly instead of a dead-end card.
+        return ClarifyDecision.model_validate(_no_clarify())
     return decision.model_copy(update={"questions": trimmed_questions})
 
 

@@ -194,6 +194,36 @@ def _observability_fields(answer: str, citations: list, trace: dict, meta: dict)
         }
 
 
+def _clarify_terminal_update(clarify_decision: dict, start: float) -> dict:
+    """Phase 4: build the completed-query ``db.queries.update`` payload for a
+    clarify terminal outcome (the graph short-circuited to END asking a
+    clarifying question — NO generation ran).
+
+    Shared by both the POST (:func:`submit_query`) and SSE
+    (:func:`stream_query`) endpoints, which persist an identical row: a
+    ``completed`` clarify row whose ``trace.clarify.asked=true`` gates the
+    per-session clarify cap. The endpoints differ only in how they RESPOND
+    afterwards (JSON body vs. a ``clarify`` SSE event + ``[DONE]``), so only the
+    trace + update payload is factored out here.
+    """
+    clarify_trace = {
+        "clarify": {
+            "asked": True,
+            "questions": clarify_decision.get("questions", []),
+            "confidence": clarify_decision.get("confidence", 0.0),
+        }
+    }
+    return {
+        "status": "completed",
+        "final_answer": "",
+        "citations": [],
+        "model_used": "clarify",
+        "wall_time_ms": int((time.time() - start) * 1000),
+        "completed_at": "now()",
+        "trace": clarify_trace,
+    }
+
+
 @router.get("")
 async def list_queries(client=Depends(get_current_client), db=Depends(get_db)):
     """Recent query history for the sidebar - newest first."""
@@ -331,22 +361,7 @@ async def submit_query(
         # the questions so the frontend can render the clarify card.
         clarify_decision = final.get("clarify_decision") or {}
         if clarify_decision.get("needs_clarification"):
-            clarify_trace = {
-                "clarify": {
-                    "asked": True,
-                    "questions": clarify_decision.get("questions", []),
-                    "confidence": clarify_decision.get("confidence", 0.0),
-                }
-            }
-            clarify_update = {
-                "status": "completed",
-                "final_answer": "",
-                "citations": [],
-                "model_used": "clarify",
-                "wall_time_ms": int((time.time() - start) * 1000),
-                "completed_at": "now()",
-                "trace": clarify_trace,
-            }
+            clarify_update = _clarify_terminal_update(clarify_decision, start)
             await asyncio.to_thread(db.queries.update, client["id"], query_id, clarify_update)
             await increment_usage(client["id"], "queries")
             return {
@@ -512,6 +527,13 @@ async def stream_query(
     # clarifications) and fold them into a SINGLE effective_question used
     # UNIFORMLY across cache lookup, embedding, retrieval, generation and trace
     # (build-time correctness AC). On a first turn this equals ``question``.
+    #
+    # B3: we preserve the difference between the param being ABSENT (``None`` →
+    # genuine first turn, may enter the clarify gate) and PRESENT-BUT-EMPTY
+    # (``"[]"`` → a deliberate "skip & answer anyway" from the clarify card, which
+    # decodes to ``[]`` and must go straight to generate, never re-clarify — see
+    # graph.route_after_route_model). So a decoded empty list stays ``[]`` here;
+    # only an absent or malformed param falls back to ``None``.
     parsed_clarifications: list[dict] | None = None
     if clarifications:
         try:
@@ -665,26 +687,11 @@ async def stream_query(
         # token/final/verification/trace/repeat_count.
         clarify_decision = final.get("clarify_decision") or {}
         if clarify_decision.get("needs_clarification"):
-            clarify_trace = {
-                "clarify": {
-                    "asked": True,
-                    "questions": clarify_decision.get("questions", []),
-                    "confidence": clarify_decision.get("confidence", 0.0),
-                }
-            }
             await asyncio.to_thread(
                 db.queries.update,
                 client["id"],
                 query_id,
-                {
-                    "status": "completed",
-                    "final_answer": "",
-                    "citations": [],
-                    "model_used": "clarify",
-                    "wall_time_ms": int((time.time() - start) * 1000),
-                    "completed_at": "now()",
-                    "trace": clarify_trace,
-                },
+                _clarify_terminal_update(clarify_decision, start),
             )
             await increment_usage(client["id"], "queries")
             yield (

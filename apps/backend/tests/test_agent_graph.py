@@ -694,6 +694,31 @@ async def test_clarify_skipped_when_clarifications_present(monkeypatch, base_sta
 
 
 @pytest.mark.asyncio
+async def test_clarify_skipped_on_explicit_empty_skip(monkeypatch, base_state, fake_llm):
+    """B3: an explicit "skip & answer anyway" (clarifications == []) must bypass
+    the clarify gate and generate directly — even with NO session context to fall
+    back on (session_id is None). Only an absent param (None) may re-enter clarify.
+    """
+    monkeypatch.setattr(settings, "CLARIFY_ENABLED", True)
+    monkeypatch.setattr(
+        graph_mod.research_agent,
+        "_retrieve_context",
+        AsyncMock(return_value=(_chunks(6), dict(STRONG_SIGNALS))),
+    )
+    monkeypatch.setattr(graph_mod.verifier, "run", AsyncMock())
+    clarify_run = AsyncMock()
+    monkeypatch.setattr(graph_mod.clarifier, "run", clarify_run)
+
+    base_state["session_id"] = None
+    base_state["clarifications"] = []  # explicit skip
+    out = await graph_mod.research_graph.ainvoke(base_state)
+
+    clarify_run.assert_not_awaited()
+    assert fake_llm.generate_calls == 1
+    assert out["answer"] == "Answer [1][2][3][4]"
+
+
+@pytest.mark.asyncio
 async def test_clarify_session_cap_forces_answer(monkeypatch, base_state, fake_llm):
     """When the session already asked a clarifying question, the verdict is forced
     to needs_clarification=False and the graph answers."""

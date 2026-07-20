@@ -108,6 +108,46 @@ def test_enforce_option_caps_trims_questions_and_options(monkeypatch):
     assert len(trimmed.questions[0].options) == 2
 
 
+def test_enforce_option_caps_drops_optionless_questions_when_clarifying():
+    # B1: a question with no options cannot render selectable chips, so it is
+    # dropped from a needs_clarification decision.
+    decision = ClarifyDecision(
+        needs_clarification=True,
+        confidence=0.9,
+        questions=[
+            ClarifyQuestion(prompt="no options", options=[]),
+            ClarifyQuestion(
+                prompt="has options",
+                options=[ClarifyOption(label="l", value="v")],
+            ),
+        ],
+    )
+    result = enforce_option_caps(decision)
+    assert result.needs_clarification is True
+    assert [q.prompt for q in result.questions] == ["has options"]
+
+
+def test_enforce_option_caps_fails_open_when_no_usable_questions():
+    # B1: needs_clarification=True but every question is optionless (or there are
+    # no questions at all) → fall open to answering, never a dead-end clarify card.
+    decision = ClarifyDecision(
+        needs_clarification=True,
+        confidence=0.95,
+        questions=[ClarifyQuestion(prompt="q", options=[])],
+    )
+    result = enforce_option_caps(decision)
+    assert result.needs_clarification is False
+    assert result.questions == []
+
+
+def test_enforce_option_caps_fails_open_when_questions_empty():
+    # B1: classifier claims it needs clarification but returns no questions.
+    decision = ClarifyDecision(needs_clarification=True, confidence=0.95, questions=[])
+    result = enforce_option_caps(decision)
+    assert result.needs_clarification is False
+    assert result.questions == []
+
+
 # --- ClarifyAgent.run --------------------------------------------------------
 
 
