@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 
 from taxflow.services.eval.regression import (
+    _HIGHER_BETTER,
+    _LOWER_BETTER,
+    _diff_group,
     diff_against_baseline,
+    diff_metrics,
     load_baseline,
     write_run,
 )
@@ -113,3 +117,60 @@ def test_load_baseline_roundtrip(tmp_path):
     (tmp_path / "baseline.json").write_text(json.dumps(_agg()))
     loaded = load_baseline(tmp_path)
     assert loaded["overall"]["recall_at_k"] == 1.0
+
+
+# --- generalized helper: eval defaults stay byte-identical --------------------
+
+
+def test_diff_group_default_matches_explicit_eval_tuples():
+    # _diff_group defaults to the eval field tuples, so passing them explicitly
+    # via diff_metrics must produce an identical dict.
+    current = _agg(recall=0.80, halluc=0.30)["overall"]
+    baseline = _agg()["overall"]
+    default = _diff_group(current, baseline, tolerance=0.05)
+    explicit = diff_metrics(
+        current, baseline, 0.05, _HIGHER_BETTER, _LOWER_BETTER
+    )
+    assert default == explicit
+
+
+def test_diff_metrics_reproduces_diff_against_baseline_overall():
+    # The overall group from diff_against_baseline equals a direct diff_metrics
+    # call with the eval tuples (proves the generalisation didn't change eval).
+    current = _agg(recall=0.80, halluc=0.30)
+    baseline = _agg()
+    full = diff_against_baseline(current, baseline, tolerance=0.05)
+    direct = diff_metrics(
+        current["overall"], baseline["overall"], 0.05, _HIGHER_BETTER, _LOWER_BETTER
+    )
+    assert full["overall"] == direct
+
+
+def test_eval_default_coerces_missing_to_zero():
+    # Legacy (null_skip=False) behaviour: a missing metric coerces to 0.0 and
+    # still produces a numeric delta, NOT None.
+    current = {"recall_at_k": 0.5}  # missing every other metric
+    baseline = {"recall_at_k": 1.0}
+    out = diff_metrics(current, baseline, 0.05, _HIGHER_BETTER, _LOWER_BETTER)
+    # hallucination_rate absent on both -> coerced to 0.0 -> delta 0.0 (not None)
+    assert out["deltas"]["hallucination_rate"] == 0.0
+    assert out["deltas"]["mrr"] == 0.0
+    assert out["deltas"]["recall_at_k"] == -0.5
+
+
+def test_null_skip_returns_none_delta_for_missing_metric():
+    # Production (null_skip=True): a None value is skipped, delta is None, and
+    # it can never be flagged as a regression.
+    current = {"avg_confidence": None, "feedback_down_rate": 0.5}
+    baseline = {"avg_confidence": 0.8, "feedback_down_rate": 0.1}
+    out = diff_metrics(
+        current,
+        baseline,
+        0.05,
+        ("avg_confidence",),
+        ("feedback_down_rate",),
+        null_skip=True,
+    )
+    assert out["deltas"]["avg_confidence"] is None
+    assert "avg_confidence" not in out["regressions"]
+    assert "feedback_down_rate" in out["regressions"]

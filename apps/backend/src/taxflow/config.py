@@ -286,6 +286,29 @@ class Settings(BaseSettings):
     # only the paid eval runner flips it on.
     EVAL_CAPTURE_CONTEXT: bool = False
 
+    # --- Production drift monitor (Task 3a-1 / 3a-2) --------------------------
+    # A daily leader-guarded job aggregates the trailing production window and
+    # diffs it against a longer baseline window (services.eval.drift), persists a
+    # snapshot, and raises an ops alert on regression. DRIFT_MONITOR_ENABLED
+    # gates the whole job; the two window sizes bound the [start, end) ranges the
+    # job passes to QueriesRepo.stats (current = trailing DRIFT_WINDOW_DAYS,
+    # baseline = the DRIFT_BASELINE_WINDOW_DAYS window ending where the current
+    # window begins).
+    DRIFT_MONITOR_ENABLED: bool = True
+    DRIFT_WINDOW_DAYS: int = 1
+    DRIFT_BASELINE_WINDOW_DAYS: int = 7
+    # Per-metric drift tolerances (absolute delta below which a window-over-
+    # window change is noise, not a regression). Rate metrics (0-1 fractions /
+    # 0-5 confidence) reuse the eval regression tolerance so eval + drift agree
+    # on what "meaningful" means; cost + latency need their own units (USD and
+    # milliseconds), so they are explicit.
+    DRIFT_FEEDBACK_DOWN_RATE_TOLERANCE: float = EVAL_REGRESSION_TOLERANCE
+    DRIFT_VERIFICATION_FAILURE_RATE_TOLERANCE: float = EVAL_REGRESSION_TOLERANCE
+    DRIFT_CONFIDENCE_TOLERANCE: float = EVAL_REGRESSION_TOLERANCE
+    DRIFT_CITATION_VALIDITY_RATE_TOLERANCE: float = EVAL_REGRESSION_TOLERANCE
+    DRIFT_COST_TOLERANCE_USD: float = 0.05
+    DRIFT_LATENCY_TOLERANCE_MS: float = 500.0
+
     # Object storage (S3-compatible / Cloudflare R2). Moved out of os.environ in
     # services/storage/r2.py into config. Empty defaults preserve the graceful
     # "storage unconfigured -> None" degradation.
@@ -293,6 +316,13 @@ class Settings(BaseSettings):
     R2_ACCESS_KEY_ID: str = ""
     R2_SECRET_ACCESS_KEY: str = ""
     R2_BUCKET_NAME: str = ""
+
+    # --- Admin / operator observability endpoint (Task 2b) --------------------
+    # Bearer-style shared secret guarding the operator-global ``/admin/*``
+    # endpoints (checked with secrets.compare_digest against the X-Admin-Token
+    # header). Empty (the default) DISABLES the feature entirely: require_admin
+    # returns 404 so the endpoints are invisible until an operator sets a token.
+    ADMIN_API_TOKEN: str = ""
 
 
 settings = Settings()  # type: ignore[call-arg]

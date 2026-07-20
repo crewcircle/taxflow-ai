@@ -2,6 +2,10 @@ services:
   backend:
     build:
       context: ../apps/backend
+    # sha-tagged image (Decision #2487): deploy_backend.sh sets BACKEND_IMAGE_TAG=<git-sha>
+    # so builds are tagged taxflow-backend:<sha> and rollback can re-up a previous tag
+    # against this same (sed-rewritten) deployed compose file. Falls back to :latest.
+    image: taxflow-backend:${BACKEND_IMAGE_TAG:-latest}
     restart: unless-stopped
     env_file: /opt/taxflow/.env
     # 2 workers on the 4GB RAM / 2 vCPU droplet (one per vCPU); matches the Dockerfile CMD.

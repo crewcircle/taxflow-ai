@@ -309,6 +309,14 @@ def test_submit_query_persists_corrective_metadata(client):
             assert captured_update["cache_read_input_tokens"] == 200
             assert captured_update["verification_result"] == verification
 
+            # Task 1b/1c: observability columns persisted on the POST path. The
+            # corrective (Sonnet) meta is priced by run_cost, and model_id is
+            # carried through (from corrected_meta.get, None here).
+            assert "citation_valid" in captured_update
+            assert "invalid_citations" in captured_update
+            assert captured_update["cost_usd"] is not None
+            assert "model_id" in captured_update
+
             # A needs_correction answer must never be cached (B3 gate).
             mock_store.assert_not_awaited()
         finally:

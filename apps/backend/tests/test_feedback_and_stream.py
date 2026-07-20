@@ -142,11 +142,77 @@ async def test_stream_persists_metrics():
     assert captured_update["cache_creation_input_tokens"] == 10
     assert captured_update["wall_time_ms"] is not None
 
+    # Task 1b/1c: observability columns are persisted on a normal generation.
+    assert "citation_valid" in captured_update
+    assert "invalid_citations" in captured_update
+    assert captured_update["cost_usd"] is not None
+    assert "model_id" in captured_update
+
     # Contract order (no correction): token* -> final(once) -> verification ->
     # trace -> repeat_count -> [DONE].
     types = [_event_type(c) for c in chunks]
     assert types.count("final") == 1
     assert types == ["token", "token", "final", "verification", "trace", "repeat_count", None]
+    assert chunks[-1] == "data: [DONE]\n\n"
+
+
+@pytest.mark.asyncio
+async def test_stream_observability_failure_is_best_effort():
+    """Task 1b: if the observability add-on (check_citation_validity / run_cost)
+    raises, the ALREADY-PAID-FOR generation must still succeed and persist — the
+    observability columns are stored NULL rather than failing the request."""
+    import taxflow.routers.query as q
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au"}
+
+    captured_update = {}
+    mock_db = MagicMock()
+    mock_db.queries.insert.return_value = {"id": "query-1"}
+    mock_db.queries.update.side_effect = lambda cid, qid, payload: captured_update.update(payload)
+
+    async def fake_astream(initial_state, stream_mode=None):
+        yield ("custom", {"token": "hello "})
+        yield ("custom", {"token": "world [1]"})
+        yield (
+            "values",
+            _values(
+                answer="hello world [1]",
+                citations=[{"citation": "x"}],
+                confidence=0.9,
+                routed_tier="sonnet",
+                model_id="anthropic/sonnet-concrete",
+                input_tokens=100,
+                output_tokens=50,
+            ),
+        )
+
+    with patch.object(
+        q, "embed", new=AsyncMock(return_value=[0.0] * 1536)
+    ), patch.object(q, "increment_usage", new=AsyncMock()), patch.object(
+        q.research_graph, "astream", new=fake_astream
+    ), patch.object(
+        q.answer_cache, "store_answer", new=AsyncMock()
+    ), patch.object(
+        q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=None)
+    ), patch.object(
+        q.answer_cache, "count_prior_asks", new=AsyncMock(return_value=0)
+    ), patch.object(
+        q, "run_cost", side_effect=RuntimeError("boom")
+    ):
+        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client, db=mock_db)
+        chunks = [c async for c in response.body_iterator]
+
+    # The query still completed and persisted the generation metadata.
+    assert captured_update["status"] == "completed"
+    assert captured_update["model_used"] == "sonnet"
+    assert captured_update["final_answer"] == "hello world [1]"
+    # Observability fields fell back to NULL rather than 500ing the request.
+    assert captured_update["citation_valid"] is None
+    assert captured_update["invalid_citations"] is None
+    assert captured_update["cost_usd"] is None
+    # model_id comes from state, not the failing helper, so it's still persisted.
+    assert captured_update["model_id"] == "anthropic/sonnet-concrete"
+    # Stream still terminated normally.
     assert chunks[-1] == "data: [DONE]\n\n"
 
 

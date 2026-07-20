@@ -1,0 +1,114 @@
+# Eval-on-demand workflow (Task 1a).
+#
+# Runs the PAID end-to-end eval pipeline (real Anthropic + OpenAI + DB calls) on
+# a nightly schedule and on manual dispatch. This is the ONLY place the paid eval
+# runs: it is deselected from the normal test suite (pytest addopts `-m 'not
+# accuracy and not eval'`) and NEVER runs on the droplet — deploy_backend.sh
+# rsyncs the backend with `--exclude 'tests'`, so tests/eval never ships to prod.
+#
+# Nightly always passes --gate (fail on regression) and NEVER --promote-baseline.
+# Manual dispatch derives both --gate and --promote-baseline from boolean inputs.
+# --promote-baseline NEVER promotes a run with regressions (independent of --gate):
+# a regressed run refuses to promote and exits non-zero, so a dispatch can't bless a
+# regressed baseline even with gate=false.
+# A promote rewrites baseline.json only in the ephemeral CI workspace, so the job
+# commits tests/eval/results/baseline.json back to main via the default
+# GITHUB_TOKEN (needs `permissions: contents: write`) — this only fires on an
+# explicit dispatch, never on the nightly run.
+name: Eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      gate:
+        description: "Fail the run when the baseline diff reports regressions"
+        type: boolean
+        default: true
+      promote_baseline:
+        description: "Promote a clean run to baseline.json (copy latest.json) and commit it back to main. Never promotes a run with regressions"
+        type: boolean
+        default: false
+  schedule:
+    # Nightly at 03:00 UTC.
+    - cron: "0 3 * * *"
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: taxflow_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install backend dependencies
+        working-directory: apps/backend
+        run: uv sync --extra dev
+
+      - name: Run eval pipeline
+        working-directory: apps/backend
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          # Nightly always gates and never promotes; dispatch derives flags from inputs.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            GATE="${{ inputs.gate }}"
+            PROMOTE="${{ inputs.promote_baseline }}"
+          else
+            GATE="true"
+            PROMOTE="false"
+          fi
+          ARGS=""
+          if [ "$GATE" = "true" ]; then
+            ARGS="$ARGS --gate"
+          fi
+          if [ "$PROMOTE" = "true" ]; then
+            ARGS="$ARGS --promote-baseline"
+          fi
+          uv run python scripts/run_eval.py $ARGS
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: |
+            apps/backend/tests/eval/results/runs.jsonl
+            apps/backend/tests/eval/results/latest.json
+
+      - name: Commit promoted baseline back to main
+        # Only when a manual dispatch explicitly requested promotion and the eval
+        # succeeded (a gated regression fails the run step above, so this is
+        # skipped). Uses the default GITHUB_TOKEN / actions bot.
+        if: >-
+          success() &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.promote_baseline
+        working-directory: apps/backend
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tests/eval/results/baseline.json
+          if git diff --cached --quiet; then
+            echo "baseline.json unchanged; nothing to commit."
+          else
+            git commit -m "chore(eval): promote eval baseline [skip ci]"
+            git push origin HEAD:main
+          fi

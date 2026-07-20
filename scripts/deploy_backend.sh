@@ -12,6 +12,16 @@ set -euo pipefail
 DROPLET_IP="${DROPLET_IP:-170.64.183.45}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# sha-tagged images (Decision #2487): tag each build taxflow-backend:<git-sha> so a
+# failed smoke test can re-up the previously-running tag. GITHUB_SHA is set in CI;
+# fall back to `git rev-parse` for local/manual runs.
+BACKEND_IMAGE_TAG="${BACKEND_IMAGE_TAG:-${GITHUB_SHA:-}}"
+if [ -z "$BACKEND_IMAGE_TAG" ]; then
+  BACKEND_IMAGE_TAG="$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo "latest")"
+fi
+# How many old sha-tagged images to retain on the droplet (newest kept + this many prior).
+KEEP_TAGS="${KEEP_TAGS:-3}"
+
 REQUIRED_VARS=(SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY SUPABASE_ANON_KEY ANTHROPIC_API_KEY
                OPENAI_API_KEY STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET DATABASE_URL
                STRIPE_STARTER_PRICE_ID STRIPE_PROFESSIONAL_PRICE_ID)
@@ -79,15 +89,111 @@ rsync -az --delete \
   "$REPO_ROOT/apps/backend/" "root@$DROPLET_IP:/opt/taxflow/backend/"
 rsync -az "$REPO_ROOT/deploy/" "root@$DROPLET_IP:/opt/taxflow/deploy/"
 
-echo "=== 4/4 Building and starting containers ==="
-ssh "root@$DROPLET_IP" bash -s << 'REMOTE'
-set -e
+echo "=== 4/4 Building, deploying, and smoke-testing (tag: $BACKEND_IMAGE_TAG) ==="
+# Everything below runs on the droplet. The smoke test is the deploy gate: a failed
+# health check re-ups the previously-running sha-tagged image and exits non-zero, so
+# CI's deploy-backend job goes red. Positional args pass the new tag + retention count
+# into the quoted heredoc (no local expansion).
+ssh "root@$DROPLET_IP" bash -s -- "$BACKEND_IMAGE_TAG" "$KEEP_TAGS" << 'REMOTE'
+set -euo pipefail
+
+NEW_TAG="$1"
+KEEP_TAGS="$2"
+COMPOSE_FILE="docker-compose.deployed.yml"
+MARKER_FILE="/opt/taxflow/backend_current_tag"
+
 cd /opt/taxflow/deploy
-# compose context expects ../apps/backend relative to deploy/; point it at the synced path
-sed 's|context: ../apps/backend|context: ../backend|' docker-compose.yml > docker-compose.deployed.yml
-docker compose -f docker-compose.deployed.yml up -d --build
-sleep 10
-docker compose -f docker-compose.deployed.yml ps
+# compose context expects ../apps/backend relative to deploy/; point it at the synced path.
+# Rollback re-ups against this SAME deployed file, so it is regenerated every deploy.
+sed 's|context: ../apps/backend|context: ../backend|' docker-compose.yml > "$COMPOSE_FILE"
+
+# Record the currently-running tag BEFORE we touch anything, so we can roll back to it.
+# Prefer the persisted marker (survives container recreation); fall back to the running
+# container's image tag ONLY when it is a taxflow-backend:<tag> image. The legacy compose
+# file had no explicit image name, so a pre-existing container may run the compose-generated
+# image (e.g. deploy-backend); that is NOT a valid rollback target, so leave PREV_TAG empty
+# (treated as first deploy / no valid rollback) rather than trying to start a bogus tag.
+PREV_TAG=""
+if [ -f "$MARKER_FILE" ]; then
+  PREV_TAG="$(cat "$MARKER_FILE")"
+else
+  RUNNING_IMAGE="$(docker inspect --format '{{ index .Config.Image }}' \
+    "$(docker compose -f "$COMPOSE_FILE" ps -q backend 2>/dev/null || true)" 2>/dev/null || true)"
+  case "$RUNNING_IMAGE" in
+    taxflow-backend:*) PREV_TAG="${RUNNING_IMAGE#taxflow-backend:}" ;;
+    *) PREV_TAG="" ;;  # legacy/compose-generated image name: no valid rollback target
+  esac
+fi
+echo "Previous tag: ${PREV_TAG:-<none, no valid rollback target>}"
+echo "New tag:      $NEW_TAG"
+
+# --- health probe -----------------------------------------------------------
+# The backend port (8000) is only `expose`d, not host-published, and curl is not
+# guaranteed inside the image, so probe via the container's Python urllib (same
+# pattern as the compose healthcheck). Returns 0 iff status==ok AND database==connected.
+health_ok() {
+  docker compose -f "$COMPOSE_FILE" exec -T backend python3 -c '
+import json, sys, urllib.request
+try:
+    body = urllib.request.urlopen("http://localhost:8000/health", timeout=5).read()
+    data = json.loads(body)
+except Exception as e:  # noqa: BLE001
+    print("health probe error: %s" % e, file=sys.stderr)
+    sys.exit(1)
+ok = data.get("status") == "ok" and data.get("database") == "connected"
+print("status=%s database=%s" % (data.get("status"), data.get("database")))
+sys.exit(0 if ok else 1)
+'
+}
+
+# Bounded retry + total timeout: 20 attempts x 5s = ~100s max.
+smoke_test() {
+  local attempts=20 delay=5 i
+  for ((i = 1; i <= attempts; i++)); do
+    if health_ok; then
+      echo "Smoke test passed on attempt $i/$attempts."
+      return 0
+    fi
+    echo "Smoke test attempt $i/$attempts not healthy yet; retrying in ${delay}s..."
+    sleep "$delay"
+  done
+  return 1
+}
+
+# --- build + deploy new tag -------------------------------------------------
+BACKEND_IMAGE_TAG="$NEW_TAG" docker compose -f "$COMPOSE_FILE" build backend
+BACKEND_IMAGE_TAG="$NEW_TAG" docker compose -f "$COMPOSE_FILE" up -d backend caddy
+docker compose -f "$COMPOSE_FILE" ps
+
+# --- gate: smoke test, roll back on failure ---------------------------------
+if smoke_test; then
+  echo "$NEW_TAG" > "$MARKER_FILE"
+  echo "Deploy of $NEW_TAG healthy."
+  # Prune old sha-tagged images, keeping the newest $KEEP_TAGS.
+  mapfile -t OLD_TAGS < <(docker images 'taxflow-backend' \
+    --format '{{.Tag}}' | grep -v '^latest$' | tail -n +"$((KEEP_TAGS + 1))" || true)
+  for t in "${OLD_TAGS[@]:-}"; do
+    [ -z "$t" ] && continue
+    [ "$t" = "$NEW_TAG" ] && continue
+    echo "Pruning old image taxflow-backend:$t"
+    docker image rm "taxflow-backend:$t" 2>/dev/null || true
+  done
+else
+  echo "SMOKE TEST FAILED for $NEW_TAG." >&2
+  if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$NEW_TAG" ]; then
+    echo "Rolling back to previous tag: $PREV_TAG (re-up, no rebuild)..." >&2
+    BACKEND_IMAGE_TAG="$PREV_TAG" docker compose -f "$COMPOSE_FILE" up -d --no-build backend
+    if smoke_test; then
+      echo "Rollback to $PREV_TAG is healthy; keeping previous version." >&2
+      echo "$PREV_TAG" > "$MARKER_FILE"
+    else
+      echo "ROLLBACK health check ALSO FAILED - backend may be down." >&2
+    fi
+  else
+    echo "No valid previous taxflow-backend:<tag> image to roll back to (first deploy or legacy image); failing loudly." >&2
+  fi
+  exit 1
+fi
 REMOTE
 
 echo "=== Verification ==="
