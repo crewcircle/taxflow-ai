@@ -196,20 +196,48 @@ function mapNormalisedIndexToRaw(raw: string, normIndex: number): number {
  * Returns the block + offsets where the text now lives, or null if it's gone
  * (caller then shows the annotation detached in the gutter). Prefers the
  * originally-anchored block, then falls back to scanning every block.
+ *
+ * Cross-block quotes: a selection that spanned multiple blocks stores the FULL
+ * multi-block text as `quotedText` (offsets were clamped to the first block).
+ * That full string never lives inside any single block, so when whole-quote
+ * resolution misses we retry with just the first block-segment of the quote
+ * (split on blank lines, mirroring `splitBlocks`) — the portion that was
+ * actually anchored — so the highlight re-attaches instead of detaching.
  */
 export function reanchor(
   blocks: MarkdownBlock[],
   quotedText: string,
   preferredBlockIndex: number
 ): AnchorOffsets | null {
+  const whole = resolveAgainstBlocks(blocks, quotedText, preferredBlockIndex);
+  if (whole) return whole;
+
+  // Fallback for cross-block quotes: anchor to the first block-segment only.
+  const firstSegment = splitBlocks(quotedText)[0]?.text;
+  if (firstSegment && firstSegment !== quotedText.trim()) {
+    return resolveAgainstBlocks(blocks, firstSegment, preferredBlockIndex);
+  }
+  return null;
+}
+
+/**
+ * Resolve `needle` within `blocks`, trying the preferred block first then every
+ * other block in order. Shared by `reanchor`'s whole-quote and first-segment
+ * passes.
+ */
+function resolveAgainstBlocks(
+  blocks: MarkdownBlock[],
+  needle: string,
+  preferredBlockIndex: number
+): AnchorOffsets | null {
   const preferred = blocks[preferredBlockIndex];
   if (preferred) {
-    const hit = resolveOffsetsInBlock(preferred, quotedText);
+    const hit = resolveOffsetsInBlock(preferred, needle);
     if (hit) return hit;
   }
   for (const block of blocks) {
     if (block.index === preferredBlockIndex) continue;
-    const hit = resolveOffsetsInBlock(block, quotedText);
+    const hit = resolveOffsetsInBlock(block, needle);
     if (hit) return hit;
   }
   return null;

@@ -86,3 +86,39 @@ test("reanchor prefers the original block then scans others", () => {
   // gone entirely
   assert.equal(reanchor(blocks, "gamma owes tax", 0), null);
 });
+
+test("reanchor falls back to the first block-segment of a cross-block quote", () => {
+  const blocks = splitBlocks("first paragraph here\n\nsecond paragraph here");
+  // A cross-block selection stored the FULL multi-block text as quoted_text.
+  const fullQuote = "paragraph here\n\nsecond paragraph";
+  // The whole quote lives in no single block, but the first segment does, so
+  // reanchor re-attaches to block 0 rather than detaching.
+  const hit = reanchor(blocks, fullQuote, 0);
+  assert.ok(hit);
+  assert.equal(hit!.blockIndex, 0);
+  assert.equal(hit!.quotedText, "paragraph here");
+  assert.equal(blocks[0].text.slice(hit!.startOffset, hit!.endOffset), "paragraph here");
+});
+
+test("reanchor returns null when a cross-block quote's first segment is also gone", () => {
+  const blocks = splitBlocks("totally different text\n\nanother block");
+  const fullQuote = "missing lead\n\nmissing tail";
+  assert.equal(reanchor(blocks, fullQuote, 0), null);
+});
+
+test("non-stale highlight needle is the first block's clamped substring", () => {
+  // Mirrors the component's non-stale anchor: the highlight needle is
+  // block.text.slice(start,end), which for a cross-block selection differs from
+  // the full stored quoted_text and DOES exist inside the first block.
+  const md = "You owe $120,000 this year.\n\nThat is due in April.";
+  const blocks = splitBlocks(md);
+  // Simulate a cross-block selection starting mid-block-0.
+  const startOffset = blocks[0].text.indexOf("$120,000");
+  const endOffset = blocks[0].text.length; // clamped to end of first block
+  const needle = blocks[0].text.slice(startOffset, endOffset);
+  assert.equal(needle, "$120,000 this year.");
+  // The clamped needle resolves inside block 0.
+  const hit = resolveOffsetsInBlock(blocks[0], needle, 0);
+  assert.ok(hit);
+  assert.equal(hit!.startOffset, startOffset);
+});

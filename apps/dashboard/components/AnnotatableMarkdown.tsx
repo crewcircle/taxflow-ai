@@ -155,12 +155,16 @@ export function AnnotatableMarkdown({
       let anchor: AnchorOffsets | null;
       const block = blocks[root.block_index];
       if (!stale && block) {
-        // trust stored offsets, but keep the quoted_text for the highlighter
+        // Trust the stored offsets. The highlight needle is the first block's
+        // clamped substring (start_offset..end_offset), NOT root.quoted_text:
+        // for a cross-block selection the stored quote is the full multi-block
+        // text, which never appears inside this single block wrapper. The gutter
+        // still shows the full root.quoted_text for context.
         anchor = {
           blockIndex: root.block_index,
           startOffset: root.start_offset,
           endOffset: root.end_offset,
-          quotedText: root.quoted_text,
+          quotedText: block.text.slice(root.start_offset, root.end_offset),
         };
       } else {
         anchor = reanchor(blocks, root.quoted_text, root.block_index);
