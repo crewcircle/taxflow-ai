@@ -97,7 +97,6 @@ export function AnnotatableMarkdown({
   const articleRef = useRef<HTMLDivElement>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [serverHash, setServerHash] = useState<string | null>(null);
-  const [localHash, setLocalHash] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [showResolved, setShowResolved] = useState(false);
 
@@ -136,15 +135,10 @@ export function AnnotatableMarkdown({
     void loadAnnotations();
   }, [loadAnnotations]);
 
-  useEffect(() => {
-    void sourceHash(sourceMarkdown).then(setLocalHash);
-  }, [sourceMarkdown]);
-
   // Group annotations into threads and resolve each root's anchor. If a root's
   // stored version matches the current source hash, use its offsets directly;
   // otherwise mark it stale and fuzzy re-anchor via quoted_text. On a miss the
   // thread is kept but detached (anchor: null) so a comment is never dropped.
-  const currentHash = serverHash ?? localHash;
   const threads = useMemo<Thread[]>(() => {
     const roots = annotations.filter((a) => !a.parent_id);
     const repliesByParent = new Map<string, Annotation[]>();
@@ -156,7 +150,7 @@ export function AnnotatableMarkdown({
       }
     }
     return roots.map((root) => {
-      const stale = currentHash != null && root.target_version !== currentHash;
+      const stale = serverHash != null && root.target_version !== serverHash;
       let anchor: AnchorOffsets | null;
       const block = blocks[root.block_index];
       if (!stale && block) {
@@ -179,7 +173,7 @@ export function AnnotatableMarkdown({
         stale,
       };
     });
-  }, [annotations, blocks, currentHash]);
+  }, [annotations, blocks, serverHash]);
 
   const visibleThreads = threads.filter((t) =>
     showResolved ? t.root.resolved_at != null : t.root.resolved_at == null
@@ -265,7 +259,7 @@ export function AnnotatableMarkdown({
           start_offset: thread.root.start_offset,
           end_offset: thread.root.end_offset,
           quoted_text: thread.root.quoted_text,
-          author_kind: composerKind === "user" ? "user" : "reviewer",
+          author_kind: composerKind,
           author_name: authorName ?? null,
           body: replyBody.trim(),
           parent_id: thread.root.id,
