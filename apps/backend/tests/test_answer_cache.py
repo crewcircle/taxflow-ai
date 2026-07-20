@@ -64,6 +64,37 @@ async def test_version_bump_forces_a_miss(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cache_is_isolated_per_client(monkeypatch):
+    """Regression lock (decision #1205): an identical question must NEVER be served
+    another client's cached answer. The cache is keyed on client_id, so client B
+    must miss on an entry stored by client A even at the same knowledge version."""
+    monkeypatch.setattr(settings, "ANSWER_CACHE_ENABLED", True)
+
+    store = {}
+
+    def fake_get_sync(client_id, question_norm, version):
+        return store.get((client_id, question_norm, version))
+
+    def fake_store_sync(client_id, question_norm, version, result):
+        store[(client_id, question_norm, version)] = result
+
+    with patch.object(answer_cache, "_get_sync", side_effect=fake_get_sync), patch.object(
+        answer_cache, "_store_sync", side_effect=fake_store_sync
+    ), patch.object(answer_cache, "get_knowledge_version", new=AsyncMock(return_value=1)):
+        # Client A caches an answer to a question.
+        await answer_cache.store_answer("client-A", "What is the CGT discount?", {"answer": "A-only"})
+
+        # Client A hits its own entry.
+        assert await answer_cache.get_cached_answer("client-A", "What is the CGT discount?") == {
+            "answer": "A-only"
+        }
+
+        # Client B asks the identical question at the same knowledge version -> MISS.
+        # No cross-client leakage.
+        assert await answer_cache.get_cached_answer("client-B", "What is the CGT discount?") is None
+
+
+@pytest.mark.asyncio
 async def test_cache_disabled_returns_none(monkeypatch):
     monkeypatch.setattr(settings, "ANSWER_CACHE_ENABLED", False)
     with patch.object(answer_cache, "_get_sync") as mock_get:
