@@ -163,6 +163,13 @@ class NotificationsRepo(Protocol):
 
 
 @runtime_checkable
+class ProductionSnapshotsRepo(Protocol):
+    def insert(self, row: dict) -> dict: ...
+    def latest(self, limit: int = 30) -> list[dict]: ...
+    def baseline_window(self, start: Any, end: Any) -> list[dict]: ...
+
+
+@runtime_checkable
 class RelationalDataPort(Protocol):
     """Facade exposing one repository per aggregate."""
 
@@ -185,6 +192,7 @@ class RelationalDataPort(Protocol):
     health: HealthRepo
     re_research_jobs: ReResearchJobsRepo
     notifications: NotificationsRepo
+    production_snapshots: ProductionSnapshotsRepo
 
 
 # Convenience alias for adapters that accept extra kwargs dicts.

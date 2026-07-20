@@ -10,6 +10,7 @@ and per-tier (``by_model_used``). ``write_run`` appends a run record to
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 
 # Metrics where HIGHER is better — a drop beyond tolerance is a regression.
@@ -28,28 +29,65 @@ _HIGHER_BETTER = (
 _LOWER_BETTER = ("hallucination_rate",)
 
 
-def _diff_group(current: dict, baseline: dict, tolerance: float) -> dict:
+def diff_metrics(
+    current: dict,
+    baseline: dict,
+    tolerance: float,
+    higher_better: Iterable[str],
+    lower_better: Iterable[str],
+    *,
+    null_skip: bool = False,
+) -> dict:
     """Per-metric deltas + regression flags for one roll-up group.
 
+    Generalises the eval diff so callers (e.g. production drift) supply their
+    own ``higher_better`` / ``lower_better`` metric directions. A metric absent
+    from BOTH iterables is not diffed (contextual only).
+
+    ``null_skip`` (default ``False``) selects how absent/``None`` values are
+    handled:
+
+      - ``False`` (eval default): a missing or ``None`` value coerces to ``0.0``
+        (``float(value or 0.0)``), exactly reproducing the historical
+        ``diff_against_baseline`` behaviour byte-for-byte.
+      - ``True`` (production drift): when a metric is ``None`` on either side —
+        e.g. a Tier-1 column not yet present, so the metric is genuinely
+        unavailable — the metric is skipped (``delta`` set to ``None``) and can
+        never flag a regression, instead of being treated as a real ``0.0``.
+
     When ``baseline`` is empty (no baseline for this group yet), we still report
-    deltas-vs-zero for context but flag NO regressions and set
-    ``baseline_missing=True`` — otherwise a lower-is-better metric (e.g.
-    hallucination_rate) would be spuriously flagged as a regression against an
-    implicit zero baseline on the very first run.
+    deltas for context but flag NO regressions and set ``baseline_missing=True``
+    — otherwise a lower-is-better metric (e.g. hallucination_rate) would be
+    spuriously flagged as a regression against an implicit zero baseline on the
+    very first run.
     """
     baseline_missing = not baseline
     deltas: dict = {}
     regressions: list[str] = []
-    for metric in _HIGHER_BETTER:
-        cur = float(current.get(metric, 0.0) or 0.0)
-        base = float(baseline.get(metric, 0.0) or 0.0)
+
+    def _resolve(raw):
+        """Return (delta_computable, value). When null_skip and raw is None,
+        the metric is skipped; otherwise None coerces to 0.0 (legacy)."""
+        if null_skip and raw is None:
+            return False, None
+        return True, float(raw or 0.0)
+
+    for metric in higher_better:
+        cur_ok, cur = _resolve(current.get(metric))
+        base_ok, base = _resolve(baseline.get(metric))
+        if not (cur_ok and base_ok):
+            deltas[metric] = None
+            continue
         delta = cur - base
         deltas[metric] = delta
         if not baseline_missing and delta < -tolerance:
             regressions.append(metric)
-    for metric in _LOWER_BETTER:
-        cur = float(current.get(metric, 0.0) or 0.0)
-        base = float(baseline.get(metric, 0.0) or 0.0)
+    for metric in lower_better:
+        cur_ok, cur = _resolve(current.get(metric))
+        base_ok, base = _resolve(baseline.get(metric))
+        if not (cur_ok and base_ok):
+            deltas[metric] = None
+            continue
         delta = cur - base
         deltas[metric] = delta
         if not baseline_missing and delta > tolerance:
@@ -59,6 +97,22 @@ def _diff_group(current: dict, baseline: dict, tolerance: float) -> dict:
         "regressions": regressions,
         "baseline_missing": baseline_missing,
     }
+
+
+def _diff_group(
+    current: dict,
+    baseline: dict,
+    tolerance: float,
+    higher_better: Iterable[str] = _HIGHER_BETTER,
+    lower_better: Iterable[str] = _LOWER_BETTER,
+) -> dict:
+    """Eval-default wrapper over :func:`diff_metrics`.
+
+    Defaults ``higher_better`` / ``lower_better`` to the eval field tuples so
+    ``diff_against_baseline`` output is byte-identical to before. Kept as a thin
+    shim for the existing eval call-sites.
+    """
+    return diff_metrics(current, baseline, tolerance, higher_better, lower_better)
 
 
 def diff_against_baseline(current: dict, baseline: dict, tolerance: float) -> dict:
