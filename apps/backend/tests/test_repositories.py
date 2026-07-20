@@ -462,6 +462,21 @@ def test_stats_has_by_model_and_by_day_group_bys():
     assert "GROUP BY verification_result->>'overall_status'" in sql
 
 
+def test_stats_by_model_averages_exclude_cache_via_filter():
+    cur = _RoutingCursor()
+    _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    # The by_model breakdown keeps cache in count(*) but excludes it from the
+    # mean metrics, so the 'cache' group's averages never leak into the rows.
+    by_model_sql = next(
+        sql for sql, _ in cur.executed if "GROUP BY model_used" in sql
+    )
+    assert "avg(wall_time_ms) FILTER (WHERE model_used <> 'cache')" in by_model_sql
+    assert "avg(confidence_score) FILTER (WHERE model_used <> 'cache')" in by_model_sql
+    assert "avg(cost_usd) FILTER (WHERE model_used <> 'cache')" in by_model_sql
+    # But the per-model volume/count still includes cache rows.
+    assert "count(*) AS query_volume" in by_model_sql
+
+
 def test_stats_feedback_computed_in_separate_cte_not_joined():
     cur = _RoutingCursor()
     _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))

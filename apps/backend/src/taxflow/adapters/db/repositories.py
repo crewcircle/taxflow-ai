@@ -446,15 +446,23 @@ class QueriesRepo:
         }
 
         # --- by_model: GROUP BY model_used (+ concrete model_id when present) --
+        # Cache rows are kept in the per-model query_volume/count but excluded
+        # from the mean metrics via FILTER (WHERE model_used <> 'cache'),
+        # consistent with the totals/by_day paths (so the 'cache' group's
+        # averages come back NULL rather than leaking into the breakdown).
         model_id_select = "model_id,\n                   " if has_model_id else ""
-        model_cost_select = ",\n                   avg(cost_usd) AS avg_cost_usd" if has_cost else ""
+        model_cost_select = (
+            f",\n                   avg(cost_usd) FILTER (WHERE {non_cache}) AS avg_cost_usd"
+            if has_cost
+            else ""
+        )
         model_group = "model_used, model_id" if has_model_id else "model_used"
         by_model_rows = _fetchall(
             f"""
             SELECT {model_id_select}model_used,
                    count(*) AS query_volume,
-                   avg(wall_time_ms) AS avg_latency_ms,
-                   avg(confidence_score) AS avg_confidence{model_cost_select}
+                   avg(wall_time_ms) FILTER (WHERE {non_cache}) AS avg_latency_ms,
+                   avg(confidence_score) FILTER (WHERE {non_cache}) AS avg_confidence{model_cost_select}
             FROM queries
             WHERE {window}
             GROUP BY {model_group}
