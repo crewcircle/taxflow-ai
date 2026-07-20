@@ -12,6 +12,7 @@ from taxflow.routers import (
     contact,
     query,
     documents,
+    annotations,
     ato_response,
     firm_clients,
     firm_knowledge,
@@ -66,6 +67,7 @@ app.include_router(auth.router)
 app.include_router(contact.router)
 app.include_router(query.router)
 app.include_router(documents.router)
+app.include_router(annotations.router)
 app.include_router(ato_response.router)
 app.include_router(firm_clients.router)
 app.include_router(firm_knowledge.router)

@@ -138,6 +138,72 @@ def test_documents_update_status_scoped_by_client():
     assert list(params[-2:]) == ["d1", "client-1"]
 
 
+# --- annotations (migration 038) ---------------------------------------------
+
+
+def test_annotations_list_for_target_scoped_by_client_and_target():
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().annotations.list_for_target("client-1", "document", "d1")
+    sql, params = cur.executed[0]
+    assert "FROM annotations" in sql
+    assert "client_id = %s" in sql
+    assert "target_type = %s AND target_id = %s" in sql
+    assert params == ("client-1", "document", "d1")
+
+
+def test_annotations_get_for_client_scoped_by_client():
+    cur = _FakeCursor(fetchone={"id": "a1", "client_id": "client-1"})
+    with _patch_conn(cur):
+        Repositories().annotations.get_for_client("client-1", "a1")
+    sql, params = cur.executed[0]
+    assert "FROM annotations" in sql
+    assert "WHERE id = %s AND client_id = %s" in sql
+    assert list(params) == ["a1", "client-1"]
+
+
+def test_annotations_update_scoped_by_client():
+    cur = _FakeCursor(fetchone={"id": "a1"})
+    with _patch_conn(cur):
+        Repositories().annotations.update("client-1", "a1", {"body": "edited"})
+    sql, params = cur.executed[0]
+    assert "UPDATE annotations" in sql
+    assert "WHERE id = %s AND client_id = %s" in sql
+    assert list(params[-2:]) == ["a1", "client-1"]
+
+
+def test_annotations_update_resolved_at_now():
+    cur = _FakeCursor(fetchone={"id": "a1"})
+    with _patch_conn(cur):
+        Repositories().annotations.update("client-1", "a1", {"resolved_at": "now()"})
+    sql, params = cur.executed[0]
+    assert "UPDATE annotations" in sql
+    assert "resolved_at = now()" in sql
+    # now() is inlined, not parameterised, so only id + client_id are params.
+    assert list(params) == ["a1", "client-1"]
+
+
+def test_annotations_delete_scoped_by_client():
+    cur = _FakeCursor()
+    with _patch_conn(cur):
+        Repositories().annotations.delete("client-1", "a1")
+    sql, params = cur.executed[0]
+    assert "DELETE FROM annotations" in sql
+    assert "WHERE id = %s AND client_id = %s" in sql
+    assert list(params) == ["a1", "client-1"]
+
+
+def test_annotations_insert_targets_annotations_table():
+    cur = _FakeCursor(fetchone={"id": "a1"})
+    with _patch_conn(cur):
+        Repositories().annotations.insert(
+            {"client_id": "client-1", "target_type": "document", "body": "hi"}
+        )
+    sql, params = cur.executed[0]
+    assert "INSERT INTO annotations" in sql
+    assert "client-1" in params
+
+
 def test_firm_knowledge_list_for_client_scoped_by_client():
     cur = _FakeCursor(fetchall=[])
     with _patch_conn(cur):
