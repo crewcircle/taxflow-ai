@@ -202,7 +202,15 @@ function mapNormalisedIndexToRaw(raw: string, normIndex: number): number {
  * That full string never lives inside any single block, so when whole-quote
  * resolution misses we retry with just the first block-segment of the quote
  * (split on blank lines, mirroring `splitBlocks`) — the portion that was
- * actually anchored — so the highlight re-attaches instead of detaching.
+ * actually anchored.
+ *
+ * The first-segment fallback is only accepted when UNAMBIGUOUS, so a short or
+ * common segment never mis-attaches a stale comment to an unrelated span
+ * (worse than detaching). It is accepted when either:
+ *   (a) the segment still resolves in the ORIGINAL block index (unambiguous by
+ *       construction — it's where the anchor came from), or
+ *   (b) the segment is meaningfully long AND appears in exactly one block.
+ * Anything else returns null (detached).
  */
 export function reanchor(
   blocks: MarkdownBlock[],
@@ -212,13 +220,34 @@ export function reanchor(
   const whole = resolveAgainstBlocks(blocks, quotedText, preferredBlockIndex);
   if (whole) return whole;
 
-  // Fallback for cross-block quotes: anchor to the first block-segment only.
   const firstSegment = splitBlocks(quotedText)[0]?.text;
-  if (firstSegment && firstSegment !== quotedText.trim()) {
-    return resolveAgainstBlocks(blocks, firstSegment, preferredBlockIndex);
+  if (!firstSegment || firstSegment === quotedText.trim()) return null;
+
+  // (a) Still in the original block? Unambiguous — accept.
+  const preferred = blocks[preferredBlockIndex];
+  if (preferred) {
+    const hit = resolveOffsetsInBlock(preferred, firstSegment);
+    if (hit) return hit;
+  }
+
+  // (b) Otherwise accept only a meaningfully long segment that appears in
+  //     exactly one block; short/common or multi-block segments detach.
+  if (normalise(firstSegment).length < MIN_FALLBACK_SEGMENT_LENGTH) return null;
+  const matches = blocks.filter(
+    (b) => b.index !== preferredBlockIndex && resolveOffsetsInBlock(b, firstSegment) != null
+  );
+  if (matches.length === 1) {
+    return resolveOffsetsInBlock(matches[0], firstSegment);
   }
   return null;
 }
+
+/**
+ * Minimum normalised length for a cross-block first-segment to be trusted as an
+ * unambiguous re-anchor target outside its original block. Segments shorter than
+ * this (e.g. "tax", "the total") are too common to attach a stale comment to.
+ */
+const MIN_FALLBACK_SEGMENT_LENGTH = 8;
 
 /**
  * Resolve `needle` within `blocks`, trying the preferred block first then every

@@ -106,6 +106,34 @@ test("reanchor returns null when a cross-block quote's first segment is also gon
   assert.equal(reanchor(blocks, fullQuote, 0), null);
 });
 
+test("reanchor re-anchors a stale cross-block first segment that is unique elsewhere", () => {
+  // Original block 0 no longer contains the segment, but it appears in exactly
+  // one other block and is long enough to be unambiguous → re-anchor to it.
+  const blocks = splitBlocks("intro block only\n\ntax payable amount here\n\nfooter line");
+  const fullQuote = "tax payable amount\n\noriginal tail now gone";
+  const hit = reanchor(blocks, fullQuote, 0);
+  assert.ok(hit);
+  assert.equal(hit!.blockIndex, 1);
+  assert.equal(hit!.quotedText, "tax payable amount");
+});
+
+test("reanchor detaches (null) when a stale first segment is ambiguous across blocks", () => {
+  // First segment gone from the original block but present in MULTIPLE other
+  // blocks → ambiguous, must NOT mis-anchor; returns null so the comment
+  // detaches rather than attaching to a plausible-but-wrong span.
+  const blocks = splitBlocks("header line\n\ntax payable here\n\ntax payable there");
+  const fullQuote = "tax payable\n\noriginal tail now gone";
+  assert.equal(reanchor(blocks, fullQuote, 0), null);
+});
+
+test("reanchor detaches a short/common stale first segment even if unique elsewhere", () => {
+  // A short segment (below the meaningful-length guard) is too common to trust
+  // outside its original block, so it detaches even when it appears exactly once.
+  const blocks = splitBlocks("heading here\n\nthe tax is due\n\nfooter");
+  const fullQuote = "tax\n\noriginal tail now gone";
+  assert.equal(reanchor(blocks, fullQuote, 0), null);
+});
+
 test("non-stale highlight needle is the first block's clamped substring", () => {
   // Mirrors the component's non-stale anchor: the highlight needle is
   // block.text.slice(start,end), which for a cross-block selection differs from
