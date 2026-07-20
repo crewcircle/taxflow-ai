@@ -345,3 +345,338 @@ def test_repositories_exposes_all_aggregates():
         "health",
     ):
         assert hasattr(repos, attr)
+
+
+# --- QueriesRepo.stats (Task 2b) ---------------------------------------------
+#
+# stats() runs several statements (the 035-column probe, the totals CTE, and the
+# breakdown/by_model/by_day GROUP BYs). We drive a routing fake cursor that maps
+# each executed SQL to a canned result and records every (sql, params) pair so
+# the tests can assert both the SQL shape and the returned aggregate.
+
+
+from datetime import datetime, timezone
+
+
+class _RoutingCursor:
+    """Fake cursor whose fetchone/fetchall answers depend on the SQL just run.
+
+    ``present_columns`` controls which migration-035 columns the probe reports.
+    """
+
+    def __init__(self, present_columns=("cost_usd", "citation_valid", "model_id"),
+                 totals=None, breakdown=None, by_model=None, by_day=None):
+        self.executed = []  # (sql, params)
+        self._present = list(present_columns)
+        self._totals = totals or {}
+        self._breakdown = breakdown or []
+        self._by_model = by_model or []
+        self._by_day = by_day or []
+        self._last_sql = ""
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        self._last_sql = sql
+
+    def fetchone(self):
+        # The 035-column probe uses a plain cursor + fetchall (_fetchcol), so the
+        # only fetchone path is the totals CTE.
+        return dict(self._totals)
+
+    def fetchall(self):
+        sql = self._last_sql
+        if "information_schema.columns" in sql:
+            return [(c,) for c in self._present]
+        if "GROUP BY verification_result" in sql:
+            return [dict(r) for r in self._breakdown]
+        if "GROUP BY model_used" in sql:
+            return [dict(r) for r in self._by_model]
+        if "date_trunc('day'" in sql:
+            return [dict(r) for r in self._by_day]
+        return []
+
+    def close(self):
+        pass
+
+
+def _stats_sql(cursor) -> str:
+    return "\n".join(sql for sql, _ in cursor.executed)
+
+
+def _run_stats(cur, **kwargs):
+    with _patch_conn(cur):
+        return Repositories().queries.stats(**kwargs)
+
+
+def test_stats_window_lower_bound_only_when_end_none():
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    cur = _RoutingCursor()
+    _run_stats(cur, start=start)
+    sql = _stats_sql(cur)
+    assert "created_at >= %(start)s" in sql
+    # Upper bound predicate is present but guarded on a NULL end.
+    assert "%(end)s::timestamptz IS NULL OR created_at < %(end)s" in sql
+    # end passed as None for every statement.
+    for _, params in cur.executed:
+        if params and "start" in params:
+            assert params["start"] == start
+            assert params["end"] is None
+
+
+def test_stats_window_includes_both_bounds_when_end_given():
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 1, 8, tzinfo=timezone.utc)
+    cur = _RoutingCursor()
+    _run_stats(cur, start=start, end=end)
+    sql = _stats_sql(cur)
+    assert "created_at >= %(start)s" in sql
+    assert "created_at < %(end)s" in sql
+    # Both bounds carried in params for the aggregate statements.
+    saw_window = False
+    for stmt_sql, params in cur.executed:
+        if params and "start" in params:
+            saw_window = True
+            assert params["start"] == start
+            assert params["end"] == end
+    assert saw_window
+
+
+def test_stats_excludes_cache_from_means_via_filter():
+    cur = _RoutingCursor()
+    _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    sql = _stats_sql(cur)
+    # Cost/latency/quality means exclude cache via a FILTER, not a WHERE.
+    assert "model_used <> 'cache'" in sql
+    assert "FILTER (WHERE model_used <> 'cache')" in sql
+
+
+def test_stats_has_by_model_and_by_day_group_bys():
+    cur = _RoutingCursor()
+    _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    sql = _stats_sql(cur)
+    assert "GROUP BY model_used" in sql
+    assert "date_trunc('day', created_at)" in sql
+    assert "GROUP BY date_trunc('day', created_at)" in sql
+    # verification breakdown groups on overall_status.
+    assert "verification_result->>'overall_status'" in sql
+    assert "GROUP BY verification_result->>'overall_status'" in sql
+
+
+def test_stats_by_model_averages_exclude_cache_via_filter():
+    cur = _RoutingCursor()
+    _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    # The by_model breakdown keeps cache in count(*) but excludes it from the
+    # mean metrics, so the 'cache' group's averages never leak into the rows.
+    by_model_sql = next(
+        sql for sql, _ in cur.executed if "GROUP BY model_used" in sql
+    )
+    assert "avg(wall_time_ms) FILTER (WHERE model_used <> 'cache')" in by_model_sql
+    assert "avg(confidence_score) FILTER (WHERE model_used <> 'cache')" in by_model_sql
+    assert "avg(cost_usd) FILTER (WHERE model_used <> 'cache')" in by_model_sql
+    # But the per-model volume/count still includes cache rows.
+    assert "count(*) AS query_volume" in by_model_sql
+
+
+def test_stats_feedback_computed_in_separate_cte_not_joined():
+    cur = _RoutingCursor()
+    _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    sql = _stats_sql(cur)
+    # Feedback lives in its own CTE cross-joined to the query aggregate -- never
+    # LEFT JOINed into the per-query rows (which would multiply query rows).
+    assert "feedback AS (" in sql
+    assert "CROSS JOIN feedback" in sql
+    assert "LEFT JOIN query_feedback" not in sql
+    assert "JOIN query_feedback" not in sql
+
+
+def test_stats_two_feedback_rows_do_not_double_count_volume_or_averages():
+    # The DB does the aggregation; the contract we prove here is that feedback
+    # counts come from the SEPARATE feedback CTE and never inflate the query
+    # totals. Totals report 3 queries with avg latency 100 regardless of there
+    # being 2 feedback rows (1 up + 1 down) attached to a single query.
+    totals = {
+        "query_volume": 3,
+        "avg_latency_ms": 100.0,
+        "p95_latency_ms": 180.0,
+        "avg_confidence": 0.8,
+        "verification_failures": 0,
+        "non_cache_verified": 2,
+        "total_cost_usd": 0.06,
+        "avg_cost_usd": 0.02,
+        "citation_valid_true": 2,
+        "citation_valid_nonnull": 2,
+        "feedback_up": 1,
+        "feedback_down": 1,
+    }
+    cur = _RoutingCursor(totals=totals)
+    result = _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    # Volume + averages come straight from the query CTE (feedback not joined).
+    assert result["query_volume"] == 3
+    assert result["avg_latency_ms"] == 100.0
+    assert result["p95_latency_ms"] == 180.0
+    assert result["feedback_up"] == 1
+    assert result["feedback_down"] == 1
+    assert result["feedback_up_rate"] == 0.5
+    assert result["feedback_down_rate"] == 0.5
+
+
+def test_stats_rate_denominators_and_breakdown():
+    totals = {
+        "query_volume": 10,
+        "avg_latency_ms": 120.0,
+        "p95_latency_ms": 200.0,
+        "avg_confidence": 0.75,
+        "verification_failures": 3,  # needs_correction + unreliable + parse_error
+        "non_cache_verified": 6,
+        "total_cost_usd": 1.2,
+        "avg_cost_usd": 0.15,
+        "citation_valid_true": 4,
+        "citation_valid_nonnull": 5,
+        "feedback_up": 3,
+        "feedback_down": 1,
+    }
+    breakdown = [
+        {"overall_status": "verified", "count": 4},
+        {"overall_status": "needs_correction", "count": 2},
+    ]
+    cur = _RoutingCursor(totals=totals, breakdown=breakdown)
+    result = _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert result["verification_failure_rate"] == 3 / 6
+    assert result["citation_validity_rate"] == 4 / 5
+    assert result["feedback_up_rate"] == 3 / 4
+    assert result["feedback_down_rate"] == 1 / 4
+    assert result["verification_breakdown"] == {"verified": 4, "needs_correction": 2}
+
+
+def test_stats_rates_null_on_zero_denominators():
+    totals = {
+        "query_volume": 0,
+        "avg_latency_ms": None,
+        "p95_latency_ms": None,
+        "avg_confidence": None,
+        "verification_failures": 0,
+        "non_cache_verified": 0,
+        "total_cost_usd": None,
+        "avg_cost_usd": None,
+        "citation_valid_true": 0,
+        "citation_valid_nonnull": 0,
+        "feedback_up": 0,
+        "feedback_down": 0,
+    }
+    cur = _RoutingCursor(totals=totals)
+    result = _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert result["feedback_up_rate"] is None
+    assert result["feedback_down_rate"] is None
+    assert result["verification_failure_rate"] is None
+    assert result["citation_validity_rate"] is None
+
+
+# --- graceful degradation: each 035 column absent independently --------------
+
+
+def test_stats_absent_cost_usd_returns_null_cost_and_omits_no_sql():
+    totals = {
+        "query_volume": 2,
+        "avg_latency_ms": 90.0,
+        "p95_latency_ms": 90.0,
+        "avg_confidence": 0.9,
+        "verification_failures": 0,
+        "non_cache_verified": 1,
+        "citation_valid_true": 1,
+        "citation_valid_nonnull": 1,
+        "feedback_up": 0,
+        "feedback_down": 0,
+    }
+    by_model = [{"model_used": "haiku", "model_id": "anthropic/x",
+                 "query_volume": 2, "avg_latency_ms": 90.0, "avg_confidence": 0.9}]
+    by_day = [{"day": datetime(2026, 1, 1, tzinfo=timezone.utc),
+               "query_volume": 2, "avg_latency_ms": 90.0}]
+    cur = _RoutingCursor(present_columns=("citation_valid", "model_id"),
+                         totals=totals, by_model=by_model, by_day=by_day)
+    result = _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    sql = _stats_sql(cur)
+    # cost_usd must NOT be referenced anywhere when its column is absent.
+    assert "cost_usd" not in sql
+    assert result["total_cost_usd"] is None
+    assert result["avg_cost_usd"] is None
+    assert "avg_cost_usd" not in result["by_model"][0]
+    assert "avg_cost_usd" not in result["by_day"][0]
+    # Other metrics still computed.
+    assert result["citation_validity_rate"] == 1.0
+    assert result["by_model"][0]["model_id"] == "anthropic/x"
+
+
+def test_stats_absent_citation_valid_returns_null_validity():
+    totals = {
+        "query_volume": 2,
+        "avg_latency_ms": 90.0,
+        "p95_latency_ms": 90.0,
+        "avg_confidence": 0.9,
+        "verification_failures": 0,
+        "non_cache_verified": 1,
+        "total_cost_usd": 0.04,
+        "avg_cost_usd": 0.02,
+        "feedback_up": 0,
+        "feedback_down": 0,
+    }
+    cur = _RoutingCursor(present_columns=("cost_usd", "model_id"), totals=totals)
+    result = _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    sql = _stats_sql(cur)
+    assert "citation_valid" not in sql
+    assert result["citation_validity_rate"] is None
+    # cost still available.
+    assert result["total_cost_usd"] == 0.04
+
+
+def test_stats_absent_model_id_omits_from_by_model():
+    totals = {
+        "query_volume": 1,
+        "avg_latency_ms": 90.0,
+        "p95_latency_ms": 90.0,
+        "avg_confidence": 0.9,
+        "verification_failures": 0,
+        "non_cache_verified": 1,
+        "total_cost_usd": 0.02,
+        "avg_cost_usd": 0.02,
+        "citation_valid_true": 1,
+        "citation_valid_nonnull": 1,
+        "feedback_up": 0,
+        "feedback_down": 0,
+    }
+    by_model = [{"model_used": "haiku", "query_volume": 1,
+                 "avg_latency_ms": 90.0, "avg_confidence": 0.9, "avg_cost_usd": 0.02}]
+    cur = _RoutingCursor(present_columns=("cost_usd", "citation_valid"),
+                         totals=totals, by_model=by_model)
+    result = _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    sql = _stats_sql(cur)
+    # model_id column must not be selected/grouped when absent.
+    assert "model_id" not in sql
+    assert "GROUP BY model_used, model_id" not in sql
+    assert "model_id" not in result["by_model"][0]
+    assert result["by_model"][0]["model_used"] == "haiku"
+
+
+def test_stats_all_035_columns_absent_nulls_all_optional_metrics():
+    totals = {
+        "query_volume": 1,
+        "avg_latency_ms": 90.0,
+        "p95_latency_ms": 90.0,
+        "avg_confidence": 0.9,
+        "verification_failures": 0,
+        "non_cache_verified": 1,
+        "feedback_up": 0,
+        "feedback_down": 0,
+    }
+    by_model = [{"model_used": "haiku", "query_volume": 1,
+                 "avg_latency_ms": 90.0, "avg_confidence": 0.9}]
+    cur = _RoutingCursor(present_columns=(), totals=totals, by_model=by_model)
+    result = _run_stats(cur, start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    sql = _stats_sql(cur)
+    assert "cost_usd" not in sql
+    assert "citation_valid" not in sql
+    assert "model_id" not in sql
+    assert result["total_cost_usd"] is None
+    assert result["avg_cost_usd"] is None
+    assert result["citation_validity_rate"] is None
+    assert "model_id" not in result["by_model"][0]
+    assert "avg_cost_usd" not in result["by_model"][0]
