@@ -204,13 +204,16 @@ function mapNormalisedIndexToRaw(raw: string, normIndex: number): number {
  * (split on blank lines, mirroring `splitBlocks`) — the portion that was
  * actually anchored.
  *
- * The first-segment fallback is only accepted when UNAMBIGUOUS, so a short or
- * common segment never mis-attaches a stale comment to an unrelated span
- * (worse than detaching). It is accepted when either:
- *   (a) the segment still resolves in the ORIGINAL block index (unambiguous by
- *       construction — it's where the anchor came from), or
- *   (b) the segment is meaningfully long AND appears in exactly one block.
- * Anything else returns null (detached).
+ * The first-segment fallback is only accepted when UNAMBIGUOUS, counting
+ * OCCURRENCES (not just matching blocks) so a segment that repeats within a
+ * single block never mis-anchors. It is accepted when either:
+ *   (a) the ORIGINAL block index contains the segment exactly ONCE (unambiguous
+ *       by construction — it's where the anchor came from), or
+ *   (b) the segment is meaningfully long AND occurs exactly ONCE across all
+ *       blocks.
+ * Anything else — the segment missing, repeated within a block, or present in
+ * multiple places — returns null (detached), which is safer than attaching a
+ * stale comment to a plausible-but-wrong span.
  */
 export function reanchor(
   blocks: MarkdownBlock[],
@@ -220,26 +223,49 @@ export function reanchor(
   const whole = resolveAgainstBlocks(blocks, quotedText, preferredBlockIndex);
   if (whole) return whole;
 
-  const firstSegment = splitBlocks(quotedText)[0]?.text;
+  const firstSegment = splitBlocks(quotedText)[0]?.text.trim();
   if (!firstSegment || firstSegment === quotedText.trim()) return null;
 
-  // (a) Still in the original block? Unambiguous — accept.
+  // (a) Original block: accept only if the segment occurs there exactly once.
+  //     More than one occurrence is ambiguous → detach.
   const preferred = blocks[preferredBlockIndex];
   if (preferred) {
-    const hit = resolveOffsetsInBlock(preferred, firstSegment);
-    if (hit) return hit;
+    const occ = countOccurrences(preferred.text, firstSegment);
+    if (occ === 1) return resolveOffsetsInBlock(preferred, firstSegment);
+    if (occ > 1) return null;
   }
 
-  // (b) Otherwise accept only a meaningfully long segment that appears in
-  //     exactly one block; short/common or multi-block segments detach.
+  // (b) Otherwise accept only a meaningfully long segment that occurs exactly
+  //     once across ALL other blocks; short/common, repeated, or multi-location
+  //     segments detach.
   if (normalise(firstSegment).length < MIN_FALLBACK_SEGMENT_LENGTH) return null;
-  const matches = blocks.filter(
-    (b) => b.index !== preferredBlockIndex && resolveOffsetsInBlock(b, firstSegment) != null
-  );
-  if (matches.length === 1) {
-    return resolveOffsetsInBlock(matches[0], firstSegment);
+  let total = 0;
+  let target: MarkdownBlock | null = null;
+  for (const block of blocks) {
+    if (block.index === preferredBlockIndex) continue;
+    const occ = countOccurrences(block.text, firstSegment);
+    if (occ > 0 && target === null) target = block;
+    total += occ;
   }
+  if (total === 1 && target) return resolveOffsetsInBlock(target, firstSegment);
   return null;
+}
+
+/**
+ * Count non-overlapping exact occurrences of `needle` in `haystack`. Used by the
+ * re-anchor unambiguity guard so a segment repeated within a block detaches
+ * rather than mis-anchoring to its first occurrence.
+ */
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) return count;
+    count += 1;
+    from = at + needle.length;
+  }
 }
 
 /**

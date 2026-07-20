@@ -134,6 +134,27 @@ test("reanchor detaches a short/common stale first segment even if unique elsewh
   assert.equal(reanchor(blocks, fullQuote, 0), null);
 });
 
+test("reanchor detaches when the stale first segment repeats within the one matching block", () => {
+  // Unique by BLOCK but not by OCCURRENCE: the segment appears twice in the
+  // single matching non-preferred block. resolveOffsetsInBlock would pick the
+  // first occurrence, so we must detach instead of mis-anchoring.
+  const blocks = splitBlocks(
+    "original changed\n\ntax payable amount here and tax payable amount again"
+  );
+  const fullQuote = "tax payable amount\n\nold tail";
+  assert.equal(reanchor(blocks, fullQuote, 0), null);
+});
+
+test("reanchor detaches when the stale first segment repeats within the original block", () => {
+  // The preferred/original block still contains the segment, but TWICE — the
+  // occurrence is ambiguous, so detach rather than anchor to the first one.
+  const blocks = splitBlocks(
+    "tax payable amount here and tax payable amount again\n\nfooter block"
+  );
+  const fullQuote = "tax payable amount\n\nold tail";
+  assert.equal(reanchor(blocks, fullQuote, 0), null);
+});
+
 test("non-stale highlight needle is the first block's clamped substring", () => {
   // Mirrors the component's non-stale anchor: the highlight needle is
   // block.text.slice(start,end), which for a cross-block selection differs from
