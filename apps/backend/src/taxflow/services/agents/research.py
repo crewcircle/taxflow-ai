@@ -1183,6 +1183,8 @@ class ResearchAgent:
             "citations": citations,
             "confidence": confidence,
             "model_used": routed,
+            # Task 1c: concrete resolved model id (runtime resolve_model value).
+            "model_id": model,
             "chunks_retrieved": len(chunks),
             **stats,
             "wall_time_ms": int((time.monotonic() - start) * 1000),
@@ -1258,8 +1260,9 @@ class ResearchAgent:
             f"{issue_lines}"
         )
 
+        corrective_model = providers.resolve_model("sonnet")
         answer, stats = await self._generate(
-            question, corrective_context, providers.resolve_model("sonnet"), steering=steering
+            question, corrective_context, corrective_model, steering=steering
         )
         citations = self._parse_citations(answer, citation_map)
         confidence = self._estimate_confidence(answer, chunks, citations)
@@ -1271,6 +1274,9 @@ class ResearchAgent:
             "citations": citations,
             "confidence": confidence,
             "model_used": "sonnet",
+            # Task 1c: concrete resolved Sonnet model id, previously discarded, so
+            # corrected_meta carries the model that actually produced the answer.
+            "model_id": corrective_model,
             "re_retrieved": widened,
             "re_retrieval": re_retrieval,
             **stats,

@@ -317,5 +317,12 @@ class Settings(BaseSettings):
     R2_SECRET_ACCESS_KEY: str = ""
     R2_BUCKET_NAME: str = ""
 
+    # --- Admin / operator observability endpoint (Task 2b) --------------------
+    # Bearer-style shared secret guarding the operator-global ``/admin/*``
+    # endpoints (checked with secrets.compare_digest against the X-Admin-Token
+    # header). Empty (the default) DISABLES the feature entirely: require_admin
+    # returns 404 so the endpoints are invisible until an operator sets a token.
+    ADMIN_API_TOKEN: str = ""
+
 
 settings = Settings()  # type: ignore[call-arg]

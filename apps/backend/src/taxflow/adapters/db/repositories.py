@@ -30,11 +30,18 @@ methods themselves are plain sync functions.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 import psycopg2.extras
 
 from taxflow.config import settings
 from taxflow.db import get_pg_conn
+
+# The three additive columns migration 035 adds to ``queries``. The admin stats
+# aggregate (Task 2b) and the Tier 3 drift job must degrade gracefully when they
+# are absent (this branch predates 035), returning null for the dependent
+# metrics instead of failing the query.
+_OBSERVABILITY_035_COLUMNS = ("cost_usd", "citation_valid", "model_id")
 
 
 def _dict_cursor(conn):
@@ -118,6 +125,40 @@ def _insert_sql(table: str, cols: list[str], *, returning: bool = True) -> str:
 
 def _set_clause(cols: list[str]) -> str:
     return ", ".join(f"{c} = %s" for c in cols)
+
+
+def _present_035_columns() -> set[str]:
+    """Return which of the migration-035 observability columns
+    (``cost_usd``/``citation_valid``/``model_id``) currently exist on
+    ``queries``.
+
+    Admin stats + the drift job must degrade gracefully when 035 has not landed
+    yet (this branch predates it): a single ``information_schema.columns`` lookup
+    tells the aggregate which optional fields it can reference so a missing
+    column returns ``null`` for its metric instead of raising ``UndefinedColumn``.
+    """
+    rows = _fetchcol(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'queries' AND column_name = ANY(%s)
+        """,
+        (list(_OBSERVABILITY_035_COLUMNS),),
+    )
+    return set(rows)
+
+
+def _num(value):
+    """Coerce a psycopg2 numeric/Decimal aggregate to a float (or None)."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def _int(value) -> int:
+    return int(value) if value is not None else 0
 
 
 # --- clients -----------------------------------------------------------------
@@ -299,6 +340,215 @@ class QueriesRepo:
             """,
             (query_id, client_id),
         )
+
+    def stats(self, start, end=None, client_id=None) -> dict:
+        """Operational aggregate over ``queries`` for the half-open window
+        ``[start, end)`` (Task 2b). ``end=None`` means "up to now" (the admin
+        endpoint passes it; the drift job passes explicit current/baseline
+        bounds). ``client_id=None`` aggregates across all clients (operator-global).
+
+        Window contract: ``created_at >= start AND (end IS NULL OR created_at <
+        end)`` — an explicit half-open range, never ``since``-to-now.
+
+        Cache rows (``model_used = 'cache'``) are kept in ``query_volume`` but
+        excluded from cost/latency/quality/validity means via
+        ``FILTER (WHERE model_used <> 'cache')``.
+
+        Feedback is one-to-many (``query_feedback`` has no unique constraint on
+        ``query_id``), so it is computed in a SEPARATE CTE over the same window
+        and cross-joined — never LEFT JOINed into the per-query aggregate, which
+        would duplicate query rows and inflate volume/averages/p95/cost.
+
+        Graceful degradation: the three migration-035 columns (``cost_usd``,
+        ``citation_valid``, ``model_id``) may be absent on this branch. We detect
+        which exist once via ``information_schema`` and omit the missing ones,
+        returning ``null`` for their metrics (``total_cost_usd``/``avg_cost_usd``,
+        ``citation_validity_rate``) and dropping ``model_id`` from ``by_model``.
+        """
+        present = _present_035_columns()
+        has_cost = "cost_usd" in present
+        has_citation = "citation_valid" in present
+        has_model_id = "model_id" in present
+
+        params = {"start": start, "end": end, "client_id": client_id}
+
+        # Half-open [start, end) window + optional operator/client scoping. Both
+        # the queries CTE and the feedback CTE reference the SAME window.
+        window = (
+            "created_at >= %(start)s\n"
+            "  AND (%(end)s::timestamptz IS NULL OR created_at < %(end)s)\n"
+            "  AND (%(client_id)s::uuid IS NULL OR client_id = %(client_id)s)"
+        )
+        non_cache = "model_used <> 'cache'"
+
+        # --- totals: query metrics in one CTE (NO feedback join), feedback in a
+        # separate CTE, combined via CROSS JOIN so feedback rows never multiply
+        # query rows. -----------------------------------------------------------
+        cost_select = ""
+        if has_cost:
+            cost_select = (
+                f",\n    sum(cost_usd) FILTER (WHERE {non_cache}) AS total_cost_usd"
+                f",\n    avg(cost_usd) FILTER (WHERE {non_cache}) AS avg_cost_usd"
+            )
+        citation_select = ""
+        if has_citation:
+            citation_select = (
+                f",\n    count(*) FILTER (WHERE {non_cache} AND citation_valid IS TRUE)"
+                " AS citation_valid_true"
+                f",\n    count(*) FILTER (WHERE {non_cache} AND citation_valid IS NOT NULL)"
+                " AS citation_valid_nonnull"
+            )
+
+        totals_sql = f"""
+            WITH q AS (
+                SELECT
+                    count(*) AS query_volume,
+                    avg(wall_time_ms) FILTER (WHERE {non_cache}) AS avg_latency_ms,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY wall_time_ms)
+                        FILTER (WHERE {non_cache}) AS p95_latency_ms,
+                    avg(confidence_score) FILTER (WHERE {non_cache}) AS avg_confidence,
+                    count(*) FILTER (
+                        WHERE {non_cache}
+                        AND verification_result->>'overall_status'
+                            IN ('needs_correction', 'unreliable', 'parse_error')
+                    ) AS verification_failures,
+                    count(*) FILTER (
+                        WHERE {non_cache} AND verification_result IS NOT NULL
+                    ) AS non_cache_verified{cost_select}{citation_select}
+                FROM queries
+                WHERE {window}
+            ),
+            feedback AS (
+                SELECT
+                    count(*) FILTER (WHERE rating = 'up') AS feedback_up,
+                    count(*) FILTER (WHERE rating = 'down') AS feedback_down
+                FROM query_feedback
+                WHERE {window}
+            )
+            SELECT q.*, feedback.feedback_up, feedback.feedback_down
+            FROM q CROSS JOIN feedback
+        """
+        totals = _fetchone(totals_sql, params) or {}
+
+        # --- verification_breakdown: GROUP BY overall_status -------------------
+        breakdown_rows = _fetchall(
+            f"""
+            SELECT verification_result->>'overall_status' AS overall_status,
+                   count(*) AS count
+            FROM queries
+            WHERE {window} AND {non_cache} AND verification_result IS NOT NULL
+            GROUP BY verification_result->>'overall_status'
+            """,
+            params,
+        )
+        verification_breakdown = {
+            r["overall_status"]: _int(r["count"]) for r in breakdown_rows
+        }
+
+        # --- by_model: GROUP BY model_used (+ concrete model_id when present) --
+        # Cache rows are kept in the per-model query_volume/count but excluded
+        # from the mean metrics via FILTER (WHERE model_used <> 'cache'),
+        # consistent with the totals/by_day paths (so the 'cache' group's
+        # averages come back NULL rather than leaking into the breakdown).
+        model_id_select = "model_id,\n                   " if has_model_id else ""
+        model_cost_select = (
+            f",\n                   avg(cost_usd) FILTER (WHERE {non_cache}) AS avg_cost_usd"
+            if has_cost
+            else ""
+        )
+        model_group = "model_used, model_id" if has_model_id else "model_used"
+        by_model_rows = _fetchall(
+            f"""
+            SELECT {model_id_select}model_used,
+                   count(*) AS query_volume,
+                   avg(wall_time_ms) FILTER (WHERE {non_cache}) AS avg_latency_ms,
+                   avg(confidence_score) FILTER (WHERE {non_cache}) AS avg_confidence{model_cost_select}
+            FROM queries
+            WHERE {window}
+            GROUP BY {model_group}
+            ORDER BY count(*) DESC
+            """,
+            params,
+        )
+        by_model = []
+        for r in by_model_rows:
+            row = {
+                "model_used": r["model_used"],
+                "query_volume": _int(r["query_volume"]),
+                "avg_latency_ms": _num(r["avg_latency_ms"]),
+                "avg_confidence": _num(r["avg_confidence"]),
+            }
+            if has_model_id:
+                row["model_id"] = r["model_id"]
+            if has_cost:
+                row["avg_cost_usd"] = _num(r["avg_cost_usd"])
+            by_model.append(row)
+
+        # --- by_day: GROUP BY date_trunc('day', created_at) --------------------
+        day_cost_select = (
+            f",\n                   avg(cost_usd) FILTER (WHERE {non_cache}) AS avg_cost_usd"
+            if has_cost
+            else ""
+        )
+        by_day_rows = _fetchall(
+            f"""
+            SELECT date_trunc('day', created_at) AS day,
+                   count(*) AS query_volume,
+                   avg(wall_time_ms) FILTER (WHERE {non_cache}) AS avg_latency_ms{day_cost_select}
+            FROM queries
+            WHERE {window}
+            GROUP BY date_trunc('day', created_at)
+            ORDER BY day
+            """,
+            params,
+        )
+        by_day = []
+        for r in by_day_rows:
+            row = {
+                "day": r["day"].isoformat() if r.get("day") is not None else None,
+                "query_volume": _int(r["query_volume"]),
+                "avg_latency_ms": _num(r["avg_latency_ms"]),
+            }
+            if has_cost:
+                row["avg_cost_usd"] = _num(r["avg_cost_usd"])
+            by_day.append(row)
+
+        # --- rates (pinned denominators) ---------------------------------------
+        feedback_up = _int(totals.get("feedback_up"))
+        feedback_down = _int(totals.get("feedback_down"))
+        feedback_total = feedback_up + feedback_down
+        feedback_up_rate = feedback_up / feedback_total if feedback_total else None
+        feedback_down_rate = feedback_down / feedback_total if feedback_total else None
+
+        non_cache_verified = _int(totals.get("non_cache_verified"))
+        verification_failures = _int(totals.get("verification_failures"))
+        verification_failure_rate = (
+            verification_failures / non_cache_verified if non_cache_verified else None
+        )
+
+        citation_validity_rate = None
+        if has_citation:
+            valid_nonnull = _int(totals.get("citation_valid_nonnull"))
+            valid_true = _int(totals.get("citation_valid_true"))
+            citation_validity_rate = valid_true / valid_nonnull if valid_nonnull else None
+
+        return {
+            "query_volume": _int(totals.get("query_volume")),
+            "avg_latency_ms": _num(totals.get("avg_latency_ms")),
+            "p95_latency_ms": _num(totals.get("p95_latency_ms")),
+            "total_cost_usd": _num(totals.get("total_cost_usd")) if has_cost else None,
+            "avg_cost_usd": _num(totals.get("avg_cost_usd")) if has_cost else None,
+            "avg_confidence": _num(totals.get("avg_confidence")),
+            "citation_validity_rate": citation_validity_rate,
+            "feedback_up": feedback_up,
+            "feedback_down": feedback_down,
+            "feedback_up_rate": feedback_up_rate,
+            "feedback_down_rate": feedback_down_rate,
+            "verification_failure_rate": verification_failure_rate,
+            "verification_breakdown": verification_breakdown,
+            "by_model": by_model,
+            "by_day": by_day,
+        }
 
 
 # --- query_feedback ----------------------------------------------------------
@@ -1091,6 +1341,41 @@ class NotificationsRepo:
         )
 
 
+# --- ops notifications -------------------------------------------------------
+class OpsNotificationsRepo:
+    """Operator-scoped notifications (037_ops_notifications).
+
+    Unlike the per-client ``NotificationsRepo`` above, these rows have NO
+    ``client_id`` — they are operator-global (e.g. drift alerts) and read behind
+    the admin token, so there is no per-client scoping predicate here.
+    """
+
+    def insert(self, row: dict) -> dict:
+        cols = list(row.keys())
+        return _execute(
+            _insert_sql("ops_notifications", cols),
+            [_maybe_json(row[c]) for c in cols],
+            returning=True,
+        )
+
+    def latest(self, limit: int = 50) -> list[dict]:
+        return _fetchall(
+            """
+            SELECT id, kind, title, body, metadata, severity, read_at, created_at
+            FROM ops_notifications
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+
+    def mark_read(self, notification_id: str) -> None:
+        _execute(
+            "UPDATE ops_notifications SET read_at = now() WHERE id = %s",
+            (notification_id,),
+        )
+
+
 # --- production quality snapshots --------------------------------------------
 class ProductionSnapshotsRepo:
     """Production-drift snapshots (036_production_quality_snapshots).
@@ -1158,4 +1443,5 @@ class Repositories:
         self.health = HealthRepo()
         self.re_research_jobs = ReResearchJobsRepo()
         self.notifications = NotificationsRepo()
+        self.ops_notifications = OpsNotificationsRepo()
         self.production_snapshots = ProductionSnapshotsRepo()

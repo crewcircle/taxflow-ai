@@ -47,6 +47,7 @@ class QueriesRepo(Protocol):
     def list_session_history(self, client_id: str, session_id: str, limit: int) -> list[dict]: ...
     def set_re_research_status(self, client_id: str, query_id: str, status: str) -> None: ...
     def get_answer_for_client(self, client_id: str, query_id: str) -> dict | None: ...
+    def stats(self, start, end=None, client_id=None) -> dict: ...
 
 
 @runtime_checkable
@@ -163,6 +164,13 @@ class NotificationsRepo(Protocol):
 
 
 @runtime_checkable
+class OpsNotificationsRepo(Protocol):
+    def insert(self, row: dict) -> dict: ...
+    def latest(self, limit: int = 50) -> list[dict]: ...
+    def mark_read(self, notification_id: str) -> None: ...
+
+
+@runtime_checkable
 class ProductionSnapshotsRepo(Protocol):
     def insert(self, row: dict) -> dict: ...
     def latest(self, limit: int = 30) -> list[dict]: ...
@@ -192,6 +200,7 @@ class RelationalDataPort(Protocol):
     health: HealthRepo
     re_research_jobs: ReResearchJobsRepo
     notifications: NotificationsRepo
+    ops_notifications: OpsNotificationsRepo
     production_snapshots: ProductionSnapshotsRepo
 
 
