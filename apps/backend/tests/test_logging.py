@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from taxflow.logging_config import JsonFormatter, configure_logging
+from taxflow.logging_config import (
+    _HANDLER_MARKER,
+    JsonFormatter,
+    configure_logging,
+)
 from taxflow.middleware.request_context import RequestIdFilter, request_id_var
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "taxflow"
@@ -58,6 +63,16 @@ def test_formatter_includes_extra_fields():
     assert payload["client_id"] == "c-1"
 
 
+def test_formatter_serialises_non_serialisable_extra_with_default_str():
+    class Weird:
+        def __str__(self):
+            return "weird-repr"
+
+    payload = _format_record(obj=Weird())
+    # default=str keeps the record serialisable rather than raising.
+    assert payload["obj"] == "weird-repr"
+
+
 def test_level_honours_log_level():
     with patch("taxflow.logging_config.settings") as mock_settings:
         mock_settings.LOG_LEVEL = "WARNING"
@@ -68,6 +83,39 @@ def test_level_honours_log_level():
         mock_settings.LOG_LEVEL = "INFO"
         configure_logging()
         assert logging.getLogger().level == logging.INFO
+
+
+def _taxflow_handlers() -> list[logging.Handler]:
+    return [
+        h
+        for h in logging.getLogger().handlers
+        if getattr(h, _HANDLER_MARKER, False)
+    ]
+
+
+def test_handler_writes_to_stdout():
+    with patch("taxflow.logging_config.settings") as mock_settings:
+        mock_settings.LOG_LEVEL = "INFO"
+        configure_logging()
+    handlers = _taxflow_handlers()
+    assert len(handlers) == 1
+    assert handlers[0].stream is sys.stdout
+
+
+def test_configure_logging_preserves_unrelated_handlers():
+    root = logging.getLogger()
+    sentinel = logging.NullHandler()
+    root.addHandler(sentinel)
+    try:
+        with patch("taxflow.logging_config.settings") as mock_settings:
+            mock_settings.LOG_LEVEL = "INFO"
+            configure_logging()
+            # calling twice must not stack duplicate taxflow handlers
+            configure_logging()
+        assert sentinel in root.handlers
+        assert len(_taxflow_handlers()) == 1
+    finally:
+        root.removeHandler(sentinel)
 
 
 def _access_records(caplog) -> list[logging.LogRecord]:
@@ -99,6 +147,37 @@ def test_request_returns_request_id_and_one_access_record(client, caplog):
 def test_passed_in_request_id_is_echoed_unchanged(client):
     response = client.get("/health", headers={"X-Request-ID": "my-fixed-id"})
     assert response.headers["X-Request-ID"] == "my-fixed-id"
+
+
+def test_unhandled_exception_emits_one_access_record_with_status_500(caplog):
+    from fastapi.testclient import TestClient
+
+    from taxflow.main import app
+
+    @app.get("/_boom_test_route")
+    async def _boom():  # pragma: no cover - body raises before returning
+        raise RuntimeError("boom")
+
+    # raise_server_exceptions=False so the client returns the 500 instead of
+    # re-raising, letting us inspect the emitted access record.
+    boom_client = TestClient(app, raise_server_exceptions=False)
+    try:
+        with caplog.at_level(
+            logging.INFO, logger="taxflow.middleware.request_logging"
+        ):
+            response = boom_client.get("/_boom_test_route")
+    finally:
+        app.router.routes = [
+            r
+            for r in app.router.routes
+            if getattr(r, "path", None) != "/_boom_test_route"
+        ]
+
+    assert response.status_code == 500
+    records = _access_records(caplog)
+    assert len(records) == 1
+    assert records[0].status_code == 500
+    assert records[0].path == "/_boom_test_route"
 
 
 def test_authenticated_access_record_includes_client_id(client, caplog):

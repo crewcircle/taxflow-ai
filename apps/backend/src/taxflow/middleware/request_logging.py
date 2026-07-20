@@ -32,7 +32,29 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         token = request_id_var.set(request_id)
         start = perf_counter()
         try:
-            response = await call_next(request)
+            try:
+                response = await call_next(request)
+            except Exception:
+                # An unhandled route exception still gets exactly one access
+                # record (status 500) before we re-raise so FastAPI's normal
+                # error handling produces the 500 response. We cannot echo
+                # X-Request-ID on that generated error response from here —
+                # BaseHTTPMiddleware has no handle on the response object when
+                # call_next raises — but the access record (which carries the
+                # request_id via the contextvar) is guaranteed.
+                latency_ms = round((perf_counter() - start) * 1000, 3)
+                logger.info(
+                    "request",
+                    extra={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": 500,
+                        "latency_ms": latency_ms,
+                        "client_id": getattr(request.state, "client_id", None),
+                    },
+                )
+                raise
+
             status_code = response.status_code
             response.headers["X-Request-ID"] = request_id
             latency_ms = round((perf_counter() - start) * 1000, 3)

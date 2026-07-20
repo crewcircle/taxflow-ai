@@ -14,10 +14,15 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from datetime import datetime, timezone
 
 from taxflow.config import settings
 from taxflow.middleware.request_context import RequestIdFilter
+
+# Marker attribute so repeated ``configure_logging()`` calls replace only OUR
+# handler and leave unrelated handlers (e.g. pytest's LogCaptureHandler) intact.
+_HANDLER_MARKER = "_taxflow_json_handler"
 
 # Attributes present on every ``LogRecord``; anything NOT in here (and not one
 # of the handful we serialise explicitly) is treated as caller-supplied
@@ -57,17 +62,23 @@ class JsonFormatter(logging.Formatter):
 def configure_logging() -> None:
     """Install the JSON stdout handler and align framework log levels.
 
-    Idempotent: replaces any handlers previously installed on the root logger so
-    repeated calls (e.g. in tests) don't stack duplicate handlers.
+    Idempotent: replaces only the handler this function previously installed
+    (identified by ``_HANDLER_MARKER``), preserving any unrelated handlers on
+    the root logger (e.g. pytest's ``LogCaptureHandler``).
     """
     level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
 
-    handler = logging.StreamHandler()
+    handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
     handler.addFilter(RequestIdFilter())
+    setattr(handler, _HANDLER_MARKER, True)
 
     root = logging.getLogger()
-    root.handlers = [handler]
+    # Drop only a previously-installed taxflow handler; keep everything else.
+    root.handlers = [
+        h for h in root.handlers if not getattr(h, _HANDLER_MARKER, False)
+    ]
+    root.addHandler(handler)
     root.setLevel(level)
 
     for name in ("uvicorn", "uvicorn.error"):
