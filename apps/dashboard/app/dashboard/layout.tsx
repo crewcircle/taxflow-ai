@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import {
   BookOpen,
   FileText,
+  LineChart,
   MessageSquareText,
   ScrollText,
 } from "lucide-react";
@@ -17,6 +18,11 @@ const NAV_LINKS = [
   { href: "/dashboard/ato-response", label: "ATO correspondence", icon: ScrollText },
   { href: "/dashboard/knowledge", label: "Our Firm's Precedents", icon: BookOpen },
 ];
+
+// The analytics page is operator-only (its backend is gated behind an admin
+// allowlist), so only surface the nav link to allowlisted operators - normal
+// users must never see a link to a page that 403s.
+const ANALYTICS_LINK = { href: "/dashboard/analytics", label: "Analytics", icon: LineChart };
 
 export default async function DashboardLayout({
   children,
@@ -61,6 +67,21 @@ export default async function DashboardLayout({
     label: link.label,
     icon: <link.icon className="size-4" />,
   }));
+
+  // Only allowlisted operators (ADMIN_EMAILS) get the operator-only Analytics
+  // link, appended after the standard nav items.
+  const adminEmails = (process.env.ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+  const isOperator = Boolean(user.email && adminEmails.includes(user.email.toLowerCase()));
+  if (isOperator) {
+    navLinks.push({
+      href: ANALYTICS_LINK.href,
+      label: ANALYTICS_LINK.label,
+      icon: <ANALYTICS_LINK.icon className="size-4" />,
+    });
+  }
 
   return (
     <TooltipProvider>
