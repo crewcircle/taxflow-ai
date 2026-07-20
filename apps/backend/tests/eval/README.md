@@ -52,6 +52,57 @@ quality-per-dollar summary and a regression diff, but does not fail the build.
 Set `EVAL_GATE_ON_REGRESSION=1` to turn the regression diff into a hard
 assertion.
 
+The per-question loop + aggregate + `write_run` + baseline-diff live in
+`taxflow.services.eval.runner.run_eval_pipeline` (Task 1a); the test is now a
+thin caller of it. `run_eval_pipeline` returns
+`{"aggregate", "per_question", "diff", "record"}` and **never asserts on
+regressions** — gating is the caller's decision.
+
+## CLI: `scripts/run_eval.py` (eval-on-demand)
+
+The same pipeline runs from a script (and the `taxflow-eval` console script)
+without pytest:
+
+```bash
+cd apps/backend
+export PATH="$HOME/.local/bin:$PATH"
+uv run python scripts/run_eval.py --gate            # PAID: real Anthropic/OpenAI/DB
+```
+
+Flags:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--questions` | `tests/eval/questions.json` | gold questions JSON |
+| `--k` | `settings.EVAL_RECALL_K` | recall@k cutoff |
+| `--output-dir` | `tests/eval/results` | runs.jsonl / latest.json / baseline.json |
+| `--gate` | off | exit non-zero when `diff["has_regressions"]` |
+| `--promote-baseline` | off | copy `latest.json` → `baseline.json` after a clean run |
+
+`--gate` **replaces** the `EVAL_GATE_ON_REGRESSION` env toggle for the CLI /
+workflow path (the pytest test still honours `EVAL_GATE_ON_REGRESSION=1`).
+
+## CI: `.github/workflows/eval.yml`
+
+A dedicated workflow (repo root) runs the paid eval — **never** the normal CI
+suite. Triggers:
+
+- **nightly `schedule`** (03:00 UTC) — always passes `--gate`, never
+  `--promote-baseline`;
+- **`workflow_dispatch`** — boolean inputs `gate` and `promote_baseline` map
+  onto `--gate` / `--promote-baseline`.
+
+It runs against a `pgvector/pgvector:pg16` service with real
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DATABASE_URL` secrets, uploads
+`runs.jsonl` + `latest.json` as an artifact, and — only on an explicit dispatch
+that requested promotion — commits `baseline.json` back to `main` (the CI
+workspace is ephemeral, so the promoted baseline must be persisted).
+
+**Droplet caveat:** the paid eval never runs on the deployed backend —
+`scripts/deploy_backend.sh` rsyncs with `--exclude 'tests'`, so `tests/eval`
+(and this runner's test entrypoint) is never shipped to prod. The workflow is
+the only place the paid eval executes.
+
 ## Cost accounting: production vs judge overhead
 
 `quality_per_dollar` measures the **production pipeline only** — the
