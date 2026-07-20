@@ -52,15 +52,42 @@ AU_ENGLISH_GUARDRAIL = (
     "Use Australian English: organisation, recognise, licence (noun), practise (verb), "
     "lodgement, cheque, programme, centre, labour, behaviour."
 )
+# The full guardrail SEMANTICS: the marker phrase plus every required AU-English
+# term. Presence is judged on ALL of these (after whitespace normalisation), not
+# on the marker substring alone — so a firm override that merely mentions
+# "Use Australian English loosely" (marker present, terms absent) can't suppress
+# the real guardrail.
+_AU_ENGLISH_REQUIRED_TERMS = (
+    AU_ENGLISH_MARKER,
+    "organisation",
+    "recognise",
+    "licence (noun)",
+    "practise (verb)",
+    "lodgement",
+    "cheque",
+    "programme",
+    "centre",
+    "labour",
+    "behaviour",
+)
+
+
+def _au_english_present(system: str) -> bool:
+    """True only when the FULL code-owned guardrail semantics are present. The
+    code-owned default bodies embed a line-wrapped copy, so normalise whitespace
+    (collapse runs of whitespace to single spaces) before checking every
+    required term."""
+    normalised = " ".join(system.split())
+    return all(term in normalised for term in _AU_ENGLISH_REQUIRED_TERMS)
 
 
 def ensure_au_english(system: str) -> str:
     """Guarantee the code-owned AU-English guardrail is present in a composed
-    system prompt. Idempotent: when the guardrail is already present (the
-    code-owned default bodies keep it inline for byte-identical flag-off parity)
-    this is a no-op; when a firm's override omitted it, the guardrail is
-    appended so it ALWAYS runs."""
-    if AU_ENGLISH_MARKER in system:
+    system prompt. Idempotent: when the full guardrail semantics are already
+    present (the code-owned default bodies keep it inline for byte-identical
+    flag-off parity) this is a no-op; when a firm's override omitted or weakened
+    it, the exact ``AU_ENGLISH_GUARDRAIL`` is appended so it ALWAYS runs."""
+    if _au_english_present(system):
         return system
     if system.endswith("\n\n"):
         sep = ""

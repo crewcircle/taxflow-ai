@@ -416,6 +416,27 @@ def test_ensure_au_english_is_idempotent_on_default_body():
     assert dt.ensure_au_english(once) == once
 
 
+def test_ensure_au_english_appends_when_only_marker_present():
+    """B2 edge case: an override that contains the marker phrase but NOT the full
+    guardrail (e.g. 'Use Australian English loosely') must still get the exact
+    code-owned guardrail appended — the marker substring alone is not enough."""
+    for weak in (
+        "Custom body. Use Australian English loosely.",
+        "Do not Use Australian English at all.",
+        "Use Australian English: organisation only.",  # marker + one term, not all
+    ):
+        out = dt.ensure_au_english(weak)
+        assert dt.AU_ENGLISH_GUARDRAIL in out
+        assert dt._au_english_present(out)
+    # And a body carrying every required term (line-wrapped, as in the default)
+    # is treated as present and left untouched.
+    wrapped = (
+        "Use Australian English: organisation, recognise, licence (noun),\n"
+        "practise (verb), lodgement, cheque, programme, centre, labour, behaviour."
+    )
+    assert dt.ensure_au_english(wrapped) == wrapped
+
+
 # --- Settings routes ----------------------------------------------------------
 
 
