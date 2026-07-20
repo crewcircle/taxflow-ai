@@ -156,10 +156,11 @@ def _observability_fields(answer: str, citations: list, trace: dict, meta: dict)
     )
     return {
         "citation_valid": validity["valid"],
-        "invalid_citations": invalid if invalid["fabricated_markers"] or invalid["unmatched_citations"] else None,
+        # validity["valid"] is precisely "no fabricated and no unmatched", so
+        # store the detail only when the answer is invalid (else NULL).
+        "invalid_citations": None if validity["valid"] else invalid,
         "cost_usd": cost,
     }
-
 
 
 @router.get("")
