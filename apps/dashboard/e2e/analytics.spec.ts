@@ -98,7 +98,6 @@ function buildStats({ drift }: { drift: boolean }) {
     has_regressions: drift,
     metrics: {
       overall: { verification_failure_rate: drift ? 0.129 : 0.061, feedback_down_rate: drift ? 0.094 : 0.042 },
-      regressed_models: drift ? ["claude-haiku-4.1"] : [],
     },
   });
   return {
@@ -189,6 +188,4 @@ test("drift state shows the drift banner naming regressed metrics", async ({ pag
   // The regressed metrics are named in the banner.
   await expect(banner.getByText(/feedback-down rate/i)).toBeVisible();
   await expect(banner.getByText(/verification-failure rate/i)).toBeVisible();
-  // The offending model row is flagged.
-  await expect(page.locator('[data-slot="model-table"] tr[data-flagged]')).toHaveCount(1);
 });

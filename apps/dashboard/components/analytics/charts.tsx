@@ -1,12 +1,12 @@
 "use client";
 
+import { useId } from "react";
 import {
   Area,
   AreaChart,
   CartesianGrid,
   Line,
   ReferenceArea,
-  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -27,8 +27,6 @@ interface TrendChartProps {
   // The current headline value shown top-right of the card.
   currentValue: string;
   unit?: string;
-  // A trailing-baseline dashed reference line (chart y-units), if known.
-  baseline?: number | null;
   // Render the metric in destructive red (regressed) rather than neutral gray.
   regressed?: boolean;
   // Fraction (0..1) of the x-axis, from the right, to shade as the drift window.
@@ -37,19 +35,18 @@ interface TrendChartProps {
 
 // A single time-series trend card built with recharts. Healthy metrics use the
 // neutral --chart-2 gray; a regressed metric switches to --destructive with a
-// shaded drift window and a red baseline marker, matching the drift mockups.
+// shaded drift window, matching the drift mockups.
 export function TrendChart({
   title,
   subtitle,
   points,
   currentValue,
   unit,
-  baseline,
   regressed = false,
   driftWindowFraction,
 }: TrendChartProps) {
+  const fillId = useId();
   const stroke = regressed ? "var(--destructive)" : "var(--chart-2)";
-  const fillId = regressed ? "trendFillDrift" : "trendFillHealthy";
   const fillColor = regressed ? "var(--destructive)" : "var(--chart-2)";
 
   const driftStartIndex =
@@ -103,14 +100,6 @@ export function TrendChart({
                   strokeDasharray="3 3"
                 />
               )}
-              {typeof baseline === "number" && (
-                <ReferenceLine
-                  y={baseline}
-                  stroke={regressed ? "var(--destructive)" : "var(--muted-foreground)"}
-                  strokeDasharray="4 4"
-                  strokeOpacity={0.55}
-                />
-              )}
               <Area
                 type="monotone"
                 dataKey="value"
@@ -150,6 +139,9 @@ interface SparklineProps {
 // "good" one (positive=true, e.g. citation validity), destructive when the
 // metric has regressed, otherwise neutral gray.
 export function Sparkline({ points, regressed = false, positive = false, className }: SparklineProps) {
+  // SVG gradient ids are document-global, so each Sparkline needs a unique id -
+  // otherwise every fill resolves to the first gradient on the page.
+  const fillId = useId();
   // Healthy "good" metrics (citation validity, low feedback-down) trend green;
   // #15803d matches the mockup's --green token. Neutral metrics use --chart-2.
   const stroke = regressed
@@ -162,7 +154,7 @@ export function Sparkline({ points, regressed = false, positive = false, classNa
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={points} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
           <defs>
-            <linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={stroke} stopOpacity={0.18} />
               <stop offset="100%" stopColor={stroke} stopOpacity={0.02} />
             </linearGradient>
@@ -172,7 +164,7 @@ export function Sparkline({ points, regressed = false, positive = false, classNa
             dataKey="value"
             stroke={stroke}
             strokeWidth={1.6}
-            fill="url(#sparkFill)"
+            fill={`url(#${fillId})`}
             dot={false}
             connectNulls
             isAnimationActive={false}

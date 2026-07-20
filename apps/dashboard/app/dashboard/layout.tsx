@@ -7,6 +7,7 @@ import {
   ScrollText,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
+import { isOperatorEmail } from "@/lib/admin";
 import { DashboardHeader } from "@/components/DashboardHeader";
 import { DashboardSidebar } from "@/components/DashboardSidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -70,12 +71,7 @@ export default async function DashboardLayout({
 
   // Only allowlisted operators (ADMIN_EMAILS) get the operator-only Analytics
   // link, appended after the standard nav items.
-  const adminEmails = (process.env.ADMIN_EMAILS ?? "")
-    .split(",")
-    .map((email) => email.trim().toLowerCase())
-    .filter(Boolean);
-  const isOperator = Boolean(user.email && adminEmails.includes(user.email.toLowerCase()));
-  if (isOperator) {
+  if (isOperatorEmail(user.email)) {
     navLinks.push({
       href: ANALYTICS_LINK.href,
       label: ANALYTICS_LINK.label,

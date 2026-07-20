@@ -32,8 +32,9 @@ import {
 const WINDOWS: AnalyticsWindow[] = ["7d", "30d", "90d", "12m"];
 
 // The minimum by_day points before trends/tables are considered meaningful;
-// below this the page shows the collecting-data empty state instead.
-const MIN_TREND_DAYS = 2;
+// below this the page shows the collecting-data empty state instead. Kept in
+// step with the empty-state copy ("at least 7 days" of activity).
+const MIN_TREND_DAYS = 7;
 
 function toTrendPoints(
   rows: AdminStats["by_day"],
@@ -102,14 +103,6 @@ export default function AnalyticsPage() {
     () => new Set(stats?.latest_snapshot?.diff?.regressions ?? []),
     [stats]
   );
-
-  // Models the drift snapshot attributes the regression to (from snapshot
-  // metadata if present), used to flag the offending table row.
-  const flaggedModels = useMemo<string[]>(() => {
-    const meta = stats?.latest_snapshot?.metrics as Record<string, unknown> | undefined;
-    const raw = meta?.regressed_models ?? meta?.flagged_models;
-    return Array.isArray(raw) ? (raw.filter((m) => typeof m === "string") as string[]) : [];
-  }, [stats]);
 
   const volumeSpark = toTrendPoints(byDay, (r) => r.query_volume);
   const costSpark = toTrendPoints(byDay, (r) => r.avg_cost_usd ?? null);
@@ -201,7 +194,7 @@ export default function AnalyticsPage() {
             <KpiCard
               label="Total cost"
               icon={CircleDollarSign}
-              value={hasValue(stats.total_cost_usd) ? formatUsd(stats.total_cost_usd) : "\u2014"}
+              value={formatUsd(stats.total_cost_usd)}
               baselineCaption={
                 hasValue(stats.avg_cost_usd) ? `avg ${formatUsd(stats.avg_cost_usd, 3)}/query` : "Not available yet"
               }
@@ -229,7 +222,7 @@ export default function AnalyticsPage() {
             <KpiCard
               label="Citation-validity rate"
               icon={ShieldCheck}
-              value={hasValue(stats.citation_validity_rate) ? formatPercent(stats.citation_validity_rate) : "\u2014"}
+              value={formatPercent(stats.citation_validity_rate)}
               flagged={regressedKeys.has("citation_validity_rate")}
               positiveSpark
             />
@@ -292,7 +285,6 @@ export default function AnalyticsPage() {
           <ModelBreakdownTable
             rows={stats.by_model}
             totalVolume={stats.query_volume}
-            flaggedModels={flaggedModels}
           />
         </section>
       )}

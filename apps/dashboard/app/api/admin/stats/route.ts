@@ -1,4 +1,5 @@
 import { forwardResponse } from "@/lib/api";
+import { isOperatorEmail } from "@/lib/admin";
 import { createClient } from "@/lib/supabase/server";
 
 // The backend /admin/stats endpoint is operator-global, gated behind a static
@@ -20,13 +21,7 @@ export async function GET(request: Request) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const allowlist = (process.env.ADMIN_EMAILS ?? "")
-    .split(",")
-    .map((email) => email.trim().toLowerCase())
-    .filter(Boolean);
-  const email = user.email?.toLowerCase();
-
-  if (!email || !allowlist.includes(email)) {
+  if (!isOperatorEmail(user.email)) {
     return Response.json({ error: "Forbidden" }, { status: 403 });
   }
 

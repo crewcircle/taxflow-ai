@@ -1,7 +1,7 @@
 "use client";
 
 import type { LucideIcon } from "lucide-react";
-import { ShieldAlert, TrendingDown, TrendingUp } from "lucide-react";
+import { ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { Sparkline, type TrendPoint } from "./charts";
@@ -18,17 +18,9 @@ interface KpiCardProps {
   flagged?: boolean;
   // A "good" metric (higher/lower is healthy) tints its sparkline green.
   positiveSpark?: boolean;
-  // Optional footer: a directional delta + a baseline reference caption.
-  delta?: { text: string; tone: "good" | "bad" | "warn" | "flat" } | null;
+  // Optional footer caption (e.g. a baseline/per-query reference).
   baselineCaption?: string | null;
 }
-
-const DELTA_TONE: Record<string, string> = {
-  good: "text-[#15803d]",
-  bad: "text-destructive",
-  warn: "text-[#b45309]",
-  flat: "text-muted-foreground",
-};
 
 export function KpiCard({
   label,
@@ -38,10 +30,8 @@ export function KpiCard({
   spark,
   flagged = false,
   positiveSpark = false,
-  delta,
   baselineCaption,
 }: KpiCardProps) {
-  const DeltaIcon = delta?.tone === "bad" || delta?.text.trim().startsWith("-") ? TrendingDown : TrendingUp;
   return (
     <div
       className={cn(
@@ -67,14 +57,8 @@ export function KpiCard({
         {value}
         {unit && <span className="text-[13px] font-medium text-muted-foreground">{unit}</span>}
       </div>
-      {delta && (
-        <div className="mt-1.5 flex items-center justify-between gap-2">
-          <span className={cn("flex items-center gap-1 text-xs font-semibold", DELTA_TONE[delta.tone])}>
-            <DeltaIcon className="size-3" />
-            {delta.text}
-          </span>
-          {baselineCaption && <span className="text-[11px] text-muted-foreground">{baselineCaption}</span>}
-        </div>
+      {baselineCaption && (
+        <div className="mt-1.5 text-[11px] text-muted-foreground">{baselineCaption}</div>
       )}
       {spark && spark.length > 0 && (
         <div className="mt-1.5">

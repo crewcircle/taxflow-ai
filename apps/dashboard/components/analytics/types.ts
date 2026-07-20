@@ -94,7 +94,7 @@ export const METRIC_LABELS: Record<string, string> = {
 export function metricLabel(key: string): string {
   return (
     METRIC_LABELS[key] ??
-    key.replace(/_/g, " ").replace(/\brate\b/, "rate").replace(/^\w/, (c) => c.toUpperCase())
+    key.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase())
   );
 }
 
