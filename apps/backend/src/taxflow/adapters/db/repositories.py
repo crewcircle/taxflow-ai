@@ -699,6 +699,28 @@ class FirmClientsRepo:
             (client_id, name),
         )
 
+    def create(self, client_id: str, name: str) -> dict:
+        """Get-or-create returning the row id (Phase 2 engagement picker).
+
+        Unlike ``upsert`` (no-op, returns nothing) this always returns a real
+        ``firm_clients.id`` whether the name is brand-new or already exists:
+        ``ON CONFLICT ... DO UPDATE SET name = EXCLUDED.name`` forces the
+        conflicting row to be returned. Scoped to the tenant via the
+        ``(client_id, lower(name))`` unique index — a name only ever resolves
+        within the caller's own client register.
+        """
+        return _execute(
+            """
+            INSERT INTO firm_clients (client_id, name)
+            VALUES (%s, %s)
+            ON CONFLICT (client_id, lower(name))
+                DO UPDATE SET name = EXCLUDED.name
+            RETURNING id, name
+            """,
+            (client_id, name.strip()),
+            returning=True,
+        )
+
     def list_for_client(self, client_id: str, search: str | None = None) -> list[dict]:
         if search:
             return _fetchall(
@@ -714,6 +736,165 @@ class FirmClientsRepo:
             "SELECT id, name FROM firm_clients WHERE client_id = %s ORDER BY name LIMIT 200",
             (client_id,),
         )
+
+
+# --- engagements (first-class engagement entity, migration 039) --------------
+class EngagementsRepo:
+    """First-class engagements (migration 039).
+
+    Every statement carries ``WHERE client_id = %s`` — RLS is service-role-only
+    and gives no tenant isolation, so this predicate is the only boundary. An
+    engagement is always attributed to a real ``firm_clients`` row
+    (``firm_client_id``) belonging to the same tenant.
+
+    ``create`` allocates the per-firm-client sequential ``engagement_number`` and
+    inserts the engagement in a SINGLE transaction: the counter
+    ``UPDATE firm_clients ... RETURNING next_engagement_seq`` takes one row lock
+    on exactly the target firm-client row (tenant-scoped by
+    ``id = %s AND client_id = %s``), so concurrent creates for the same client
+    serialise cleanly while different clients never block each other, and the
+    first insert can never phantom. If the counter UPDATE returns 0 rows the
+    firm-client is unknown or belongs to another tenant — raise, insert nothing.
+    """
+
+    _COLS = (
+        "id, client_id, firm_client_id, engagement_number, description, "
+        "status, created_by, created_at"
+    )
+
+    def create(
+        self,
+        client_id: str,
+        firm_client_id: str,
+        description: str,
+        created_by: str | None = None,
+    ) -> dict:
+        # Single transaction: increment the per-firm-client counter (row lock),
+        # read the new value, then insert the engagement carrying it as
+        # engagement_number. One conn.commit() — NOT two _execute calls, which
+        # would commit separately and lose atomicity of the number allocation.
+        with get_pg_conn() as conn:
+            cur = _dict_cursor(conn)
+            cur.execute(
+                """
+                UPDATE firm_clients
+                   SET next_engagement_seq = next_engagement_seq + 1
+                 WHERE id = %s AND client_id = %s
+                RETURNING next_engagement_seq
+                """,
+                (firm_client_id, client_id),
+            )
+            seq_row = cur.fetchone()
+            if seq_row is None:
+                # Unknown firm-client OR one owned by another tenant — never
+                # allocate a number or insert an engagement for it.
+                cur.close()
+                raise ValueError(
+                    "firm_client not found for this client (unknown or wrong tenant)"
+                )
+            engagement_number = seq_row["next_engagement_seq"]
+            cur.execute(
+                """
+                INSERT INTO engagements
+                    (client_id, firm_client_id, engagement_number, description, created_by)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING *
+                """,
+                (client_id, firm_client_id, engagement_number, description, created_by),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            cur.close()
+            return dict(row)
+
+    def list_for_client(
+        self,
+        client_id: str,
+        firm_client_id: str | None = None,
+        status: str | None = None,
+    ) -> list[dict]:
+        sql = f"SELECT {self._COLS} FROM engagements WHERE client_id = %s"
+        params: list = [client_id]
+        if firm_client_id:
+            sql += " AND firm_client_id = %s"
+            params.append(firm_client_id)
+        if status:
+            sql += " AND status = %s"
+            params.append(status)
+        sql += " ORDER BY created_at DESC"
+        return _fetchall(sql, params)
+
+    def get_for_client(self, client_id: str, engagement_id: str) -> dict | None:
+        return _fetchone(
+            f"SELECT {self._COLS} FROM engagements WHERE id = %s AND client_id = %s",
+            (engagement_id, client_id),
+        )
+
+
+# --- engagement backfill (Phase 2, one-time guarded data step) ---------------
+class EngagementBackfillRepo:
+    """Read/link helpers for the one-time legacy backfill (scripts/backfill_
+    engagements.py). All SQL lives here (architecture gate); the script only
+    orchestrates. Every statement is client-scoped.
+
+    ``client_ref`` is normalised with ``NULLIF(TRIM(client_ref), '')`` so blank
+    and whitespace-only refs collapse to a single NULL "unattributed" bucket per
+    tenant (all legacy ATO uploads land here — they persist no client_ref). The
+    backfill only ever touches rows with ``engagement_id IS NULL``, so a second
+    run finds no buckets and links nothing — idempotent by construction.
+    """
+
+    def distinct_unlinked_buckets(self, client_id: str | None = None) -> list[dict]:
+        """Distinct ``(client_id, normalised client_ref)`` across ``queries`` +
+        ``documents`` with ``engagement_id IS NULL``. Each returned bucket is
+        guaranteed to have at least one unlinked row."""
+        client_pred = " AND client_id = %s" if client_id else ""
+        sql = f"""
+            SELECT DISTINCT client_id, NULLIF(TRIM(client_ref), '') AS client_ref
+            FROM (
+                SELECT client_id, client_ref FROM queries
+                 WHERE engagement_id IS NULL{client_pred}
+                UNION
+                SELECT client_id, client_ref FROM documents
+                 WHERE engagement_id IS NULL{client_pred}
+            ) t
+            ORDER BY client_id, client_ref NULLS FIRST
+        """
+        params: list = [client_id, client_id] if client_id else []
+        return _fetchall(sql, params)
+
+    def link_bucket(self, client_id: str, client_ref: str | None, engagement_id: str) -> int:
+        """Link every unlinked ``queries``/``documents`` row in a bucket to
+        ``engagement_id``. Returns the total number of rows linked. Scoped to the
+        tenant AND the normalised client_ref (NULL for the unattributed bucket);
+        only rows still ``engagement_id IS NULL`` are touched (idempotent)."""
+        # Build the client_ref predicate + params once: NULL uses IS NULL (no
+        # bound value), a real ref matches the normalised value. Both keep the
+        # tenant scope and the engagement_id IS NULL idempotent guard.
+        if client_ref is None:
+            ref_pred = "NULLIF(TRIM(client_ref), '') IS NULL"
+            ref_params: tuple = ()
+        else:
+            ref_pred = "NULLIF(TRIM(client_ref), '') = %s"
+            ref_params = (client_ref,)
+
+        total = 0
+        with get_pg_conn() as conn:
+            cur = conn.cursor()
+            for table in ("queries", "documents"):
+                cur.execute(
+                    f"""
+                    UPDATE {table} SET engagement_id = %s
+                     WHERE client_id = %s
+                       AND {ref_pred}
+                       AND engagement_id IS NULL
+                    """,
+                    (engagement_id, client_id, *ref_params),
+                )
+                total += cur.rowcount
+            conn.commit()
+            cur.close()
+        return total
 
 
 # --- query_sessions ------------------------------------------------------------
@@ -1503,6 +1684,8 @@ class Repositories:
         self.annotations = AnnotationsRepo()
         self.documents = DocumentsRepo()
         self.firm_clients = FirmClientsRepo()
+        self.engagements = EngagementsRepo()
+        self.engagement_backfill = EngagementBackfillRepo()
         self.query_sessions = QuerySessionsRepo()
         self.firm_knowledge = FirmKnowledgeRepo()
         self.knowledge_suggestions = KnowledgeSuggestionsRepo()

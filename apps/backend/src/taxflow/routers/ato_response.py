@@ -1,10 +1,11 @@
 import asyncio
 
 import pdfplumber
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
+from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
 from taxflow.services.ato_correspondence.classifier import ATOLetterClassifier
 from taxflow.services.ato_correspondence.drafter import ATOResponseDrafter
 from taxflow.services.ato_correspondence.handlers import get_handler
@@ -31,8 +32,18 @@ async def list_ato_responses(client=Depends(get_current_client), db=Depends(get_
 
 
 @router.post("/upload")
-async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client), db=Depends(get_db)):
+async def upload_ato_letter(
+    file: UploadFile,
+    engagement_id: str | None = Form(default=None),
+    client_ref: str | None = Form(default=None),
+    client=Depends(get_current_client),
+    db=Depends(get_db),
+):
     file_bytes = await file.read()
+
+    # Reject a spoofed engagement_id that belongs to another tenant.
+    await ensure_engagement_owned(db, client["id"], engagement_id)
+
     extracted_text = _extract_text(file_bytes)
 
     classification = await classifier.classify(extracted_text)
@@ -47,6 +58,13 @@ async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client)
         client_profile=build_client_profile(client),
     )
 
+    # Attribution fix (Phase 2): the ATO upload previously dropped client_ref +
+    # engagement_id entirely. Persist BOTH on the document so ATO responses are
+    # attributed to a real engagement/end-client like queries and generated
+    # documents. Mirror query/documents' best-effort firm_clients.upsert so the
+    # end-client register grows organically (never blocks the draft).
+    await register_firm_client(db, client["id"], client_ref)
+
     result = await asyncio.to_thread(
         db.documents.insert,
         {
@@ -54,6 +72,8 @@ async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client)
             "document_type": "ato_response",
             "title": f"ATO Response - {classification['letter_type']}",
             "content_md": draft["response_letter"],
+            "client_ref": client_ref,
+            "engagement_id": engagement_id,
         },
     )
 

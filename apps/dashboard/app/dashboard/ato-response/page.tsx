@@ -5,6 +5,7 @@ import { Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
 
 interface UploadResult {
   document_id: string;
@@ -52,6 +53,10 @@ export default function AtoResponsePage() {
   const [detail, setDetail] = useState<HistoryDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [approving, setApproving] = useState(false);
+  // Phase 2: attribute the uploaded letter to a first-class engagement. This is
+  // the fix for the flow that previously dropped attribution entirely — both
+  // engagement_id and the end-client name (client_ref) are now sent on upload.
+  const [engagement, setEngagement] = useState<EngagementSelection | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   function loadHistory() {
@@ -107,6 +112,10 @@ export default function AtoResponsePage() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      if (engagement) {
+        formData.append("engagement_id", engagement.engagement.id);
+        formData.append("client_ref", engagement.clientName);
+      }
       const response = await fetch("/api/ato-response/upload", { method: "POST", body: formData });
       if (!response.ok) throw new Error("Upload failed");
       setResult(await response.json());
@@ -131,7 +140,13 @@ export default function AtoResponsePage() {
         <CardContent className="flex flex-col items-center gap-4 py-4 text-center">
           <Upload className="size-6 text-muted-foreground" />
           <input ref={fileInput} type="file" accept="application/pdf" className="text-sm" />
-          <Button onClick={handleUpload} disabled={uploading}>
+          <EngagementPicker
+            value={engagement}
+            onChange={setEngagement}
+            triggerLabel="Choose client & engagement"
+            disabled={uploading}
+          />
+          <Button onClick={handleUpload} disabled={uploading || !engagement}>
             {uploading ? "Analysing letter..." : "Upload and analyse"}
           </Button>
         </CardContent>
