@@ -140,15 +140,27 @@ export default function SourceViewerPage({
           (highlightEl ?? pageEl)?.scrollIntoView({ behavior: "smooth", block: "center" });
         }
 
-        for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
-          if (pageNum === priorityPage) continue;
+        // Fill in the rest of the document AFTER the initial scroll fires.
+        // Forward pages append below the priority page - harmless, nothing
+        // above the viewport moves. Backward pages must be PREPENDED, which
+        // would otherwise push the priority page (and the in-flight smooth
+        // scroll targeting it) further down the container; compensate by
+        // shifting scrollTop by the inserted height so the visible position
+        // never moves.
+        for (let pageNum = priorityPage + 1; pageNum <= doc.numPages; pageNum++) {
+          const wrapper = await renderPage(pageNum);
+          if (wrapper) container.appendChild(wrapper);
+        }
+        const scrollParent = container.parentElement;
+        for (let pageNum = priorityPage - 1; pageNum >= 1; pageNum--) {
           const wrapper = await renderPage(pageNum);
           if (!wrapper) continue;
-          // Keep pages in document order regardless of render completion order.
-          const next = Array.from(container.children).find(
-            (child) => Number((child as HTMLElement).dataset.page) > pageNum
-          );
-          container.insertBefore(wrapper, next ?? null);
+          const prevScrollTop = scrollParent?.scrollTop ?? 0;
+          const prevHeight = container.scrollHeight;
+          container.insertBefore(wrapper, container.firstChild);
+          if (scrollParent) {
+            scrollParent.scrollTop = prevScrollTop + (container.scrollHeight - prevHeight);
+          }
         }
       } catch {
         setStatus("error");
