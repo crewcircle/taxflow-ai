@@ -45,6 +45,125 @@ Rules:
 CONTEXT_TOKEN_LIMIT = 60_000
 CITATION_PATTERN = re.compile(r"\[(\d+)\]")
 
+# --- Phase 4: suggested follow-ups (inline strategy) -------------------------
+# The model is asked to end its output with this sentinel followed by up to
+# FOLLOW_UP_COUNT follow-up questions, one per line. The block is stripped from
+# the answer (split_follow_ups) and emitted as a separate `follow_ups` SSE event,
+# so it never leaks into the answer text or the streamed token events.
+#
+# WHY an inline string delimiter rather than structured output (decision #2522):
+# follow-ups FOLD into the single generate call for ZERO extra LLM calls. Using
+# `response_format`/structured JSON here would force the WHOLE answer to be JSON
+# (breaking token streaming and the prose answer) or require a second, separate
+# LLM call — both rejected. The inline sentinel keeps generation a single
+# streaming call and is parsed out afterwards. (Structured output IS used, and
+# correct, for ClarifyDecision — a small standalone classifier call, not the
+# streamed answer.) The parse is deliberately tolerant: a garbled/missing block
+# leaves the answer unchanged with an empty follow-up list.
+FOLLOW_UP_SENTINEL = "===FOLLOW_UPS==="
+
+
+def follow_up_instruction() -> str:
+    """The trailing follow-up instruction appended to the generate user message
+    when FOLLOW_UP_ENABLED and the inline strategy is active. Returns "" when
+    disabled or when a non-inline strategy is configured, so the prompt is
+    byte-identical to today's when follow-ups are off (dark-launch default)."""
+    if not settings.FOLLOW_UP_ENABLED or settings.FOLLOW_UP_STRATEGY != "inline":
+        return ""
+    n = settings.FOLLOW_UP_COUNT
+    return (
+        f"After your answer (including the Sources section), append a single line "
+        f"containing exactly {FOLLOW_UP_SENTINEL} and then up to {n} likely "
+        "follow-up questions the practitioner might ask next, one per line, with "
+        "no numbering or bullets. Do not reference this instruction in the answer "
+        "itself."
+    )
+
+
+def split_follow_ups(text: str) -> tuple[str, list[str]]:
+    """Split a generated answer into (clean_answer, follow_up_questions).
+
+    Tolerant like ``_parse_citations``: when the ``FOLLOW_UP_SENTINEL`` block is
+    absent or garbled, the answer is returned unchanged with an empty list. When
+    present, everything from the sentinel onward is stripped from the answer and
+    each non-empty trailing line becomes a follow-up question (bullets/numbering
+    trimmed), capped at ``FOLLOW_UP_COUNT``.
+    """
+    if not text or FOLLOW_UP_SENTINEL not in text:
+        return text or "", []
+    head, _, tail = text.partition(FOLLOW_UP_SENTINEL)
+    clean_answer = head.rstrip()
+    questions: list[str] = []
+    for line in tail.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Trim common list markers ("1.", "-", "*", "•") the model may add.
+        stripped = re.sub(r"^\s*(?:\d+[.)]|[-*\u2022])\s*", "", stripped).strip()
+        if stripped:
+            questions.append(stripped)
+    return clean_answer, questions[: settings.FOLLOW_UP_COUNT]
+
+
+# --- Phase 4: clarify round-trip (effective question) -----------------------
+# When a clarify round-trip carries the user's selected clarifications, we build
+# ONE `effective_question` = original question + the clarifications, and use it
+# UNIFORMLY across cache lookup, embedding, retrieval, generation, and trace
+# persistence — never merely appended to the generation prompt. This keeps the
+# whole pipeline (cache key, embedding, retrieval) consistent with what the user
+# actually asked after clarifying.
+
+
+def _clarification_answer(entry: dict) -> str:
+    """Extract the user's answer from one clarification entry, tolerant of the
+    shape the frontend sends (``answer``/``value``/``label``/``selected``/``text``).
+    Lists (multi-select) are joined with ", ". Returns "" when nothing usable."""
+    if not isinstance(entry, dict):
+        return ""
+    for key in ("answer", "value", "label", "selected", "text"):
+        raw = entry.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, (list, tuple)):
+            parts = [str(item).strip() for item in raw if str(item).strip()]
+            if parts:
+                return ", ".join(parts)
+        else:
+            value = str(raw).strip()
+            if value:
+                return value
+    return ""
+
+
+def build_effective_question(
+    question: str, clarifications: list[dict] | None
+) -> str:
+    """Fold the user's clarification answers into a single effective question.
+
+    Returns ``question`` unchanged when there are no clarifications (so the
+    non-clarify path is byte-identical to today). Otherwise appends a
+    "Clarifications provided by the user" block of ``- {prompt}: {answer}`` lines.
+    The result is the ONE string used across cache lookup, embedding, retrieval,
+    generation, and trace persistence (build-time correctness AC).
+    """
+    if not clarifications:
+        return question
+    lines: list[str] = []
+    for entry in clarifications:
+        if not isinstance(entry, dict):
+            continue
+        prompt = str(entry.get("prompt") or entry.get("question") or "").strip()
+        answer = _clarification_answer(entry)
+        if not answer:
+            continue
+        if prompt:
+            lines.append(f"- {prompt}: {answer}")
+        else:
+            lines.append(f"- {answer}")
+    if not lines:
+        return question
+    return question + "\n\nClarifications provided by the user:\n" + "\n".join(lines)
+
 
 def _system_blocks() -> list[dict] | str:
     """The research system prompt as a cacheable content block (Task B1).

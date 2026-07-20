@@ -235,6 +235,30 @@ class Settings(BaseSettings):
     RE_RETRIEVE_ENABLED: bool = False
     RE_RETRIEVE_MIN_TOP_SCORE: float = 0.03
 
+    # --- Phase 4: clarifying questions (dark launch, default OFF) -------------
+    # A cheap deterministic pre-filter (should_clarify, mirroring should_verify)
+    # gates a Haiku ambiguity classifier; when it fires the graph short-circuits
+    # to a terminal `clarify` outcome (NO generation) and the UI re-submits on
+    # the same session with the selected clarifications. Flag-gated OFF pending
+    # eval, mirroring RE_RETRIEVE_ENABLED.
+    #   - CLARIFY_CONFIDENCE_THRESHOLD: the classifier must clear this to clarify;
+    #     below it we answer directly (fail-open, tunable like VERIFY threshold).
+    #   - CLARIFY_MAX_QUESTIONS / CLARIFY_MAX_OPTIONS: anti-annoyance caps.
+    CLARIFY_ENABLED: bool = False
+    CLARIFY_CONFIDENCE_THRESHOLD: float = 0.70
+    CLARIFY_MAX_QUESTIONS: int = 2
+    CLARIFY_MAX_OPTIONS: int = 4
+
+    # --- Phase 4: suggested follow-ups (dark launch, default OFF) -------------
+    # FOLLOW_UP_STRATEGY "inline" (chosen path) folds 2-3 follow-up questions
+    # into the SINGLE generate call as a trailing delimited block (ZERO extra
+    # LLM calls), parsed out tolerantly and emitted as a separate `follow_ups`
+    # SSE event after `final`. "async" is the documented alternative (a separate
+    # gated Haiku call). Flag-gated OFF pending eval.
+    FOLLOW_UP_ENABLED: bool = False
+    FOLLOW_UP_COUNT: int = 3
+    FOLLOW_UP_STRATEGY: str = "inline"
+
     # Reviewer-driven widened retrieval (Task C3): when the inline corrective
     # pass runs, retrieval is re-run with a widened candidate pool (pool_scale=2)
     # threaded as a per-call PARAMETER — never by mutating the global pool

@@ -322,6 +322,27 @@ class QueriesRepo:
             (client_id, session_id, limit),
         )
 
+    def count_session_clarifications(self, client_id: str, session_id: str) -> int:
+        """Count how many prior turns in THIS session asked a clarifying question
+        (Phase 4). A clarify turn persists ``trace.clarify.asked = true``, so this
+        counts queries whose trace carries that marker. Gates the "at most one
+        clarify round per session" anti-annoyance guardrail.
+
+        Pins BOTH client_id and session_id: RLS gives no isolation, so the
+        explicit ``WHERE client_id = %s`` is the only tenant scoping. The trace
+        jsonb marker is read with the ``->'clarify'->>'asked' = 'true'``
+        predicate (no new column / migration).
+        """
+        count = _fetchval(
+            """
+            SELECT COUNT(*) FROM queries
+            WHERE client_id = %s AND session_id = %s
+              AND trace -> 'clarify' ->> 'asked' = 'true'
+            """,
+            (client_id, session_id),
+        )
+        return int(count) if count is not None else 0
+
     def set_re_research_status(self, client_id: str, query_id: str, status: str) -> None:
         # Scoped by BOTH id AND client_id so the async worker can only touch the
         # requesting client's query.

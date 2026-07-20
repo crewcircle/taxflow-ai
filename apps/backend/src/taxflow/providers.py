@@ -30,6 +30,9 @@ _TIER_ALIAS = {
     "classify": "haiku",
     "verify": "haiku",
     "verify_strong": "sonnet",
+    # Phase 4: the clarify ambiguity classifier runs on the cheap tier (Haiku);
+    # the concrete model id is never hardcoded in services (resolved here).
+    "clarify": "haiku",
 }
 
 

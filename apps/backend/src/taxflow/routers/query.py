@@ -17,6 +17,7 @@ from taxflow.middleware.auth import get_current_client
 from taxflow.middleware.trial_gate import check_trial_gate, increment_usage
 from taxflow.services import answer_cache
 from taxflow.services.agents.graph import research_graph
+from taxflow.services.agents.research import build_effective_question
 from taxflow.services.eval.citations import check_citation_validity
 from taxflow.services.eval.cost import run_cost
 from taxflow.services.knowledge.embedder import embed
@@ -43,6 +44,11 @@ class QueryRequest(BaseModel):
     # engagement memos saved for this same client_ref are retrieved as advisory
     # context (already a query param on GET /stream; added here for POST parity).
     client_ref: str | None = None
+    # Phase 4 clarify round-trip: the user's selected clarification answers. When
+    # present, the graph skips the clarify gate and folds them into the single
+    # effective_question used uniformly across cache lookup, embedding, retrieval,
+    # generation and trace persistence. Omitting it (first turn) is unchanged.
+    clarifications: list[dict] | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -59,6 +65,7 @@ def _build_final_trace(
     re_reason: str | None = None,
     re_detail: str | None = None,
     first_pass: dict | None = None,
+    follow_ups: list[str] | None = None,
 ) -> dict:
     """Combine the agent's retrieval/generation trace with the verify (+ optional
     corrective regeneration) stage into the single record persisted on the
@@ -115,6 +122,10 @@ def _build_final_trace(
             "reason": re_reason or "weak_signal",
             "detail": re_detail,
         }
+    # Phase 4 follow-ups: additive block, omitted entirely when empty (same
+    # pattern as re_retrieval) so a query with no follow-ups is byte-identical.
+    if follow_ups:
+        result["follow_ups"] = list(follow_ups)
     return result
 
 
@@ -183,6 +194,36 @@ def _observability_fields(answer: str, citations: list, trace: dict, meta: dict)
         }
 
 
+def _clarify_terminal_update(clarify_decision: dict, start: float) -> dict:
+    """Phase 4: build the completed-query ``db.queries.update`` payload for a
+    clarify terminal outcome (the graph short-circuited to END asking a
+    clarifying question — NO generation ran).
+
+    Shared by both the POST (:func:`submit_query`) and SSE
+    (:func:`stream_query`) endpoints, which persist an identical row: a
+    ``completed`` clarify row whose ``trace.clarify.asked=true`` gates the
+    per-session clarify cap. The endpoints differ only in how they RESPOND
+    afterwards (JSON body vs. a ``clarify`` SSE event + ``[DONE]``), so only the
+    trace + update payload is factored out here.
+    """
+    clarify_trace = {
+        "clarify": {
+            "asked": True,
+            "questions": clarify_decision.get("questions", []),
+            "confidence": clarify_decision.get("confidence", 0.0),
+        }
+    }
+    return {
+        "status": "completed",
+        "final_answer": "",
+        "citations": [],
+        "model_used": "clarify",
+        "wall_time_ms": int((time.time() - start) * 1000),
+        "completed_at": "now()",
+        "trace": clarify_trace,
+    }
+
+
 @router.get("")
 async def list_queries(client=Depends(get_current_client), db=Depends(get_db)):
     """Recent query history for the sidebar - newest first."""
@@ -223,6 +264,12 @@ async def submit_query(
 ):
     start = time.time()
 
+    # Phase 4: fold any clarification answers into a SINGLE effective question
+    # used UNIFORMLY across cache lookup, embedding, retrieval, generation and
+    # trace persistence (build-time correctness AC). On a first turn (no
+    # clarifications) this is byte-identical to body.question.
+    effective_question = build_effective_question(body.question, body.clarifications)
+
     # Task B3: check the per-client DB-backed answer cache before running the
     # pipeline. A hit skips OpenAI embed + Anthropic generation entirely. The key
     # includes the client_id and knowledge_version, so an ingest invalidates and
@@ -235,15 +282,15 @@ async def submit_query(
     cached = (
         None
         if body.session_id
-        else await answer_cache.get_cached_answer(client["id"], body.question)
+        else await answer_cache.get_cached_answer(client["id"], effective_question)
     )
     if cached is not None:
         # A cache hit means this exact question already has a completed row,
         # so count first and persist the new row after (mirrors the
         # count-before-completed ordering used on the non-cached path).
-        repeat_count = await answer_cache.count_prior_asks(client["id"], body.question)
+        repeat_count = await answer_cache.count_prior_asks(client["id"], effective_question)
         query_id = await asyncio.to_thread(
-            _persist_cached_query, db, client, body.question, body.module, cached, start
+            _persist_cached_query, db, client, effective_question, body.module, cached, start
         )
         await increment_usage(client["id"], "queries")
         return {
@@ -268,7 +315,7 @@ async def submit_query(
             {
                 "client_id": client["id"],
                 "user_email": client["email"],
-                "question": body.question,
+                "question": effective_question,
                 "module": body.module,
                 "status": "processing",
                 "session_id": body.session_id,
@@ -277,7 +324,7 @@ async def submit_query(
         )
         return row["id"]
 
-    embed_task = asyncio.create_task(embed(body.question))
+    embed_task = asyncio.create_task(embed(effective_question))
     try:
         query_id = await asyncio.to_thread(_insert_query_row)
     except Exception:
@@ -292,7 +339,7 @@ async def submit_query(
         # The final state carries the (possibly corrected) answer plus the
         # metadata the router persists — no separate agent.run/_maybe_verify.
         initial_state = {
-            "question": body.question,
+            "question": effective_question,
             "client": client,
             "client_id": client["id"],
             "session_id": body.session_id,
@@ -301,8 +348,27 @@ async def submit_query(
             "streaming": False,
             "corrective_count": 0,
             "re_retrieved": False,
+            # Phase 4: the clarify gate is skipped when clarifications are present
+            # (this IS the round-trip answer); the graph routes straight to
+            # generate. On a first turn this is None.
+            "clarifications": body.clarifications,
         }
         final = await research_graph.ainvoke(initial_state)
+
+        # Phase 4 clarify terminal outcome: the graph short-circuited to END
+        # asking a clarifying question — NO generation ran. Persist a completed
+        # clarify row (trace.clarify.asked=true gates the session cap) and return
+        # the questions so the frontend can render the clarify card.
+        clarify_decision = final.get("clarify_decision") or {}
+        if clarify_decision.get("needs_clarification"):
+            clarify_update = _clarify_terminal_update(clarify_decision, start)
+            await asyncio.to_thread(db.queries.update, client["id"], query_id, clarify_update)
+            await increment_usage(client["id"], "queries")
+            return {
+                "query_id": query_id,
+                "clarify": True,
+                "questions": clarify_decision.get("questions", []),
+            }
 
         answer = final["answer"]
         citations = final["citations"]
@@ -314,7 +380,7 @@ async def submit_query(
         # Firm Knowledge suggestion trigger: how many times has this client
         # already asked essentially this question? Counted before the update
         # below marks this row 'completed', so it never counts itself.
-        repeat_count = await answer_cache.count_prior_asks(client["id"], body.question)
+        repeat_count = await answer_cache.count_prior_asks(client["id"], effective_question)
 
         # When a corrective pass regenerated the answer, its metadata (Sonnet
         # model, confidence, token/cache-token counts) replaces the original
@@ -338,6 +404,7 @@ async def submit_query(
             re_reason=final.get("re_reason"),
             re_detail=final.get("re_detail"),
             first_pass=final.get("first_pass"),
+            follow_ups=final.get("follow_ups"),
         )
 
         update = {
@@ -371,7 +438,7 @@ async def submit_query(
         if not body.session_id and _safe_to_cache(verification):
             await answer_cache.store_answer(
                 client["id"],
-                body.question,
+                effective_question,
                 {
                     "answer": stored_answer,
                     "citations": citations,
@@ -388,6 +455,9 @@ async def submit_query(
             "model_used": meta["model_used"],
             "repeat_count": repeat_count,
             "trace": trace,
+            # Phase 4: the 2-3 suggested follow-ups (empty list when disabled or
+            # none produced), so the frontend can render follow-up chips.
+            "follow_ups": final.get("follow_ups", []),
         }
 
     except Exception as e:
@@ -436,6 +506,7 @@ async def stream_query(
     question: str,
     client_ref: str | None = None,
     session_id: str | None = None,
+    clarifications: str | None = None,
     client=Depends(get_current_client),
     _trial=Depends(check_trial_gate),
     db=Depends(get_db),
@@ -450,6 +521,28 @@ async def stream_query(
     "issues": [...]} event checked against this same answer.
     """
     start = time.time()
+
+    # Phase 4: the clarify round-trip forwards the user's selected clarifications
+    # as a JSON-encoded query param. Parse tolerantly (a bad payload just means no
+    # clarifications) and fold them into a SINGLE effective_question used
+    # UNIFORMLY across cache lookup, embedding, retrieval, generation and trace
+    # (build-time correctness AC). On a first turn this equals ``question``.
+    #
+    # B3: we preserve the difference between the param being ABSENT (``None`` →
+    # genuine first turn, may enter the clarify gate) and PRESENT-BUT-EMPTY
+    # (``"[]"`` → a deliberate "skip & answer anyway" from the clarify card, which
+    # decodes to ``[]`` and must go straight to generate, never re-clarify — see
+    # graph.route_after_route_model). So a decoded empty list stays ``[]`` here;
+    # only an absent or malformed param falls back to ``None``.
+    parsed_clarifications: list[dict] | None = None
+    if clarifications:
+        try:
+            decoded = json.loads(clarifications)
+            if isinstance(decoded, list):
+                parsed_clarifications = [c for c in decoded if isinstance(c, dict)]
+        except (ValueError, TypeError):
+            parsed_clarifications = None
+    effective_question = build_effective_question(question, parsed_clarifications)
 
     # Client register (Settings audit follow-up): grows organically from real
     # use rather than requiring firms to pre-seed a client list. Upsert is a
@@ -466,7 +559,7 @@ async def stream_query(
             {
                 "client_id": client["id"],
                 "user_email": client["email"],
-                "question": question,
+                "question": effective_question,
                 "module": "research",
                 "status": status,
                 "client_ref": client_ref,
@@ -483,19 +576,19 @@ async def stream_query(
     cached = (
         None
         if session_id
-        else await answer_cache.get_cached_answer(client["id"], question)
+        else await answer_cache.get_cached_answer(client["id"], effective_question)
     )
     if cached is not None:
         # A cache hit means this exact question already has a completed row, so
         # count prior asks BEFORE persisting the new cached row (mirrors the
         # count-before-completed ordering on the non-cached path) so it never
         # counts itself.
-        repeat_count = await answer_cache.count_prior_asks(client["id"], question)
+        repeat_count = await answer_cache.count_prior_asks(client["id"], effective_question)
         query_id = await asyncio.to_thread(
             _persist_cached_query,
             db,
             client,
-            question,
+            effective_question,
             "research",
             cached,
             start,
@@ -532,7 +625,7 @@ async def stream_query(
     # for both global and firm retrieval inside the graph. Insert first, then
     # await the embed under the query_id so an embed failure marks the row failed
     # rather than leaving it stuck in "processing".
-    embed_task = asyncio.create_task(embed(question))
+    embed_task = asyncio.create_task(embed(effective_question))
     try:
         query_id = await asyncio.to_thread(_insert_query_row, "processing")
     except Exception:
@@ -561,7 +654,7 @@ async def stream_query(
         # overwrite answer/citations/confidence in state — for the `final` event,
         # so `final` always reflects the first-pass streamed answer.
         initial_state = {
-            "question": question,
+            "question": effective_question,
             "client": client,
             "client_id": client["id"],
             "session_id": session_id,
@@ -570,6 +663,9 @@ async def stream_query(
             "streaming": True,
             "corrective_count": 0,
             "re_retrieved": False,
+            # Phase 4: skip the clarify gate on the round-trip answer (folded into
+            # effective_question above); None on a first turn.
+            "clarifications": parsed_clarifications,
         }
         async for mode, chunk in research_graph.astream(
             initial_state, stream_mode=["custom", "values"]
@@ -583,6 +679,34 @@ async def stream_query(
                     first_pass_snapshot = chunk
 
         final = latest_values
+
+        # Phase 4 clarify terminal outcome: the graph short-circuited to END
+        # (needs_clarification) — no tokens streamed, no answer produced. Persist
+        # a completed clarify row (trace.clarify.asked gates the session cap) and
+        # emit a single `clarify` SSE event then [DONE], skipping
+        # token/final/verification/trace/repeat_count.
+        clarify_decision = final.get("clarify_decision") or {}
+        if clarify_decision.get("needs_clarification"):
+            await asyncio.to_thread(
+                db.queries.update,
+                client["id"],
+                query_id,
+                _clarify_terminal_update(clarify_decision, start),
+            )
+            await increment_usage(client["id"], "queries")
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "clarify",
+                        "questions": clarify_decision.get("questions", []),
+                        "query_id": query_id,
+                    }
+                )
+                + "\n\n"
+            )
+            yield "data: [DONE]\n\n"
+            return
 
         # The `final` event carries the FIRST-pass citations/model/confidence
         # captured right after the generate node; the streamed tokens above
@@ -614,6 +738,14 @@ async def stream_query(
             + "\n\n"
         )
 
+        # Phase 4: emit the suggested follow-ups AFTER `final` (and before
+        # verification/trace), so the UI can render follow-up chips beneath the
+        # answer. Only emitted when the generate node produced any (empty when the
+        # feature is off), so the default stream is unchanged.
+        follow_ups = final.get("follow_ups") or []
+        if follow_ups:
+            yield f"data: {json.dumps({'type': 'follow_ups', 'questions': follow_ups})}\n\n"
+
         stored_answer = f"{answer}\n\n{caveat}" if caveat else answer
 
         # If a corrective pass regenerated the answer, its metadata replaces the
@@ -638,7 +770,7 @@ async def stream_query(
 
         # Firm Knowledge suggestion trigger: count before the update below
         # marks this row 'completed', so it never counts itself.
-        repeat_count = await answer_cache.count_prior_asks(client["id"], question)
+        repeat_count = await answer_cache.count_prior_asks(client["id"], effective_question)
 
         trace = _build_final_trace(
             final.get("trace"),
@@ -648,6 +780,7 @@ async def stream_query(
             re_reason=final.get("re_reason"),
             re_detail=final.get("re_detail"),
             first_pass=final.get("first_pass"),
+            follow_ups=final.get("follow_ups"),
         )
 
         # Task C5: persist model_used/confidence/tokens/wall_time on the stream
@@ -691,7 +824,7 @@ async def stream_query(
         if not session_id and _safe_to_cache(verification):
             await answer_cache.store_answer(
                 client["id"],
-                question,
+                effective_question,
                 {
                     "answer": stored_answer,
                     "citations": citations,

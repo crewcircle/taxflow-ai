@@ -77,3 +77,46 @@ class RerankScores(BaseModel):
     """A mapping of candidate index -> relevance score from the re-ranker."""
 
     scores: dict[int, float] = {}
+
+
+# --- Phase 4: clarifying questions -------------------------------------------
+
+
+class ClarifyOption(BaseModel):
+    """One selectable answer to a clarifying question.
+
+    ``label`` is shown to the user; ``value`` is the machine token folded into
+    the effective_question on re-submit. Options are ALWAYS populated (Phase 4
+    requirement A): a clarify decision must present selectable choices, never a
+    free-text-only prompt.
+    """
+
+    label: str
+    value: str
+
+
+class ClarifyQuestion(BaseModel):
+    """A single clarifying question with its selectable options.
+
+    ``allow_free_text`` defaults True so the user can always type an answer the
+    options don't cover; the UI still shows an explicit "Skip — just answer"
+    affordance so the user is never forced to respond.
+    """
+
+    prompt: str
+    options: list[ClarifyOption] = []
+    allow_free_text: bool = True
+
+
+class ClarifyDecision(BaseModel):
+    """Structured ambiguity-classifier result (matches CLARIFY_SYSTEM_PROMPT).
+
+    ``needs_clarification`` gates the terminal clarify outcome; ``confidence`` is
+    compared against ``CLARIFY_CONFIDENCE_THRESHOLD`` so a low-confidence
+    ambiguity verdict still answers directly (fail-open). ``questions`` carries
+    the 1-2 questions, each with 3-4 always-populated options.
+    """
+
+    needs_clarification: bool
+    confidence: float = 0.0
+    questions: list[ClarifyQuestion] = []

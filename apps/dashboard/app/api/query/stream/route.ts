@@ -17,11 +17,16 @@ export async function GET(request: NextRequest) {
   }
   const clientRef = request.nextUrl.searchParams.get("client_ref");
   const sessionId = request.nextUrl.searchParams.get("session_id");
+  // Phase 4: the clarify round-trip forwards the user's selected clarifications
+  // as a JSON-encoded param so the backend folds them into the effective
+  // question. Absent on a first turn.
+  const clarifications = request.nextUrl.searchParams.get("clarifications");
 
   const backendUrl = new URL(`${process.env.NEXT_PUBLIC_API_URL}/query/stream`);
   backendUrl.searchParams.set("question", question);
   if (clientRef) backendUrl.searchParams.set("client_ref", clientRef);
   if (sessionId) backendUrl.searchParams.set("session_id", sessionId);
+  if (clarifications) backendUrl.searchParams.set("clarifications", clarifications);
 
   const backendResponse = await fetch(backendUrl, {
     headers: { Authorization: `Bearer ${session.access_token}` },

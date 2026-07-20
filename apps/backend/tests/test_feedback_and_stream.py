@@ -532,3 +532,118 @@ def _event_type(chunk: str):
     if payload == "[DONE]":
         return None
     return json.loads(payload).get("type")
+
+
+# --- Phase 4: clarify + follow_ups SSE event ordering ------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_clarify_terminal_event():
+    """An ambiguous first turn yields a single `clarify` event then [DONE],
+    skipping token/final/verification/trace/repeat_count. A clarify row with
+    trace.clarify.asked=true is persisted."""
+    import taxflow.routers.query as q
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au"}
+    captured_update = {}
+    mock_db = MagicMock()
+    mock_db.queries.insert.return_value = {"id": "query-1"}
+    mock_db.queries.update.side_effect = lambda cid, qid, payload: captured_update.update(payload)
+
+    async def fake_astream(initial_state, stream_mode=None):
+        # The clarify short-circuit yields no tokens, only a final values snapshot
+        # carrying the needs_clarification verdict.
+        yield (
+            "values",
+            _values(
+                clarify_decision={
+                    "needs_clarification": True,
+                    "confidence": 0.9,
+                    "questions": [
+                        {"prompt": "Which entity?", "options": [], "allow_free_text": True}
+                    ],
+                }
+            ),
+        )
+
+    with patch.object(
+        q, "embed", new=AsyncMock(return_value=[0.0] * 1536)
+    ), patch.object(q, "increment_usage", new=AsyncMock()), patch.object(
+        q.research_graph, "astream", new=fake_astream
+    ), patch.object(
+        q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=None)
+    ), patch.object(
+        q.answer_cache, "count_prior_asks", new=AsyncMock(return_value=0)
+    ):
+        response = await q.stream_query(question="q?", client=fake_client, _trial=fake_client, db=mock_db)
+        chunks = [c async for c in response.body_iterator]
+
+    types = [_event_type(c) for c in chunks]
+    assert types == ["clarify", None]
+    assert chunks[-1] == "data: [DONE]\n\n"
+    # Persisted clarify row gates the session cap.
+    assert captured_update["model_used"] == "clarify"
+    assert captured_update["trace"]["clarify"]["asked"] is True
+
+
+@pytest.mark.asyncio
+async def test_stream_follow_ups_event_after_final():
+    """With follow-ups produced, the `follow_ups` event is emitted right after
+    `final` and before verification/trace; trace persists trace.follow_ups."""
+    import taxflow.routers.query as q
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au"}
+    captured_update = {}
+    mock_db = MagicMock()
+    mock_db.queries.insert.return_value = {"id": "query-1"}
+    mock_db.queries.update.side_effect = lambda cid, qid, payload: captured_update.update(payload)
+
+    async def fake_astream(initial_state, stream_mode=None):
+        yield ("custom", {"token": "answer [1]"})
+        yield (
+            "values",
+            _values(
+                answer="answer [1]",
+                citations=[{"citation": "x"}],
+                confidence=0.9,
+                trace={"retrieval": {}, "generation": {"model": "haiku"}},
+                follow_ups=["What about GST?", "How is CGT applied?"],
+            ),
+        )
+
+    with patch.object(
+        q, "embed", new=AsyncMock(return_value=[0.0] * 1536)
+    ), patch.object(q, "increment_usage", new=AsyncMock()), patch.object(
+        q.research_graph, "astream", new=fake_astream
+    ), patch.object(
+        q.answer_cache, "store_answer", new=AsyncMock()
+    ), patch.object(
+        q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=None)
+    ), patch.object(
+        q.answer_cache, "count_prior_asks", new=AsyncMock(return_value=0)
+    ):
+        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client, db=mock_db)
+        chunks = [c async for c in response.body_iterator]
+
+    types = [_event_type(c) for c in chunks]
+    assert types == [
+        "token",
+        "final",
+        "follow_ups",
+        "verification",
+        "trace",
+        "repeat_count",
+        None,
+    ]
+    # trace.follow_ups persisted additively.
+    assert captured_update["trace"]["follow_ups"] == [
+        "What about GST?",
+        "How is CGT applied?",
+    ]
+    follow_chunk = next(c for c in chunks if _event_type(c) == "follow_ups")
+    import json as _json
+
+    assert _json.loads(follow_chunk.removeprefix("data: ").strip())["questions"] == [
+        "What about GST?",
+        "How is CGT applied?",
+    ]

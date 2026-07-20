@@ -427,3 +427,143 @@ def test_submit_query_session_id_bypasses_cache(client):
             store_mock.assert_not_awaited()
         finally:
             app.dependency_overrides.clear()
+
+
+def test_clarifications_change_embed_and_cache_key(client):
+    """Phase 4 build-time AC (direct router-level proof): a clarification choice
+    must change the text passed to embed()/retrieval AND the cache key — not just
+    the final generation prompt.
+
+    We drive POST /query three times with the SAME base question but different
+    clarifications payloads (``company`` vs ``trust`` vs a repeat of ``company``)
+    and assert, with real embed()/answer_cache spies (no network):
+      (a) the string passed to embed() differs between the two distinct
+          clarifications and both differ from the bare question;
+      (b) the SAME effective_question string is passed to get_cached_answer /
+          count_prior_asks / store_answer (not the bare question);
+      (c) different clarifications produce different cache keys (no false
+          cross-clarification cache hit);
+      (d) an identical repeated clarifications payload hits the cache (same
+          effective_question → same key).
+    """
+    from taxflow.main import app
+    from taxflow.middleware.auth import get_current_client
+    from taxflow.middleware.trial_gate import check_trial_gate
+    from taxflow.db import get_db
+    from taxflow.services import answer_cache as answer_cache_mod
+    import taxflow.routers.query as query_module
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au"}
+
+    mock_db = MagicMock()
+    mock_db.queries.insert.return_value = {"id": "query-1"}
+
+    app.dependency_overrides[get_current_client] = lambda: fake_client
+    app.dependency_overrides[check_trial_gate] = lambda: fake_client
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    base_question = "How is a distribution taxed?"
+
+    # A dict-backed cache double keyed on the REAL normalise_question output, so
+    # the key derivation is exactly the production one — proving the effective
+    # question (not the bare question) is what keys the cache. Records every key
+    # seen by get / store / count so we can assert on them directly.
+    store: dict[str, dict] = {}
+    get_keys: list[str] = []
+    store_keys: list[str] = []
+    count_keys: list[str] = []
+    embed_inputs: list[str] = []
+
+    async def fake_get(client_id, question):
+        key = answer_cache_mod.normalise_question(question)
+        get_keys.append(key)
+        return store.get(key)
+
+    async def fake_store(client_id, question, result):
+        key = answer_cache_mod.normalise_question(question)
+        store_keys.append(key)
+        store[key] = result
+
+    async def fake_count(client_id, question):
+        count_keys.append(answer_cache_mod.normalise_question(question))
+        return 0
+
+    async def fake_embed(text):
+        embed_inputs.append(text)
+        return [0.0] * 1536
+
+    final_state = {
+        "answer": "Answer [1]",
+        "citations": [{"citation": "x"}],
+        "confidence": 0.9,
+        "routed_tier": "haiku",
+        "verification": None,  # None -> _safe_to_cache True, so store_answer fires.
+        "caveat": None,
+        "corrected_meta": None,
+        "input_tokens": 10,
+        "output_tokens": 10,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+
+    company = [{"prompt": "Which entity?", "value": "company"}]
+    trust = [{"prompt": "Which entity?", "value": "trust"}]
+
+    from taxflow.services.agents.research import build_effective_question
+
+    eq_company = build_effective_question(base_question, company)
+    eq_trust = build_effective_question(base_question, trust)
+
+    with patch.object(
+        query_module.research_graph, "ainvoke", new=AsyncMock(return_value=final_state)
+    ), patch.object(
+        query_module, "increment_usage", new_callable=AsyncMock
+    ), patch.object(query_module, "embed", new=fake_embed), patch.object(
+        query_module.answer_cache, "get_cached_answer", new=fake_get
+    ), patch.object(
+        query_module.answer_cache, "store_answer", new=fake_store
+    ), patch.object(
+        query_module.answer_cache, "count_prior_asks", new=fake_count
+    ):
+        try:
+            # 1) company, 2) trust, 3) company again (should hit the cache).
+            for clarifications in (company, trust, company):
+                resp = client.post(
+                    "/query",
+                    json={"question": base_question, "clarifications": clarifications},
+                )
+                assert resp.status_code == 200
+        finally:
+            app.dependency_overrides.clear()
+
+    # Sanity: the two effective questions genuinely differ from each other and
+    # from the bare question (else the rest of the AC is vacuous).
+    assert eq_company != eq_trust
+    assert eq_company != base_question and eq_trust != base_question
+
+    # (a) embed() saw the distinct effective questions (not the bare question).
+    # Third run was a cache hit so it skipped embed -> only two embed calls.
+    assert embed_inputs == [eq_company, eq_trust]
+    assert base_question not in embed_inputs
+
+    # (b) the SAME effective_question string keys every cache method — never the
+    # bare question. Keys are the normalised effective question.
+    key_company = answer_cache_mod.normalise_question(eq_company)
+    key_trust = answer_cache_mod.normalise_question(eq_trust)
+    key_bare = answer_cache_mod.normalise_question(base_question)
+    assert key_bare not in get_keys
+    assert key_bare not in store_keys
+    assert key_bare not in count_keys
+
+    # (c) different clarifications -> different cache keys (no false cross hit).
+    assert key_company != key_trust
+    # First two runs missed (distinct keys), so both were stored.
+    assert set(store_keys) == {key_company, key_trust}
+    # The trust run read its own key and found nothing there (no cross hit).
+    assert get_keys[:2] == [key_company, key_trust]
+
+    # (d) the repeated company payload resolves to the same key and HITS the
+    # cache: its get lookup returns the stored company answer, so the graph and
+    # embed/store were skipped on that third run (only two stores, two embeds).
+    assert get_keys == [key_company, key_trust, key_company]
+    assert store_keys == [key_company, key_trust]  # third run did not re-store
