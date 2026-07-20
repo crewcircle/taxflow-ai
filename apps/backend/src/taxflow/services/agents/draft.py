@@ -3,6 +3,7 @@ import re
 
 from taxflow import providers
 from taxflow.providers import get_relational_data
+from taxflow.services.document_templates import resolve_template
 
 REQUIRED_SECTIONS = [
     "SUMMARY",
@@ -58,20 +59,8 @@ class DraftAgent:
         )
 
         system = (
-            "You are drafting a tax advice memo for an Australian accounting firm.\n"
             f"{voice_instruction}"
-            "Structure requirements (all sections mandatory):\n"
-            "1. SUMMARY (2-3 sentences): Direct answer to the question asked.\n"
-            "2. LEGISLATIVE FRAMEWORK: Key legislation and ATO positions that apply.\n"
-            "   Cite every section using the reference numbers from the research.\n"
-            "3. APPLICATION TO FACTS: How the law applies to this specific situation.\n"
-            "4. CONCLUSION AND RECOMMENDED ACTION: What the client should do.\n"
-            "5. IMPORTANT LIMITATIONS: Note that this is AI-assisted advice requiring\n"
-            "   professional review before reliance.\n\n"
-            "Use Australian English: organisation, recognise, licence (noun), practise (verb),\n"
-            "lodgement, cheque, programme, centre, labour, behaviour.\n\n"
-            "Do not include: generic disclaimers like 'this is general advice only',\n"
-            "American spellings, passive voice without justification."
+            f"{resolve_template(client_id, 'advice_memo')}"
         )
         user = (
             f"Draft a tax advice memo based on this research:\n{research_result['answer']}\n\n"

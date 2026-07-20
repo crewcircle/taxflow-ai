@@ -45,6 +45,7 @@ async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client)
         strategy=strategy,
         original_letter=extracted_text,
         client_profile=build_client_profile(client),
+        client_id=client["id"],
     )
 
     result = await asyncio.to_thread(
@@ -54,6 +55,10 @@ async def upload_ato_letter(file: UploadFile, client=Depends(get_current_client)
             "document_type": "ato_response",
             "title": f"ATO Response - {classification['letter_type']}",
             "content_md": draft["response_letter"],
+            # Phase 5: persist the classified letter type structurally (not just
+            # in the free-text title) so provenance is traceable and the
+            # per-subtype template can be resolved.
+            "ato_letter_type": classification["letter_type"],
         },
     )
 

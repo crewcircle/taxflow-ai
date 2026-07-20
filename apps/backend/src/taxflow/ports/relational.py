@@ -76,6 +76,16 @@ class QuerySessionsRepo(Protocol):
 
 
 @runtime_checkable
+class DocumentTemplatesRepo(Protocol):
+    def list_for_client(self, client_id: str) -> list[dict]: ...
+    def get_for_key(self, client_id: str, template_key: str) -> dict | None: ...
+    def upsert(
+        self, client_id: str, template_key: str, body: str, updated_by: str | None = None
+    ) -> dict: ...
+    def delete(self, client_id: str, template_key: str) -> None: ...
+
+
+@runtime_checkable
 class FirmKnowledgeRepo(Protocol):
     def list_for_client(self, client_id: str) -> list[dict]: ...
     def insert(self, row: dict) -> dict: ...
@@ -188,6 +198,7 @@ class RelationalDataPort(Protocol):
     documents: DocumentsRepo
     firm_clients: FirmClientsRepo
     query_sessions: QuerySessionsRepo
+    document_templates: DocumentTemplatesRepo
     firm_knowledge: FirmKnowledgeRepo
     knowledge_suggestions: KnowledgeSuggestionsRepo
     engagement_context: EngagementContextRepo

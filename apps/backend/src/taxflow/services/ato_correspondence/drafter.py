@@ -1,23 +1,14 @@
 from datetime import date
 
 from taxflow import providers
+from taxflow.services.document_templates import ato_subtype_key, resolve_template
 from taxflow.services.prompt_cache import cacheable_system
 
-SYSTEM_PROMPT = """You are drafting a formal letter to the Australian Taxation Office on behalf of
-an Australian taxpayer. This is a professional correspondence.
-
-Format requirements:
-- Start: 'Dear Commissioner' or 'To the Commissioner of Taxation'
-- Reference line: 'Re: [ATO Reference Number from letter]'
-- Our reference: '[TaxFlow ref: TF-{date}-{id}]'
-- Acknowledge the ATO letter by date and reference number in first paragraph
-- Address each issue raised by the ATO specifically
-- Close: 'Yours faithfully'
-- Signature block: '[Firm name] | [Date]'
-- Maximum 2 pages (approximately 600 words)
-
-Tone: Professional, factual, non-confrontational unless disputing.
-Never: aggressive, emotional, or personal."""
+# The default ato_response system prompt now lives in the code-owned template
+# registry (services/document_templates.py, ATO_RESPONSE_DEFAULT) so a firm can
+# override it in Settings; SYSTEM_PROMPT is kept as a re-export for any importer
+# and equals the registry default verbatim.
+from taxflow.services.document_templates import ATO_RESPONSE_DEFAULT as SYSTEM_PROMPT
 
 
 class ATOResponseDrafter:
@@ -31,6 +22,7 @@ class ATOResponseDrafter:
         strategy: dict,
         original_letter: str,
         client_profile: str = "",
+        client_id: str | None = None,
     ) -> dict:
         today = date.today().isoformat()
         # Task D1: prepend the advisory client-profile steering string (built from
@@ -46,9 +38,18 @@ class ATOResponseDrafter:
             f"Response strategy: {strategy['response_strategy']}\n\n"
             f"Original ATO letter:\n{original_letter}"
         )
-        # The system prompt is large and fully static; cache it as a stable prefix
-        # (Task B1). The per-letter details stay in the user message.
-        system_param = cacheable_system(SYSTEM_PROMPT)
+        # Phase 5: resolve the firm's system prompt for this ATO letter, subtype
+        # first (ato_response:{letter_type}) -> base ato_response -> system
+        # default. Falls back to the byte-identical default when the firm has no
+        # override (or no client_id is threaded, e.g. legacy callers).
+        letter_type = classification.get("letter_type")
+        if client_id and letter_type:
+            system_prompt = resolve_template(client_id, ato_subtype_key(letter_type))
+        else:
+            system_prompt = SYSTEM_PROMPT
+        # The system prompt is large and mostly static; cache it as a stable
+        # prefix (Task B1). The per-letter details stay in the user message.
+        system_param = cacheable_system(system_prompt)
         result = await self._llm.generate(
             messages=[{"role": "user", "content": user}],
             system=system_param,
