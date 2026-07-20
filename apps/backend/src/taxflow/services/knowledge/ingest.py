@@ -5,8 +5,11 @@ CLI smoke test:          uv run python -m taxflow.services.knowledge.ingest --li
 """
 import argparse
 import asyncio
+import logging
 
 from taxflow import providers
+
+logger = logging.getLogger(__name__)
 
 
 async def run_all(limit: int | None = None) -> dict[str, int]:
@@ -15,14 +18,14 @@ async def run_all(limit: int | None = None) -> dict[str, int]:
     for name, factory in providers.get_scraper_registry():
         scraper = factory()
         try:
-            print(f"Running {name}...")
+            logger.info("Running %s...", name)
             count = await scraper.run_delta(limit=limit)
             results[name] = count
             if count > 0:
                 processed_any = True
-            print(f"  {count} documents processed")
+            logger.info("%d documents processed", count)
         except Exception as e:  # noqa: BLE001
-            print(f"  {name} failed: {e}")
+            logger.warning("%s failed: %s", name, e, exc_info=True)
             results[name] = -1
         finally:
             await scraper.aclose()
@@ -38,9 +41,9 @@ async def run_all(limit: int | None = None) -> dict[str, int]:
 
         try:
             new_version = await _asyncio.to_thread(bump_knowledge_version)
-            print(f"  knowledge_version bumped to {new_version}; answer cache invalidated")
+            logger.info("knowledge_version bumped to %s; answer cache invalidated", new_version)
         except Exception as e:  # noqa: BLE001 - a bump failure must not fail the ingest
-            print(f"  knowledge_version bump failed: {e}")
+            logger.warning("knowledge_version bump failed: %s", e, exc_info=True)
 
     return results
 

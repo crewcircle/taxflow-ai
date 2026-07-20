@@ -4,6 +4,8 @@ from fastapi import FastAPI
 
 from taxflow import providers
 from taxflow.config import settings
+from taxflow.logging_config import configure_logging
+from taxflow.middleware.request_logging import RequestLoggingMiddleware
 from taxflow.routers import (
     health,
     auth,
@@ -53,7 +55,11 @@ async def lifespan(app: FastAPI):
     stop_scheduler()
 
 
+configure_logging()
+
 app = FastAPI(title="TaxFlow AI API", version="0.1.0", lifespan=lifespan)
+
+app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(health.router)
 app.include_router(auth.router)

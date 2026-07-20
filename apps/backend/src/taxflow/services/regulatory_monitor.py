@@ -2,12 +2,15 @@
 items in regulatory_alerts. Client-communication drafting is attached when the
 Anthropic API is available; alert detection works without it."""
 import asyncio
+import logging
 import xml.etree.ElementTree as ET
 
 import httpx
 
 from taxflow.adapters.scrapers import AUSTLII_FEEDS, austlii_feed_url
 from taxflow.providers import get_relational_data
+
+logger = logging.getLogger(__name__)
 
 # Number of RSS items to request per feed for a monitor poll (shallow — we only
 # want recently published items, not a deep backfill).
@@ -27,7 +30,7 @@ async def check_feeds() -> int:
                 response = await client.get(feed_url)
                 root = ET.fromstring(response.text)
             except Exception as e:  # noqa: BLE001
-                print(f"regulatory monitor: feed failed {feed_url}: {e}")
+                logger.warning("regulatory monitor: feed failed %s: %s", feed_url, e, exc_info=True)
                 continue
             for item in root.iter("item"):
                 title = (item.findtext("title") or "").strip()
@@ -44,4 +47,4 @@ async def check_feeds() -> int:
 def scheduled_monitor() -> None:
     """Sync wrapper for APScheduler."""
     count = asyncio.run(check_feeds())
-    print(f"regulatory monitor: {count} new alerts")
+    logger.info("regulatory monitor: %d new alerts", count)

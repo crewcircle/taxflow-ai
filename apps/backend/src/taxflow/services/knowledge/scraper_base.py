@@ -1,10 +1,13 @@
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 
 import httpx
 
 from taxflow.providers import get_relational_data
 from taxflow.services.knowledge.pipeline import process_document
+
+logger = logging.getLogger(__name__)
 
 USER_AGENT = "TaxFlowAI/1.0 (research purposes; contact: crewcircle@zohomail.com.au)"
 
@@ -70,7 +73,7 @@ class ScraperBase(ABC):
                 await process_document(text, doc, source_object_key=object_key)
                 processed += 1
             except Exception as e:  # noqa: BLE001 - one bad document must not kill the run
-                print(f"  skip {doc['url']}: {e}")
+                logger.warning("skip %s: %s", doc['url'], e, exc_info=True)
         return processed
 
     async def aclose(self) -> None:
