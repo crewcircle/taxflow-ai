@@ -25,6 +25,11 @@ from langgraph.graph import END, START, StateGraph
 from taxflow import providers
 from taxflow.providers import get_relational_data
 from taxflow.services.agents.draft import DraftAgent
+from taxflow.services.document_templates import (
+    CLIENT_LETTER_ROLE,
+    ensure_au_english,
+    resolve_template,
+)
 
 drafter = DraftAgent()
 
@@ -77,20 +82,13 @@ async def draft_client_letter(state: DocumentState) -> dict:
             if voice_sample
             else ""
         )
-        system = (
-            "You are drafting a letter from an Australian accounting firm directly to their client.\n"
+        # Code-owned role line -> per-firm voice_instruction -> resolved body
+        # (review B1 ordering); AU-English guardrail enforced code-owned
+        # (review B2), idempotent so the default is byte-identical.
+        system = ensure_au_english(
+            f"{CLIENT_LETTER_ROLE}"
             f"{voice_instruction}"
-            "This is a CLIENT-FACING letter, not an internal working paper - write it accordingly:\n"
-            "- Open with a plain-English greeting and state the purpose in the first paragraph.\n"
-            "- Explain the advice in plain English. Do not use internal section headers like "
-            "'SUMMARY' or 'LEGISLATIVE FRAMEWORK', and do not use retrieval/citation-marker notation "
-            "like [1] - if you reference a ruling or provision, name it in the sentence itself.\n"
-            "- Close with a short next-steps paragraph and a signature block "
-            "('Kind regards,' on its own line, firm name below it).\n\n"
-            "Use Australian English: organisation, recognise, licence (noun), practise (verb), "
-            "lodgement, cheque, programme, centre, labour, behaviour.\n\n"
-            "Do not include generic disclaimers like 'this is general advice only', American "
-            "spellings, or internal jargon a client wouldn't recognise."
+            f"{resolve_template(state['client_id'], 'client_letter')}"
         )
         user = (
             f"Rewrite this internal research answer as a client letter:\n{state['content_md']}\n\n"

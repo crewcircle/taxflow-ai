@@ -737,6 +737,63 @@ class FirmClientsRepo:
         )
 
 
+# --- document_templates (firm-level editable drafting templates) -------------
+class DocumentTemplatesRepo:
+    """Phase 5: per-firm editable document templates. Every statement carries a
+    ``client_id`` predicate — RLS gives ZERO tenant isolation, so app-code
+    scoping is the only isolation between firms."""
+
+    def list_for_client(self, client_id: str) -> list[dict]:
+        return _fetchall(
+            """
+            SELECT id, template_key, body, is_active, version,
+                   updated_by, updated_at, created_at
+            FROM document_templates
+            WHERE client_id = %s
+            ORDER BY template_key
+            """,
+            (client_id,),
+        )
+
+    def get_for_key(self, client_id: str, template_key: str) -> dict | None:
+        return _fetchone(
+            """
+            SELECT id, template_key, body, is_active, version,
+                   updated_by, updated_at, created_at
+            FROM document_templates
+            WHERE client_id = %s AND template_key = %s
+            """,
+            (client_id, template_key),
+        )
+
+    def upsert(
+        self, client_id: str, template_key: str, body: str, updated_by: str | None = None
+    ) -> dict:
+        return _execute(
+            """
+            INSERT INTO document_templates (client_id, template_key, body, updated_by)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (client_id, template_key) DO UPDATE
+                SET body = EXCLUDED.body,
+                    version = document_templates.version + 1,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = now()
+            RETURNING id, template_key, body, is_active, version,
+                      updated_by, updated_at, created_at
+            """,
+            (client_id, template_key, body, updated_by),
+            returning=True,
+        )
+
+    def delete(self, client_id: str, template_key: str) -> None:
+        # Reset-to-default = remove the firm row so resolution falls back to the
+        # code-owned system default.
+        _execute(
+            "DELETE FROM document_templates WHERE client_id = %s AND template_key = %s",
+            (client_id, template_key),
+        )
+
+
 # --- query_sessions ------------------------------------------------------------
 class QuerySessionsRepo:
     def list_for_client(self, client_id: str) -> list[dict]:
@@ -1524,6 +1581,7 @@ class Repositories:
         self.annotations = AnnotationsRepo()
         self.documents = DocumentsRepo()
         self.firm_clients = FirmClientsRepo()
+        self.document_templates = DocumentTemplatesRepo()
         self.query_sessions = QuerySessionsRepo()
         self.firm_knowledge = FirmKnowledgeRepo()
         self.knowledge_suggestions = KnowledgeSuggestionsRepo()

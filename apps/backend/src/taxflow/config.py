@@ -286,6 +286,13 @@ class Settings(BaseSettings):
     # the cited-firm-chunk usage_count increment on the answer flow.
     LEARNING_LOOP_ENABLED: bool = True
 
+    # --- Firm-level editable document templates (Phase 5) --------------------
+    # When enabled, the drafting sites resolve the system prompt for a document
+    # type from the firm's stored document_templates row (if present) else the
+    # code-owned system default. Default OFF so the feature ships dark and
+    # behaviour is byte-identical to today until a firm opts in.
+    DOCUMENT_TEMPLATES_ENABLED: bool = False
+
     # --- Eval harness (Workstream B) -----------------------------------------
     # The LLM-as-judge resolves its model through providers.resolve_model, same
     # as every production call-site, so it follows the model-routing invariant
