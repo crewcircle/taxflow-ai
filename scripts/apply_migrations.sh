@@ -232,6 +232,7 @@ SQL
 
 # --- bootstrap mode: --mark-applied-through ----------------------------------
 if [ -n "$MARK_THROUGH" ]; then
+  assert_lock_held
   if ! [[ "$MARK_THROUGH" =~ ^[0-9]{3}$ ]]; then
     echo "ERROR: --mark-applied-through expects a 3-digit version (e.g. 040), got '$MARK_THROUGH'." >&2
     exit 1
