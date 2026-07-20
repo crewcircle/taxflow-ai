@@ -1,7 +1,7 @@
 # TaxFlow AI — Manual Account Setup Runbook
 
 Complete these in order. Each step ends with exactly what to hand back to Claude
-so the rest of the pipeline (Doppler secrets / DNS / Coolify / Supabase migrations)
+so the rest of the pipeline (Doppler secrets / DNS / Docker Compose + Caddy / Supabase migrations)
 can be wired up automatically. Total time: roughly 45-90 minutes, most of it waiting
 on DNS propagation and Stripe business verification.
 
@@ -100,9 +100,38 @@ DROPLET_IP=<x.x.x.x>
 5. Note your **Organization ID** from the URL: `https://supabase.com/dashboard/org/<ORG_ID>/settings`
 
 You do NOT need to manually create the project — once you hand back these two values,
-Claude can create the `taxflow-prod` project via the Supabase Management API and run
-the 8 migrations that are already written and tested in this repo
-(`apps/backend/supabase/migrations/`).
+Claude can create the `taxflow-prod` project via the Supabase Management API. The
+41 migrations in `apps/backend/supabase/migrations/` are then applied
+**automatically on every backend deploy**: `scripts/deploy_backend.sh` runs
+`scripts/apply_migrations.sh` (schema-before-code) before it builds or starts the
+new image, so you never apply migrations by hand. The runner is idempotent
+(tracks applied versions + checksums in a private `taxflow_internal.applied_migrations`
+ledger) and takes a session advisory lock so overlapping deploys can't double-apply.
+
+**One-time bootstrap (before the first automated deploy):** the shipped
+migrations `038`–`041` use bare `CREATE TABLE`/`ADD COLUMN` (not `IF NOT EXISTS`),
+so if any migrations were already applied to prod by hand you must seed the ledger
+once so the runner does not try to re-run them. On the reviewed PR branch, against
+the prod session-pooler URL, run:
+```
+doppler run --project taxflow --config prd -- bash scripts/apply_migrations.sh --mark-applied-through 040
+```
+This records `001`–`040` as applied (after a schema preflight that verifies the
+≤040 objects actually exist) without re-running their SQL; the next deploy then
+applies only `041+`.
+
+**Expand/contract note:** because a migration persists even if the subsequent
+image build / smoke test / rollback fails, only additive (backward-compatible /
+"expand") migrations may auto-apply pre-deploy. Destructive ("contract") changes
+ship in a later deploy after the old code is gone. `038`–`041` are all additive,
+so this holds today.
+
+**New required var — `MIGRATION_DATABASE_URL`:** the runner uses a dedicated
+migration DB URL pointing at the Supabase **session pooler (port 5432)** — IPv4-
+reachable from the GitHub deploy runner and session-scoped (so `--single-transaction`
+DDL + advisory locks work). It refuses a transaction-pooler URL on `:6543`. Add
+`MIGRATION_DATABASE_URL` to the `taxflow`/`prd` Doppler config **and** the
+`deploy-backend` GitHub job env alongside `DATABASE_URL`.
 
 **Hand back to Claude:**
 ```
@@ -212,10 +241,13 @@ not required to get the product running:
 
 Paste the collected `KEY=value` pairs back into the chat (all at once or as you finish
 each section) and Claude will:
-1. Set up Doppler (or local `.env` files) with all of them
-2. Create the Supabase project and run the 8 tested migrations
+1. Set up Doppler (or local `.env` files) with all of them (including `MIGRATION_DATABASE_URL`)
+2. Create the Supabase project; the 41 migrations then apply automatically on the
+   first backend deploy via `scripts/apply_migrations.sh` (do the one-time ledger
+   bootstrap above first if any migrations were already applied by hand)
 3. Point Cloudflare DNS at Vercel (dashboard) and the DigitalOcean droplet (API)
-4. Install Coolify on the droplet and deploy the backend container
+4. Deploy the backend container with Docker Compose + Caddy on the droplet
+   (`deploy/docker-compose.yml`, `deploy/Caddyfile`, driven by `scripts/deploy_backend.sh`)
 5. Deploy the dashboard to Vercel
 6. Run the Week 1 verification checklist end-to-end
 
