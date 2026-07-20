@@ -1,8 +1,11 @@
+import logging
 import xml.etree.ElementTree as ET
 
 from bs4 import BeautifulSoup
 
 from taxflow.services.knowledge.scraper_base import ScraperBase
+
+logger = logging.getLogger(__name__)
 
 # Number of RSS items to request per feed for a KB scrape (deeper backfill than
 # the regulatory monitor's shallow poll).
@@ -25,7 +28,7 @@ class AustLIIScraper(ScraperBase):
                 response = await self._get(feed_url)
                 root = ET.fromstring(response.text)
             except Exception as e:  # noqa: BLE001
-                print(f"  feed failed {feed_url}: {e}")
+                logger.warning("feed failed %s: %s", feed_url, e, exc_info=True)
                 continue
             for item in root.iter("item"):
                 title = (item.findtext("title") or "").strip()

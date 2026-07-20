@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 
 import tiktoken
@@ -6,6 +7,8 @@ import tiktoken
 from taxflow.config import settings
 from taxflow.providers import get_relational_data, get_tokenizer
 from taxflow.services.knowledge.embedder import embed_batch
+
+logger = logging.getLogger(__name__)
 
 _encoder = tiktoken.get_encoding("cl100k_base")
 
@@ -163,7 +166,7 @@ async def process_document(text: str, metadata: dict, source_object_key: str | N
         mapping = {old: metadata["citation"] for old in superseded}
         marked = await asyncio.to_thread(_mark_superseded, mapping)
         if marked:
-            print(f"    {metadata['citation']} marks {superseded} as superseded ({marked} chunks)")
+            logger.info("%s marks %s as superseded (%d chunks)", metadata['citation'], superseded, marked)
 
     return chunk_count
 

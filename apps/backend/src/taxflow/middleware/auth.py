@@ -27,7 +27,9 @@ async def get_current_client(request: Request) -> dict:
     except AuthError as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {e}") from e
 
-    return await asyncio.to_thread(_get_or_provision_client, identity)
+    client = await asyncio.to_thread(_get_or_provision_client, identity)
+    request.state.client_id = client["id"]
+    return client
 
 
 def _get_or_provision_client(identity) -> dict:

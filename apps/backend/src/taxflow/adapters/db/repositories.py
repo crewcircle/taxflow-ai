@@ -30,11 +30,14 @@ methods themselves are plain sync functions.
 from __future__ import annotations
 
 import json
+import logging
 
 import psycopg2.extras
 
 from taxflow.config import settings
 from taxflow.db import get_pg_conn
+
+logger = logging.getLogger(__name__)
 
 
 def _dict_cursor(conn):
@@ -980,7 +983,7 @@ class DemoResetRepo:
                 cur.execute("DELETE FROM query_feedback WHERE client_id = ANY(%s)", (demo_ids,))
                 cur.execute("DELETE FROM queries WHERE client_id = ANY(%s)", (demo_ids,))
                 conn.commit()
-                print(f"demo reset: cleared queries/documents for {len(demo_ids)} demo client(s)")
+                logger.info("demo reset: cleared queries/documents for %d demo client(s)", len(demo_ids))
             cur.close()
 
 
