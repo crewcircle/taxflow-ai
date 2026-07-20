@@ -4,6 +4,7 @@ All endpoints require valid Supabase JWT (enforced by auth middleware).
 """
 import asyncio
 import json
+import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,6 +20,8 @@ from taxflow.services.agents.graph import research_graph
 from taxflow.services.eval.citations import check_citation_validity
 from taxflow.services.eval.cost import run_cost
 from taxflow.services.knowledge.embedder import embed
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/query", tags=["query"])
 # The compiled research graph (Task A6) owns generation + the gated verify /
@@ -139,28 +142,45 @@ def _observability_fields(answer: str, citations: list, trace: dict, meta: dict)
     generation's tier + token counters. ``model_used`` here is the abstract tier
     ("haiku"/"sonnet") priced against ``EVAL_MODEL_PRICING``; None token counters
     are coerced to 0 so a partial usage record never blows up.
+
+    Best-effort: the generation has already run (and been paid for) by the time
+    this is called, so an unexpected failure in the citation checker or cost
+    arithmetic must NEVER fail the request. On any exception we log a warning and
+    return NULL for every observability column, letting the query complete and
+    persist normally with those fields unmeasured.
     """
-    validity = check_citation_validity(
-        {"answer": answer, "citations": citations, "trace": trace}
-    )
-    invalid = {
-        "fabricated_markers": validity["fabricated_markers"],
-        "unmatched_citations": validity["unmatched_citations"],
-    }
-    cost = run_cost(
-        meta["model_used"],
-        meta.get("input_tokens") or 0,
-        meta.get("output_tokens") or 0,
-        cache_read=meta.get("cache_read_input_tokens") or 0,
-        cache_creation=meta.get("cache_creation_input_tokens") or 0,
-    )
-    return {
-        "citation_valid": validity["valid"],
-        # validity["valid"] is precisely "no fabricated and no unmatched", so
-        # store the detail only when the answer is invalid (else NULL).
-        "invalid_citations": None if validity["valid"] else invalid,
-        "cost_usd": cost,
-    }
+    try:
+        validity = check_citation_validity(
+            {"answer": answer, "citations": citations, "trace": trace}
+        )
+        invalid = {
+            "fabricated_markers": validity["fabricated_markers"],
+            "unmatched_citations": validity["unmatched_citations"],
+        }
+        cost = run_cost(
+            meta["model_used"],
+            meta.get("input_tokens") or 0,
+            meta.get("output_tokens") or 0,
+            cache_read=meta.get("cache_read_input_tokens") or 0,
+            cache_creation=meta.get("cache_creation_input_tokens") or 0,
+        )
+        return {
+            "citation_valid": validity["valid"],
+            # validity["valid"] is precisely "no fabricated and no unmatched", so
+            # store the detail only when the answer is invalid (else NULL).
+            "invalid_citations": None if validity["valid"] else invalid,
+            "cost_usd": cost,
+        }
+    except Exception:  # noqa: BLE001 — observability is best-effort, never fatal.
+        logger.warning(
+            "observability computation failed; persisting NULL observability fields",
+            exc_info=True,
+        )
+        return {
+            "citation_valid": None,
+            "invalid_citations": None,
+            "cost_usd": None,
+        }
 
 
 @router.get("")
