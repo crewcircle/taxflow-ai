@@ -164,6 +164,13 @@ class NotificationsRepo(Protocol):
 
 
 @runtime_checkable
+class OpsNotificationsRepo(Protocol):
+    def insert(self, row: dict) -> dict: ...
+    def latest(self, limit: int = 50) -> list[dict]: ...
+    def mark_read(self, notification_id: str) -> None: ...
+
+
+@runtime_checkable
 class RelationalDataPort(Protocol):
     """Facade exposing one repository per aggregate."""
 
@@ -186,6 +193,7 @@ class RelationalDataPort(Protocol):
     health: HealthRepo
     re_research_jobs: ReResearchJobsRepo
     notifications: NotificationsRepo
+    ops_notifications: OpsNotificationsRepo
 
 
 # Convenience alias for adapters that accept extra kwargs dicts.

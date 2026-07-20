@@ -1341,6 +1341,41 @@ class NotificationsRepo:
         )
 
 
+# --- ops notifications -------------------------------------------------------
+class OpsNotificationsRepo:
+    """Operator-scoped notifications (037_ops_notifications).
+
+    Unlike the per-client ``NotificationsRepo`` above, these rows have NO
+    ``client_id`` — they are operator-global (e.g. drift alerts) and read behind
+    the admin token, so there is no per-client scoping predicate here.
+    """
+
+    def insert(self, row: dict) -> dict:
+        cols = list(row.keys())
+        return _execute(
+            _insert_sql("ops_notifications", cols),
+            [_maybe_json(row[c]) for c in cols],
+            returning=True,
+        )
+
+    def latest(self, limit: int = 50) -> list[dict]:
+        return _fetchall(
+            """
+            SELECT id, kind, title, body, metadata, severity, read_at, created_at
+            FROM ops_notifications
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+
+    def mark_read(self, notification_id: str) -> None:
+        _execute(
+            "UPDATE ops_notifications SET read_at = now() WHERE id = %s",
+            (notification_id,),
+        )
+
+
 class Repositories:
     """Concrete ``RelationalDataPort`` facade wiring one repo per aggregate."""
 
@@ -1364,3 +1399,4 @@ class Repositories:
         self.health = HealthRepo()
         self.re_research_jobs = ReResearchJobsRepo()
         self.notifications = NotificationsRepo()
+        self.ops_notifications = OpsNotificationsRepo()
