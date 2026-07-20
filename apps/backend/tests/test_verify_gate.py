@@ -71,6 +71,29 @@ async def test_verify_run_uses_default_model(monkeypatch):
     assert result["overall_status"] == "verified"
 
 
+# --- Regression lock (decision #1204): default config gates verification ------
+# These pin the shipped cost-saving behaviour against the *default* settings
+# (no monkeypatching of thresholds), so a future config change that silently
+# re-enabled always-on verification would fail here.
+
+
+def test_default_config_skips_verify_on_confident_well_cited():
+    # A confident, well-cited answer must NOT trigger verification under defaults
+    # (VERIFY_CONFIDENCE_THRESHOLD=0.60, VERIFY_MIN_CITATIONS=1).
+    citations = [{"citation": "ITAA 1997 s.8-1"}]
+    assert verify_mod.should_verify(0.85, citations, "A confident, well-cited answer [1]") is False
+
+
+def test_default_config_verify_model_is_cheap_tier():
+    from taxflow import providers
+
+    # The default verify model resolves to the cheap 'verify' tier (Haiku), not
+    # the expensive 'verify_strong' (Sonnet) tier, for a non-severe risky answer.
+    model = verify_mod.verify_model_for(0.3, [{"citation": "x"}], "answer [1]")
+    assert model == providers.resolve_model("verify")
+    assert model != providers.resolve_model("verify_strong")
+
+
 # --- Task C3: hardened JSON parsing on fenced / malformed output --------------
 
 
