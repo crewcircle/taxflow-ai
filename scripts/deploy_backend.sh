@@ -109,16 +109,22 @@ sed 's|context: ../apps/backend|context: ../backend|' docker-compose.yml > "$COM
 
 # Record the currently-running tag BEFORE we touch anything, so we can roll back to it.
 # Prefer the persisted marker (survives container recreation); fall back to the running
-# container's image tag; empty means this is the first deploy.
+# container's image tag ONLY when it is a taxflow-backend:<tag> image. The legacy compose
+# file had no explicit image name, so a pre-existing container may run the compose-generated
+# image (e.g. deploy-backend); that is NOT a valid rollback target, so leave PREV_TAG empty
+# (treated as first deploy / no valid rollback) rather than trying to start a bogus tag.
 PREV_TAG=""
 if [ -f "$MARKER_FILE" ]; then
   PREV_TAG="$(cat "$MARKER_FILE")"
 else
-  PREV_TAG="$(docker inspect --format '{{ index .Config.Image }}' \
-    "$(docker compose -f "$COMPOSE_FILE" ps -q backend 2>/dev/null || true)" 2>/dev/null \
-    | sed 's/^taxflow-backend://' || true)"
+  RUNNING_IMAGE="$(docker inspect --format '{{ index .Config.Image }}' \
+    "$(docker compose -f "$COMPOSE_FILE" ps -q backend 2>/dev/null || true)" 2>/dev/null || true)"
+  case "$RUNNING_IMAGE" in
+    taxflow-backend:*) PREV_TAG="${RUNNING_IMAGE#taxflow-backend:}" ;;
+    *) PREV_TAG="" ;;  # legacy/compose-generated image name: no valid rollback target
+  esac
 fi
-echo "Previous tag: ${PREV_TAG:-<none, first deploy>}"
+echo "Previous tag: ${PREV_TAG:-<none, no valid rollback target>}"
 echo "New tag:      $NEW_TAG"
 
 # --- health probe -----------------------------------------------------------
@@ -184,7 +190,7 @@ else
       echo "ROLLBACK health check ALSO FAILED - backend may be down." >&2
     fi
   else
-    echo "First deploy (no previous tag) - no restore possible; failing loudly." >&2
+    echo "No valid previous taxflow-backend:<tag> image to roll back to (first deploy or legacy image); failing loudly." >&2
   fi
   exit 1
 fi
