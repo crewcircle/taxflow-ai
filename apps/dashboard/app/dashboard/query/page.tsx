@@ -503,6 +503,16 @@ function AnswerActionsBar({
                   under Documents{clientRef.trim() ? `, tagged to ${clientRef.trim()}` : " (no client tagged)"}
                 </TooltipContent>
               </Tooltip>
+              {(docType === "advice_memo" || docType === "client_letter") && (
+                <span className="text-xs text-muted-foreground">
+                  Using your firm&apos;s{" "}
+                  {templates.find((t) => t.type === docType)?.label.toLowerCase() ?? "document"} template
+                  {" — "}
+                  <Link href="/dashboard/settings" className="text-accent hover:underline">
+                    customize it
+                  </Link>
+                </span>
+              )}
             </>
           )}
 

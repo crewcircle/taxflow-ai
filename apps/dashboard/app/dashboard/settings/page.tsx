@@ -397,9 +397,10 @@ function DocumentTemplatesCard() {
         <div>
           <h2 className="text-sm font-semibold">Document templates</h2>
           <p className="text-xs text-muted-foreground">
-            Edit the drafting instructions used to generate each document type for your firm.
-            Reset any template to restore the built-in default. Australian English and required
-            section checks always apply.
+            Edit the drafting instructions used to generate advice memos and client letters for
+            your firm - the two document types drafted from a saved answer. Other saved document
+            types keep the answer as written. Reset any template to restore the built-in default.
+            Australian English and required section checks always apply.
           </p>
         </div>
 

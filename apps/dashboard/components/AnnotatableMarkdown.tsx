@@ -461,6 +461,12 @@ export function AnnotatableMarkdown({
         className="min-w-0 flex-1"
         data-testid="annotatable-article"
       >
+        {!isEmpty && threads.length === 0 && (
+          <p className="mb-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <MessageSquare className="size-3.5" />
+            Select any text below to ask a question or leave a note on it
+          </p>
+        )}
         {isEmpty ? (
           <p className="text-sm text-muted-foreground">This document has no content to display.</p>
         ) : (
