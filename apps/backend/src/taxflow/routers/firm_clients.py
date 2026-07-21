@@ -23,6 +23,15 @@ async def list_firm_clients(
     return await asyncio.to_thread(db.firm_clients.list_for_client, client["id"], search)
 
 
+@router.get("/directory")
+async def list_client_directory(client=Depends(get_current_client), db=Depends(get_db)):
+    """Real client directory (Nisho's #5 recommendation): every registered
+    client with how many questions/documents are on file and when they were
+    last touched, so a firm with hundreds of clients has an actual list to
+    browse instead of only the sidebar's "highlight by client" text filter."""
+    return await asyncio.to_thread(db.firm_clients.list_directory, client["id"])
+
+
 @router.post("", status_code=201)
 async def create_firm_client(
     body: FirmClientCreate, client=Depends(get_current_client), db=Depends(get_db)

@@ -908,6 +908,44 @@ class FirmClientsRepo:
             (client_id,),
         )
 
+    def list_directory(self, client_id: str) -> list[dict]:
+        """Real client directory (Nisho's #5 recommendation): one row per
+        registered client with how much work is on file for them and when
+        they were last touched, instead of the sidebar's flat "highlight by
+        client" dimming filter over every question. `queries`/`documents`
+        never got a `firm_client_id` FK (see 026_firm_clients.sql - client_ref
+        stays free text so old history isn't broken), so activity is matched
+        by case-insensitive name against each row's own `client_id` tenant."""
+        return _fetchall(
+            """
+            SELECT
+                fc.id,
+                fc.name,
+                (
+                    SELECT count(*) FROM queries q
+                    WHERE q.client_id = fc.client_id AND lower(q.client_ref) = lower(fc.name)
+                ) AS query_count,
+                (
+                    SELECT count(*) FROM documents d
+                    WHERE d.client_id = fc.client_id AND lower(d.client_ref) = lower(fc.name)
+                ) AS document_count,
+                GREATEST(
+                    (
+                        SELECT max(q.created_at) FROM queries q
+                        WHERE q.client_id = fc.client_id AND lower(q.client_ref) = lower(fc.name)
+                    ),
+                    (
+                        SELECT max(d.created_at) FROM documents d
+                        WHERE d.client_id = fc.client_id AND lower(d.client_ref) = lower(fc.name)
+                    )
+                ) AS last_activity
+            FROM firm_clients fc
+            WHERE fc.client_id = %s
+            ORDER BY last_activity DESC NULLS LAST, fc.name
+            """,
+            (client_id,),
+        )
+
 
 # --- document_templates (firm-level editable drafting templates) -------------
 class DocumentTemplatesRepo:
