@@ -42,6 +42,7 @@ testpaths = ["tests"]
 markers = [
     "accuracy: expensive LLM accuracy suite, excluded from CI",
     "eval: expensive end-to-end LLM+retrieval eval, excluded from CI",
+    "deploygate: schema+read-path gate against a real migrated Postgres",
 ]
 addopts = "-m 'not accuracy and not eval'"
 
