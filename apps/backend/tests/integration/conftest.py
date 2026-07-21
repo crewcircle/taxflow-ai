@@ -52,18 +52,54 @@ def _ensure_auth_role_stub(cur) -> None:
     )
 
 
+def _refuse_if_looks_like_real_data(conn) -> None:
+    """Hard stop before ``DROP SCHEMA public CASCADE`` if ``clients`` already
+    holds any row besides the gate fixture itself.
+
+    This fixture is only safe against an empty/throwaway Postgres — the
+    docstring below has said so since it was written, but nothing enforced it.
+    A local run with ``DATABASE_URL`` accidentally resolved to a real
+    database (e.g. a Doppler ``dev`` config that turns out to alias the same
+    instance as ``prd``) silently wiped production data this way at least
+    once. An empty table or one only ever seeded by a prior gate run is fine
+    and stays fast/idempotent; anything else aborts loudly instead of
+    dropping it.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = 'clients'"
+        )
+        if cur.fetchone() is None:
+            return  # Nothing created yet — genuinely empty DB, nothing to lose.
+        cur.execute("SELECT count(*) FROM public.clients WHERE id != %s", (GATE_CLIENT_ID,))
+        other_rows = cur.fetchone()[0]
+    if other_rows > 0:
+        pytest.fail(
+            "REFUSING TO RUN THE DEPLOY GATE: DATABASE_URL's `clients` table already "
+            f"has {other_rows} row(s) besides the gate fixture ({GATE_CLIENT_ID}). This "
+            "fixture runs `DROP SCHEMA public CASCADE` and would destroy them. "
+            "DATABASE_URL must point at a throwaway/local Postgres — it looks like it is "
+            "pointing at a real database (dev or prod) instead. STOP and fix DATABASE_URL "
+            "(or the Doppler config it comes from) before running this again."
+        )
+
+
 @pytest.fixture(scope="session")
 def _migrated_db():
     """Yield a psycopg2 connection to a Postgres with ALL migrations applied.
 
     Steps (session-scoped, run once):
       1. Connect to ``DATABASE_URL``.
-      2. ``DROP SCHEMA public CASCADE; CREATE SCHEMA public;`` for deterministic
+      2. Refuse to proceed if the target already has non-gate client data (see
+         ``_refuse_if_looks_like_real_data`` — the actual enforcement of the
+         "throwaway Postgres only" contract this fixture has always assumed).
+      3. ``DROP SCHEMA public CASCADE; CREATE SCHEMA public;`` for deterministic
          re-runs (a leftover schema from a prior run must not shadow drift).
-      3. Stub ``auth.role()`` so the 14 RLS-policy migrations' ``CREATE POLICY``
+      4. Stub ``auth.role()`` so the 14 RLS-policy migrations' ``CREATE POLICY``
          DDL parses on bare Postgres. RLS is bypassed anyway (superuser conn) —
          the gate proves schema + query shape, NOT tenant isolation.
-      4. Apply every migration; yield the connection; close on teardown.
+      5. Apply every migration; yield the connection; close on teardown.
     """
     dsn = os.environ["DATABASE_URL"]
     try:
@@ -83,6 +119,7 @@ def _migrated_db():
             )
         pytest.skip(f"No reachable Postgres at DATABASE_URL for the deploy gate: {exc}")
     try:
+        _refuse_if_looks_like_real_data(conn)
         with conn.cursor() as cur:
             # Deterministic re-runs: wipe and recreate the public schema.
             cur.execute("DROP SCHEMA IF EXISTS public CASCADE;")
