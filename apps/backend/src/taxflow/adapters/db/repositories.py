@@ -307,16 +307,21 @@ class QueriesRepo:
         # response shape stable), and filter archived rows only when deleted_at
         # exists (absent => nothing archived yet, so listing all rows is correct).
         present = _present_columns("queries", ("edited_at", "deleted_at"))
-        edited_at = "edited_at" if "edited_at" in present else "NULL AS edited_at"
-        archived = " AND deleted_at IS NULL" if "deleted_at" in present else ""
+        edited_at = "q.edited_at" if "edited_at" in present else "NULL AS edited_at"
+        archived = " AND q.deleted_at IS NULL" if "deleted_at" in present else ""
         return _fetchall(
             f"""
-            SELECT id, question, status, model_used, confidence_score,
-                   verification_result, client_ref, context_note, topic_tag,
-                   session_id, re_research_status, {edited_at}, created_at
-            FROM queries
-            WHERE client_id = %s{archived}
-            ORDER BY created_at DESC
+            SELECT q.id, q.question, q.status, q.model_used, q.confidence_score,
+                   q.verification_result, q.client_ref, q.context_note, q.topic_tag,
+                   q.session_id, q.re_research_status, {edited_at},
+                   q.created_at, q.engagement_id,
+                   e.engagement_number, e.description AS engagement_description,
+                   fc.name AS firm_client_name
+            FROM queries q
+            LEFT JOIN engagements e ON e.id = q.engagement_id
+            LEFT JOIN firm_clients fc ON fc.id = e.firm_client_id
+            WHERE q.client_id = %s{archived}
+            ORDER BY q.created_at DESC
             LIMIT %s
             """,
             (client_id, limit),
@@ -1095,6 +1100,60 @@ class EngagementsRepo:
             f"SELECT {self._COLS} FROM engagements WHERE id = %s AND client_id = %s",
             (engagement_id, client_id),
         )
+
+    def list_directory(self, client_id: str) -> list[dict]:
+        """Per-firm-client rollup of every engagement's activity (Clients &
+        Engagements page): billing is per-engagement, so "which engagement is
+        this?" and "what's outstanding on it?" need to be answerable at a
+        glance instead of only inside the picker dialog.
+
+        Counts/timestamps are joined by ``engagement_id`` (the real FK, unlike
+        ``list_directory`` on ``FirmClientsRepo`` which still name-matches
+        ``client_ref`` for pre-Phase-2 rows) - accurate for anything created
+        after the engagement backfill. ``open_comment_count`` reaches through
+        the polymorphic ``annotations.target_id`` via each engagement's own
+        query/document ids (annotations has no ``engagement_id`` column - see
+        038_annotations.sql). ``last_*_at`` are returned individually so the
+        caller can label the most-recent event type without a SQL CASE.
+        """
+        rows = _fetchall(
+            """
+            SELECT
+                e.id, e.engagement_number, e.description, e.status, e.created_at,
+                fc.id AS firm_client_id, fc.name AS firm_client_name,
+                (SELECT count(*) FROM queries q WHERE q.engagement_id = e.id) AS query_count,
+                (SELECT count(*) FROM documents d WHERE d.engagement_id = e.id) AS document_count,
+                (
+                    SELECT count(*) FROM annotations a
+                    WHERE a.resolved_at IS NULL
+                      AND a.target_id IN (
+                          SELECT id FROM queries WHERE engagement_id = e.id
+                          UNION ALL
+                          SELECT id FROM documents WHERE engagement_id = e.id
+                      )
+                ) AS open_comment_count,
+                (
+                    SELECT count(*) FROM queries q
+                    WHERE q.engagement_id = e.id AND q.re_research_status = 'pending'
+                ) AS pending_re_research_count,
+                (SELECT max(created_at) FROM queries q WHERE q.engagement_id = e.id) AS last_question_at,
+                (SELECT max(created_at) FROM documents d WHERE d.engagement_id = e.id) AS last_document_at,
+                (
+                    SELECT max(a.created_at) FROM annotations a
+                    WHERE a.target_id IN (
+                        SELECT id FROM queries WHERE engagement_id = e.id
+                        UNION ALL
+                        SELECT id FROM documents WHERE engagement_id = e.id
+                    )
+                ) AS last_comment_at
+            FROM engagements e
+            JOIN firm_clients fc ON fc.id = e.firm_client_id
+            WHERE e.client_id = %s
+            ORDER BY fc.name, e.engagement_number DESC
+            """,
+            (client_id,),
+        )
+        return rows
 
 
 # --- engagement backfill (Phase 2, one-time guarded data step) ---------------

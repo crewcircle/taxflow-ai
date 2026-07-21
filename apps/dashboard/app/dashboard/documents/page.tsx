@@ -17,7 +17,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ClientAutocomplete } from "@/components/ClientAutocomplete";
 import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
 import { ResourceRowActions } from "@/components/resource-actions/ResourceRowActions";
 import { ConfirmDialog } from "@/components/resource-actions/ConfirmDialog";
@@ -280,22 +279,17 @@ export default function DocumentsPage() {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="doc-client-ref">Client (optional)</Label>
-              <div className="flex items-center gap-2">
-                <ClientAutocomplete
-                  value={form.client_ref}
-                  onChange={(v) => setForm({ ...form, client_ref: v })}
-                  placeholder="e.g. Smith Dental Practice"
-                />
-                <EngagementPicker
-                  value={engagement}
-                  onChange={(selection) => {
-                    setEngagement(selection);
-                    if (selection) setForm((f) => ({ ...f, client_ref: selection.clientName }));
-                  }}
-                  triggerLabel="Attach engagement"
-                />
-              </div>
+              <Label>Client & engagement</Label>
+              <EngagementPicker
+                value={engagement}
+                onChange={(selection) => {
+                  setEngagement(selection);
+                  if (selection) setForm((f) => ({ ...f, client_ref: selection.clientName }));
+                }}
+                variant="bar"
+                autoRestoreLast
+                triggerLabel="Select client & engagement"
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="doc-content">Content</Label>
@@ -309,11 +303,18 @@ export default function DocumentsPage() {
             </div>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button onClick={handleCreate} disabled={saving || !form.title.trim() || !form.content_md.trim()}>
+                <Button
+                  onClick={handleCreate}
+                  disabled={saving || !form.title.trim() || !form.content_md.trim() || !engagement}
+                >
                   {saving ? "Creating..." : "Create document"}
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Saves this as a new document, tagged to the client above if you entered one</TooltipContent>
+              <TooltipContent>
+                {!engagement
+                  ? "Select a client & engagement above first"
+                  : "Saves this as a new document under the selected engagement"}
+              </TooltipContent>
             </Tooltip>
           </CardContent>
         </Card>

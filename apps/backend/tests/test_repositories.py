@@ -72,7 +72,7 @@ def test_queries_list_recent_scoped_by_client():
         Repositories().queries.list_recent("client-1", 50)
     sql, params = cur.executed[-1]
     assert "FROM queries" in sql
-    assert "WHERE client_id = %s" in sql
+    assert "WHERE q.client_id = %s" in sql
     assert params[0] == "client-1"
 
 
@@ -1327,7 +1327,7 @@ def test_list_recent_both_columns_present():
     sql = _read_sql(cur)
     assert "edited_at" in sql and "NULL AS edited_at" not in sql
     assert "deleted_at IS NULL" in sql
-    assert "WHERE client_id = %s" in sql
+    assert "WHERE q.client_id = %s" in sql
 
 
 def test_list_recent_neither_column_present():
@@ -1337,7 +1337,7 @@ def test_list_recent_neither_column_present():
     sql = _read_sql(cur)
     assert "NULL AS edited_at" in sql
     assert "deleted_at IS NULL" not in sql
-    assert "WHERE client_id = %s" in sql
+    assert "WHERE q.client_id = %s" in sql
 
 
 def test_list_recent_only_deleted_at_present():

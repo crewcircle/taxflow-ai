@@ -162,8 +162,11 @@ export default function AtoResponsePage() {
           <EngagementPicker
             value={engagement}
             onChange={setEngagement}
-            triggerLabel="Choose client & engagement"
+            triggerLabel="Select client & engagement"
             disabled={uploading}
+            variant="bar"
+            autoRestoreLast
+            className="w-full max-w-md"
           />
           <Button onClick={handleUpload} disabled={uploading || !engagement}>
             {uploading ? "Analysing letter..." : "Upload and analyse"}

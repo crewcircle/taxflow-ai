@@ -4,6 +4,7 @@ import {
   FileText,
   LineChart,
   MessageSquareText,
+  Users,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { isOperatorEmail } from "@/lib/admin";
@@ -12,13 +13,16 @@ import { DashboardSidebar } from "@/components/DashboardSidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 
-// 3 destinations by job, not 6-7 flat pages: Ask (research), Workspace
-// (everything generated or in progress for a client - Documents + ATO
-// correspondence used to be two doors to the same job), Library (where
-// TaxFlow's knowledge comes from - firm precedents + shared reference
-// library + the regulatory feed, previously three separate access patterns:
-// a nav item, a header link, and a sidebar bell).
+// 4 destinations by job, not 6-7 flat pages: Clients (which client/engagement
+// needs attention right now - billing is per-engagement, so this is the "what
+// should I work on" landing spot), Ask (research), Workspace (everything
+// generated or in progress for a client - Documents + ATO correspondence used
+// to be two doors to the same job), Library (where TaxFlow's knowledge comes
+// from - firm precedents + shared reference library + the regulatory feed,
+// previously three separate access patterns: a nav item, a header link, and a
+// sidebar bell).
 const NAV_LINKS = [
+  { href: "/dashboard/clients", label: "Clients", icon: Users },
   { href: "/dashboard/query", label: "Ask TaxFlow", icon: MessageSquareText },
   { href: "/dashboard/workspace", label: "Workspace", icon: FileText },
   { href: "/dashboard/library", label: "Library", icon: BookOpen },

@@ -56,6 +56,19 @@ interface EngagementPickerProps {
   triggerLabel?: string;
   className?: string;
   disabled?: boolean;
+  // "button": the original small trigger button, for forms where the picker
+  // is one control among several (Documents, ATO Correspondence).
+  // "bar": a full-width, always-visible header bar - client and engagement
+  // shown as their own labelled segments instead of one condensed string, so
+  // "which engagement is this" never has to be inferred from a truncated
+  // button label. Used on Ask TaxFlow, where billing attribution is the
+  // primary thing the page needs to make obvious.
+  variant?: "button" | "bar";
+  // Bar variant only: on mount, if nothing is selected yet, silently apply
+  // the last engagement used in this tab (same source as the dialog's
+  // one-click "Continue" shortcut) instead of leaving the page blank until
+  // the user re-opens the picker.
+  autoRestoreLast?: boolean;
 }
 
 // sessionStorage keys so a repeat job in the same tab is one click: we remember
@@ -90,9 +103,24 @@ export function EngagementPicker({
   triggerLabel = "Choose client & engagement",
   className,
   disabled,
+  variant = "button",
+  autoRestoreLast = false,
 }: EngagementPickerProps) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<"client" | "engagement">("client");
+
+  // Bar variant: resume the last-used engagement automatically instead of
+  // requiring a click, since Ask TaxFlow is usually a continuation of
+  // whatever the user was just billing time to, not a fresh choice every
+  // page load.
+  useEffect(() => {
+    if (!autoRestoreLast || value) return;
+    const last = readRemembered<EngagementSelection>(LAST_ENGAGEMENT_KEY);
+    if (last) onChange(last);
+    // Only ever run this once on mount - re-running on every `value` change
+    // would fight the user's own selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Step 1 state
   const [clientQuery, setClientQuery] = useState("");
@@ -272,19 +300,59 @@ export function EngagementPicker({
 
   return (
     <>
-      <Button
-        type="button"
-        variant={value ? "secondary" : "outline"}
-        size="sm"
-        className={cn("gap-1.5", className)}
-        onClick={() => handleOpenChange(true)}
-        disabled={disabled}
-      >
-        <Briefcase className="size-3.5" />
-        {value
-          ? `#${value.engagement.engagement_number} · ${value.clientName}`
-          : triggerLabel}
-      </Button>
+      {variant === "bar" ? (
+        <button
+          type="button"
+          onClick={() => handleOpenChange(true)}
+          disabled={disabled}
+          className={cn(
+            "flex w-full items-center gap-3 rounded-xl border px-4 py-2.5 text-left transition-colors",
+            value
+              ? "border-border bg-muted/40 hover:bg-muted/60"
+              : "border-dashed border-accent/40 bg-accent/5 hover:bg-accent/10",
+            className
+          )}
+        >
+          <Briefcase className={cn("size-4 shrink-0", value ? "text-muted-foreground" : "text-accent")} />
+          {value ? (
+            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-0.5">
+              <span className="flex items-center gap-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Client
+                </span>
+                <span className="text-sm font-medium text-foreground">{value.clientName}</span>
+              </span>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Engagement
+                </span>
+                <span className="truncate text-sm font-medium text-foreground">
+                  #{value.engagement.engagement_number} — {value.engagement.description}
+                </span>
+              </span>
+            </span>
+          ) : (
+            <span className="flex-1 text-sm font-medium text-accent">{triggerLabel}</span>
+          )}
+          <span className="shrink-0 text-xs font-medium text-accent">
+            {value ? "Switch" : "Select"}
+          </span>
+        </button>
+      ) : (
+        <Button
+          type="button"
+          variant={value ? "secondary" : "outline"}
+          size="sm"
+          className={cn("gap-1.5", className)}
+          onClick={() => handleOpenChange(true)}
+          disabled={disabled}
+        >
+          <Briefcase className="size-3.5" />
+          {value
+            ? `#${value.engagement.engagement_number} · ${value.clientName}`
+            : triggerLabel}
+        </Button>
+      )}
 
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogContent className="sm:max-w-md">

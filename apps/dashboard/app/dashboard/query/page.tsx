@@ -33,7 +33,6 @@ import {
 import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
 import { AnswerTracePanel, type AnswerTrace } from "@/components/AnswerTracePanel";
 import { CollapsedPanelRail } from "@/components/CollapsedPanelRail";
-import { ClientAutocomplete } from "@/components/ClientAutocomplete";
 import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
 import { ReResearchBadge } from "@/components/ReResearchBadge";
 import { MarkdownDocument } from "@/components/MarkdownDocument";
@@ -333,7 +332,6 @@ interface AnswerActionsBarProps {
   templates: DocumentTemplate[];
   onSave: () => void;
   clientRef: string;
-  onClientRefChange: (v: string) => void;
   onEditAnswer: () => void;
 }
 
@@ -356,7 +354,6 @@ function AnswerActionsBar({
   templates,
   onSave,
   clientRef,
-  onClientRefChange,
   onEditAnswer,
 }: AnswerActionsBarProps) {
   const [rating, setRating] = useState<"up" | "down" | null>(null);
@@ -449,20 +446,6 @@ function AnswerActionsBar({
     <div className="space-y-2 rounded-xl border border-border bg-muted/30 p-2.5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <ClientAutocomplete
-                value={clientRef}
-                onChange={onClientRefChange}
-                className="h-8 w-40 bg-background text-xs"
-              />
-            </TooltipTrigger>
-            <TooltipContent>
-              Tag this answer with a client name - carries through automatically if you save it as a document,
-              and lets you highlight their questions in the history panel
-            </TooltipContent>
-          </Tooltip>
-
           {savedDocId ? (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -756,6 +739,35 @@ export default function QueryPage() {
       .then((r) => (r.ok ? r.json() : []))
       .then(setTemplates)
       .catch(() => {});
+  }, []);
+
+  // The Clients page links here with the engagement pre-selected (everything
+  // it needs is already in the URL, so no extra round-trip to resolve it) -
+  // clicking an engagement there should land you ready to ask a question
+  // against it, not have to reopen the picker.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const engagementId = params.get("engagement_id");
+    if (!engagementId) return;
+    const engagementNumber = Number(params.get("engagement_number"));
+    const description = params.get("engagement_description");
+    const clientName = params.get("client_name");
+    const firmClientId = params.get("firm_client_id");
+    window.history.replaceState(null, "", window.location.pathname);
+    if (!description || !clientName || !firmClientId || Number.isNaN(engagementNumber)) return;
+    const setTimer = setTimeout(() => {
+      handleEngagementChange({
+        engagement: {
+          id: engagementId,
+          firm_client_id: firmClientId,
+          engagement_number: engagementNumber,
+          description,
+          status: "active",
+        },
+        clientName,
+      });
+    }, 0);
+    return () => clearTimeout(setTimer);
   }, []);
 
   function resetPane() {
@@ -1145,11 +1157,25 @@ export default function QueryPage() {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* The single, always-visible answer to "which engagement is this?" -
+            billing is per-engagement, so client + engagement live here, at
+            the top, instead of being split across a session-label header, a
+            client field lower down, and a picker buried in the ask box. */}
+        <div className="shrink-0 border-b border-border p-4 pb-3">
+          <EngagementPicker
+            value={engagement}
+            onChange={handleEngagementChange}
+            disabled={loading}
+            variant="bar"
+            autoRestoreLast
+          />
+        </div>
+
         <div className="flex-1 space-y-4 overflow-y-auto p-6">
           {result && (
             <div className="space-y-0.5">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Engagement name
+                Conversation title
               </p>
               {editingLabel ? (
                 <Input
@@ -1175,8 +1201,9 @@ export default function QueryPage() {
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    Click to rename this engagement - defaults to your first question, but you can give it a
-                    short, client-friendly name to find it later
+                    Click to rename this conversation thread - defaults to your first question. This is just a
+                    label for finding it again in the history panel; it&apos;s separate from the engagement
+                    selected above, which is what billing is attributed to.
                   </TooltipContent>
                 </Tooltip>
               )}
@@ -1302,7 +1329,6 @@ export default function QueryPage() {
                 templates={templates}
                 onSave={handleSaveAsDocument}
                 clientRef={clientRef}
-                onClientRefChange={setClientRef}
                 onEditAnswer={openEditAnswer}
               />
             </div>
@@ -1313,8 +1339,8 @@ export default function QueryPage() {
 
         {/* Ask TaxFlow input - part of the middle column, below the answer,
             so a follow-up is always right where the conversation is. Client
-            tagging lives in the action row above once an answer exists; a
-            brand-new first question can be tagged after it comes back. */}
+            & engagement are chosen once, at the top of the column - not
+            repeated here. */}
         <div className="shrink-0 border-t border-border p-4">
           <Textarea
             data-tour="question-textarea"
@@ -1324,16 +1350,9 @@ export default function QueryPage() {
             placeholder={result ? "Ask a follow-up question..." : "Ask an Australian tax question..."}
           />
           <div className="mt-2 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <EngagementPicker
-                value={engagement}
-                onChange={handleEngagementChange}
-                disabled={loading}
-              />
-              <span className="text-xs text-muted-foreground">
-                {question.length}/{MAX_CHARS} characters
-              </span>
-            </div>
+            <span className="text-xs text-muted-foreground">
+              {question.length}/{MAX_CHARS} characters
+            </span>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -1345,7 +1364,7 @@ export default function QueryPage() {
               </TooltipTrigger>
               <TooltipContent>
                 {!engagement && !result
-                  ? "Choose a client & engagement to start"
+                  ? "Select a client & engagement above to start"
                   : result
                     ? "Continues this engagement with your follow-up"
                     : "Runs your question against the AU tax knowledge base"}
@@ -1391,9 +1410,9 @@ export default function QueryPage() {
         onOpenChange={(open) => {
           if (!open) setDeleteSessionTarget(null);
         }}
-        title="Delete engagement?"
-        description="Every question in this engagement will be removed from your history. This cannot be undone."
-        confirmLabel="Delete engagement"
+        title="Delete conversation?"
+        description="Every question in this conversation thread will be removed from your history. This cannot be undone."
+        confirmLabel="Delete conversation"
         destructive
         pending={mutation.pending}
         onConfirm={async () => {
@@ -1401,7 +1420,7 @@ export default function QueryPage() {
           const deletedSession = deleteSessionTarget;
           const ok = await mutation.remove(
             `/api/query/sessions/${deletedSession}`,
-            "Engagement deleted"
+            "Conversation deleted"
           );
           if (ok) {
             setDeleteSessionTarget(null);
