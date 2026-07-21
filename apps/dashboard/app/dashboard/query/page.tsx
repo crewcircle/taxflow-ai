@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  AlertTriangle,
   BookOpen,
   CheckCircle2,
   Copy,
@@ -40,7 +39,6 @@ import { ReResearchBadge } from "@/components/ReResearchBadge";
 import { MarkdownDocument } from "@/components/MarkdownDocument";
 import { AnnotatableMarkdown } from "@/components/AnnotatableMarkdown";
 import { NOTIFICATIONS_UPDATED_EVENT } from "@/lib/useNotifications";
-import { cn } from "@/lib/utils";
 
 interface DocumentTemplate {
   type: string;
@@ -51,6 +49,11 @@ interface VerificationIssue {
   claim: string;
   issue: string;
   severity: "critical" | "warning" | "note";
+  // The backend's VerificationResult already computes these (see
+  // verify.py's VerificationIssue model) - previously dropped before reaching
+  // the frontend's trimmed type even though the SSE payload carries them.
+  source_says?: string;
+  suggested_correction?: string;
 }
 
 interface Verification {
@@ -524,7 +527,7 @@ function AnswerActionsBar({
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                Edit this answer&apos;s text - saving clears the automated verification badge, since it no longer describes your edited wording
+                Edit this answer&apos;s text - saving clears the automated verification status, since it no longer describes your edited wording
               </TooltipContent>
             </Tooltip>
           )}
@@ -579,87 +582,45 @@ function AnswerActionsBar({
   );
 }
 
-function VerificationBadge({
-  verification,
-  expanded,
-  onToggle,
-}: {
-  verification: Verification;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  if (verification.overall_status === "verified") {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Badge variant="outline" className="gap-1 border-green-600/30 text-green-700">
-            <CheckCircle2 className="size-3" />
-            Verified against sources
-          </Badge>
-        </TooltipTrigger>
-        <TooltipContent>A second pass checked every claim in this answer against the cited sources and found no issues</TooltipContent>
-      </Tooltip>
-    );
-  }
+// One always-visible line answering "can I trust this?" - no click needed to
+// see the count, replacing the old click-to-expand badge + separately-gated
+// issues panel. Per-claim detail now lives behind the inline flagged marks in
+// the answer itself (AnnotatableMarkdown's verificationIssues prop), not a
+// second copy of the same list here.
+function TrustRibbon({ verification }: { verification: Verification }) {
   if (verification.overall_status === "parse_error") return null;
 
   const critical = verification.issues.filter((i) => i.severity === "critical");
-  const label =
-    critical.length > 0
-      ? `${critical.length} claim${critical.length > 1 ? "s" : ""} need review`
-      : `${verification.issues.length} note${verification.issues.length === 1 ? "" : "s"}`;
+  const warning = verification.issues.filter((i) => i.severity === "warning");
+  const clean = verification.overall_status === "verified" || verification.issues.length === 0;
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button type="button" onClick={onToggle}>
-          <Badge
-            variant="outline"
-            className="gap-1 border-amber-600/30 bg-amber-50 text-amber-800 hover:bg-amber-100"
-          >
-            <AlertTriangle className="size-3" />
-            {label}
-            {expanded ? " (hide details)" : " (click for details)"}
-          </Badge>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent>
-        {expanded ? "Hide the list of flagged claims" : "Click to see exactly which claims were flagged and why"}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-// Explains what "needs review" means: which specific claims were flagged and
-// why, so clicking the badge is never a dead end.
-function VerificationIssuesPanel({ issues }: { issues: VerificationIssue[] }) {
-  return (
-    <Card className="border-amber-600/30 bg-amber-50/60">
-      <CardContent className="space-y-3 py-3">
-        <p className="text-sm font-medium text-amber-900">
-          The verification pass checked this answer against the cited sources and flagged the following:
-        </p>
-        <ul className="space-y-2">
-          {issues.map((issue, i) => (
-            <li key={i} className="rounded-md border border-amber-600/20 bg-background p-2 text-sm">
-              <Badge
-                variant="outline"
-                className={cn(
-                  "mb-1 text-[10px] uppercase",
-                  issue.severity === "critical"
-                    ? "border-destructive/30 text-destructive"
-                    : "border-amber-600/30 text-amber-800"
-                )}
-              >
-                {issue.severity}
-              </Badge>
-              <p className="font-medium text-foreground">&ldquo;{issue.claim}&rdquo;</p>
-              <p className="text-muted-foreground">{issue.issue}</p>
-            </li>
-          ))}
-        </ul>
-      </CardContent>
-    </Card>
+    <div className="flex flex-wrap items-center gap-4 rounded-lg bg-muted px-3 py-2 text-sm">
+      {clean ? (
+        <span className="flex items-center gap-1.5 text-green-700">
+          <CheckCircle2 className="size-4" />
+          Verified against sources
+        </span>
+      ) : (
+        <>
+          {critical.length > 0 && (
+            <span className="flex items-center gap-1.5 text-destructive">
+              <span className="size-2 rounded-full bg-destructive" />
+              {critical.length} claim{critical.length === 1 ? "" : "s"} need review
+            </span>
+          )}
+          {warning.length > 0 && (
+            <span className="flex items-center gap-1.5 text-amber-700">
+              <span className="size-2 rounded-full bg-amber-500" />
+              {warning.length} worth a second look
+            </span>
+          )}
+          <span className="text-xs text-muted-foreground">
+            Flagged text is underlined in the answer below - click it to see why
+          </span>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -686,7 +647,6 @@ export default function QueryPage() {
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [verifying, setVerifying] = useState(false);
   const [verification, setVerification] = useState<Verification | null>(null);
-  const [verificationExpanded, setVerificationExpanded] = useState(false);
   const [trace, setTrace] = useState<AnswerTrace | null>(null);
   // Phase 4: the clarify card (shown instead of an answer when the backend asks
   // for clarification) and the follow-up chips (shown beneath a finished answer).
@@ -794,7 +754,6 @@ export default function QueryPage() {
     setStreamedAnswer("");
     setVerification(null);
     setVerifying(false);
-    setVerificationExpanded(false);
     setTrace(null);
     setPromoteState("idle");
     setRepeatCount(0);
@@ -939,7 +898,6 @@ export default function QueryPage() {
       // trace's verification block, so drop them from the pane too.
       setResult((prev) => (prev ? { ...prev, answer: edited } : prev));
       setVerification(null);
-      setVerificationExpanded(false);
       setTrace((prev) => (prev ? { ...prev, verification: { ran: false } } : prev));
       setEditingAnswer(false);
       loadHistory();
@@ -1222,13 +1180,7 @@ export default function QueryPage() {
                   Verifying...
                 </Badge>
               )}
-              {verification && (
-                <VerificationBadge
-                  verification={verification}
-                  expanded={verificationExpanded}
-                  onToggle={() => setVerificationExpanded((v) => !v)}
-                />
-              )}
+              {verification && <TrustRibbon verification={verification} />}
             </div>
           )}
 
@@ -1276,10 +1228,6 @@ export default function QueryPage() {
                   return status ? <ReResearchBadge status={status} /> : null;
                 })()}
 
-              {verificationExpanded && verification && verification.issues.length > 0 && (
-                <VerificationIssuesPanel issues={verification.issues} />
-              )}
-
               {streamComplete && result.query_id ? (
                 // Annotation layer is enabled ONLY after the stream is [DONE]
                 // (streamComplete) and a persisted query_id exists — offsets/hash
@@ -1293,6 +1241,7 @@ export default function QueryPage() {
                   targetId={result.query_id}
                   sourceMarkdown={result.answer}
                   citations={result.citations}
+                  verificationIssues={verification?.issues}
                 />
               ) : (
                 <AnswerWithCitationLinks text={result.answer} citations={result.citations} />
@@ -1454,7 +1403,7 @@ export default function QueryPage() {
           </DialogHeader>
           <p className="text-xs text-muted-foreground">
             Saving replaces the stored answer with your edited text and clears the automated
-            verification badge, since it no longer describes your wording. This does not re-run
+            verification status, since it no longer describes your wording. This does not re-run
             research.
           </p>
           <Textarea

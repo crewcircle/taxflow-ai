@@ -29,6 +29,19 @@ import {
 export type TargetType = "query_answer" | "document";
 export type AuthorKind = "reviewer" | "user";
 
+// A verification-pass finding, anchored inline the same way a user comment is
+// (via `reanchor`'s exact-then-fuzzy match against the rendered blocks) rather
+// than surfaced only in a separate side panel. Structurally compatible with
+// query/page.tsx's own `VerificationIssue` — kept as a local shape so this
+// component doesn't import a page-level type.
+export interface VerificationFlag {
+  claim: string;
+  issue: string;
+  severity: "critical" | "warning" | "note";
+  source_says?: string;
+  suggested_correction?: string;
+}
+
 export interface Annotation {
   id: string;
   client_id: string;
@@ -88,12 +101,14 @@ export function AnnotatableMarkdown({
   sourceMarkdown,
   citations,
   authorName,
+  verificationIssues,
 }: {
   targetType: TargetType;
   targetId: string;
   sourceMarkdown: string;
   citations?: SourceCitation[];
   authorName?: string | null;
+  verificationIssues?: VerificationFlag[];
 }) {
   const articleRef = useRef<HTMLDivElement>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
@@ -113,8 +128,23 @@ export function AnnotatableMarkdown({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState("");
 
+  // Which flagged claim's detail is open (click on an inline verify-mark).
+  const [activeVerifyIssue, setActiveVerifyIssue] = useState<VerificationFlag | null>(null);
+
   const blocks = useMemo(() => splitBlocks(sourceMarkdown), [sourceMarkdown]);
   const isEmpty = sourceMarkdown.trim().length === 0;
+
+  // Anchor each flagged claim into the rendered blocks via the same
+  // exact-then-fuzzy `reanchor` used for stale user comments — a claim missing
+  // here (paraphrased beyond what the fuzzy fallback accepts) simply isn't
+  // inline-marked; it's never silently dropped from the underlying data, only
+  // from this particular presentation.
+  const verifyAnchors = useMemo(() => {
+    if (!verificationIssues?.length) return [];
+    return verificationIssues
+      .map((issue) => ({ issue, anchor: reanchor(blocks, issue.claim, 0) }))
+      .filter((v): v is { issue: VerificationFlag; anchor: AnchorOffsets } => v.anchor !== null);
+  }, [verificationIssues, blocks]);
 
   const loadAnnotations = useCallback(async () => {
     try {
@@ -350,14 +380,43 @@ export function AnnotatableMarkdown({
   useEffect(() => {
     const root = articleRef.current;
     if (!root) return;
-    // Clear previous highlights (unwrap our marks).
-    root.querySelectorAll("mark[data-annotation]").forEach((el) => {
+    // Clear previous highlights (unwrap our marks) - both comment marks and
+    // verification-flag marks share this pass since both are pure derived
+    // decoration recomputed from current props/state on every run.
+    root.querySelectorAll("mark[data-annotation], mark[data-verify-flag]").forEach((el) => {
       const parent = el.parentNode;
       if (!parent) return;
       while (el.firstChild) parent.insertBefore(el.firstChild, el);
       parent.removeChild(el);
       parent.normalize();
     });
+
+    for (const { issue, anchor } of verifyAnchors) {
+      const quoted = anchor.quotedText.trim();
+      if (!quoted) continue;
+      const blockEl = root.querySelector<HTMLElement>(`[data-block-index="${anchor.blockIndex}"]`);
+      if (!blockEl) continue;
+      const srcBlock = blocks[anchor.blockIndex];
+      const occurrence = srcBlock
+        ? occurrenceBeforeOffset(srcBlock.text, anchor.startOffset, quoted)
+        : 0;
+      const severityClass =
+        issue.severity === "critical"
+          ? "shadow-[inset_0_-2px_0_theme(colors.destructive.DEFAULT)]"
+          : issue.severity === "warning"
+            ? "shadow-[inset_0_-2px_0_theme(colors.amber.500)]"
+            : "shadow-[inset_0_-2px_0_theme(colors.slate.400)]";
+      markOccurrenceInBlock(blockEl, quoted, occurrence, () => {
+        const mark = document.createElement("mark");
+        mark.dataset.verifyFlag = issue.severity;
+        mark.className = cn("cursor-pointer rounded-sm bg-transparent", severityClass);
+        mark.addEventListener("click", (e) => {
+          e.stopPropagation();
+          setActiveVerifyIssue(issue);
+        });
+        return mark;
+      });
+    }
 
     for (const thread of visibleThreads) {
       if (!thread.anchor) continue;
@@ -392,7 +451,7 @@ export function AnnotatableMarkdown({
         return mark;
       });
     }
-  }, [visibleThreads, blocks, sourceMarkdown, activeThreadId]);
+  }, [visibleThreads, blocks, sourceMarkdown, activeThreadId, verifyAnchors]);
 
   return (
     <div className="flex gap-4">
@@ -659,6 +718,59 @@ export function AnnotatableMarkdown({
             </Button>
             <Button onClick={() => void createAnnotation()} disabled={saving || !composerBody.trim()}>
               {saving ? "Saving…" : composerKind === "user" ? "Add question" : "Add comment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* verification-flag detail — opened by clicking an inline flagged claim */}
+      <Dialog open={activeVerifyIssue != null} onOpenChange={(open) => !open && setActiveVerifyIssue(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle
+                className={cn(
+                  "size-4",
+                  activeVerifyIssue?.severity === "critical" ? "text-destructive" : "text-amber-600"
+                )}
+              />
+              {activeVerifyIssue?.severity === "critical"
+                ? "Needs review before relying on this"
+                : activeVerifyIssue?.severity === "warning"
+                  ? "Worth a second look"
+                  : "Note"}
+            </DialogTitle>
+          </DialogHeader>
+          {activeVerifyIssue && (
+            <div className="space-y-3 text-sm">
+              <div className="rounded-lg bg-muted px-3 py-2">
+                <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Flagged text
+                </span>
+                &ldquo;{activeVerifyIssue.claim}&rdquo;
+              </div>
+              <p className="text-foreground">{activeVerifyIssue.issue}</p>
+              {activeVerifyIssue.source_says && (
+                <div>
+                  <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    What the source actually says
+                  </span>
+                  <p className="text-muted-foreground">{activeVerifyIssue.source_says}</p>
+                </div>
+              )}
+              {activeVerifyIssue.suggested_correction && (
+                <div>
+                  <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Suggested correction
+                  </span>
+                  <p className="text-muted-foreground">{activeVerifyIssue.suggested_correction}</p>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setActiveVerifyIssue(null)}>
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>
