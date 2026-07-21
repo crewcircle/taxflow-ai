@@ -467,7 +467,7 @@ function AnswerActionsBar({
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button asChild variant="secondary" size="sm">
-                  <Link href="/dashboard/documents">View saved document →</Link>
+                  <Link href="/dashboard/workspace">View saved document →</Link>
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Opens the Documents list where this was just saved</TooltipContent>

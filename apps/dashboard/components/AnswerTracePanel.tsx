@@ -180,7 +180,11 @@ export function AnswerTracePanel({
   onPromote?: () => void;
   promoteState?: "idle" | "saving" | "saved" | "error";
 }) {
-  const [open, setOpen] = useState(false);
+  // Open by default: the Sources rail beside it is already always-visible
+  // (no toggle), so a closed trace panel was the one remaining "click to find
+  // out whether you can trust this" step - full transparency means not
+  // hiding it behind that click.
+  const [open, setOpen] = useState(true);
 
   const { retrieval, firm, session, re_retrieval, passes, verification } = trace;
 

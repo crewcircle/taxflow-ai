@@ -31,7 +31,11 @@ export function RegulatoryBellLink({ collapsed }: { collapsed?: boolean }) {
     <Tooltip>
       <TooltipTrigger asChild>
         <div className="relative" onClick={markSeen}>
-          <DashboardNavLink href="/dashboard/regulatory" icon={<Bell className="size-4" />} collapsed={collapsed}>
+          <DashboardNavLink
+            href="/dashboard/library?tab=reference"
+            icon={<Bell className="size-4" />}
+            collapsed={collapsed}
+          >
             Regulatory updates
           </DashboardNavLink>
           {hasUnread && (

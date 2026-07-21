@@ -4,7 +4,6 @@ import {
   FileText,
   LineChart,
   MessageSquareText,
-  ScrollText,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { isOperatorEmail } from "@/lib/admin";
@@ -13,11 +12,16 @@ import { DashboardSidebar } from "@/components/DashboardSidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 
+// 3 destinations by job, not 6-7 flat pages: Ask (research), Workspace
+// (everything generated or in progress for a client - Documents + ATO
+// correspondence used to be two doors to the same job), Library (where
+// TaxFlow's knowledge comes from - firm precedents + shared reference
+// library + the regulatory feed, previously three separate access patterns:
+// a nav item, a header link, and a sidebar bell).
 const NAV_LINKS = [
   { href: "/dashboard/query", label: "Ask TaxFlow", icon: MessageSquareText },
-  { href: "/dashboard/documents", label: "Documents", icon: FileText },
-  { href: "/dashboard/ato-response", label: "ATO correspondence", icon: ScrollText },
-  { href: "/dashboard/knowledge", label: "Our Firm's Precedents", icon: BookOpen },
+  { href: "/dashboard/workspace", label: "Workspace", icon: FileText },
+  { href: "/dashboard/library", label: "Library", icon: BookOpen },
 ];
 
 // The analytics page is operator-only (its backend is gated behind an admin

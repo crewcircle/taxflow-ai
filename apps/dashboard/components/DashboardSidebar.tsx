@@ -19,12 +19,14 @@ function humanizeType(type: string): string {
   return type.replace(/_/g, " ");
 }
 
-// Preview counts shown in a tooltip for these three nav items, so the user
-// knows how much is in each section before clicking in.
-const COUNT_TOOLTIPS: Record<string, { fetchUrl: string; noun: string }> = {
-  "/dashboard/documents": { fetchUrl: "/api/documents", noun: "document" },
-  "/dashboard/ato-response": { fetchUrl: "/api/ato-response", noun: "correspondence item" },
-  "/dashboard/knowledge": { fetchUrl: "/api/firm-knowledge", noun: "item" },
+// Preview counts shown in a tooltip for these nav items, so the user knows
+// how much is in each section before clicking in. Workspace merges two
+// resource types (documents + ATO correspondence), so it fetches both and
+// sums them; Library's count is just the firm's own precedents (the shared
+// reference library's 600+ sources isn't a meaningful "preview" number).
+const COUNT_TOOLTIPS: Record<string, { fetchUrls: string[]; noun: string }> = {
+  "/dashboard/workspace": { fetchUrls: ["/api/documents", "/api/ato-response"], noun: "item" },
+  "/dashboard/library": { fetchUrls: ["/api/firm-knowledge"], noun: "firm precedent" },
 };
 
 const STORAGE_KEY = "taxflow_nav_collapsed";
@@ -47,11 +49,17 @@ export function DashboardSidebar({ navLinks, businessName, businessType }: Dashb
   }, []);
 
   useEffect(() => {
-    Object.entries(COUNT_TOOLTIPS).forEach(([href, { fetchUrl }]) => {
-      fetch(fetchUrl)
-        .then((r) => (r.ok ? r.json() : []))
-        .then((d: unknown[]) => setCounts((prev) => ({ ...prev, [href]: d.length })))
-        .catch(() => {});
+    Object.entries(COUNT_TOOLTIPS).forEach(([href, { fetchUrls }]) => {
+      Promise.all(
+        fetchUrls.map((url) =>
+          fetch(url)
+            .then((r) => (r.ok ? r.json() : []))
+            .then((d: unknown[]) => (Array.isArray(d) ? d.length : 0))
+            .catch(() => 0)
+        )
+      ).then((counts) =>
+        setCounts((prev) => ({ ...prev, [href]: counts.reduce((a, b) => a + b, 0) }))
+      );
     });
   }, []);
 
