@@ -4,8 +4,11 @@ Kept deliberately small: relational access still goes through ``db`` (the
 repositories facade), so this module holds only cross-router glue, no SQL.
 """
 import asyncio
+import logging
 
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
 
 
 async def ensure_engagement_owned(db, client_id: str, engagement_id: str | None) -> None:
@@ -33,12 +36,22 @@ async def register_firm_client(db, client_id: str, client_ref: str | None) -> No
     The client register (Settings audit follow-up) grows organically from real
     use rather than requiring firms to pre-seed a client list. ``upsert`` is a
     no-op on repeat names (``ON CONFLICT DO NOTHING``) and must never block the
-    job it accompanies — a failure here is swallowed so answering the query /
-    saving the document / drafting the ATO reply always proceeds.
+    job it accompanies — a failure here is logged, not raised, so answering
+    the query / saving the document / drafting the ATO reply always proceeds.
+    A silently-dropped failure here previously left a client in
+    ``documents.client_ref``/``queries.client_ref`` with no matching row in
+    ``firm_clients``, which is exactly what made the client picker unable to
+    find real, existing clients — logging it is what makes that gap visible
+    instead of invisible.
     """
     if not client_ref:
         return
     try:
         await asyncio.to_thread(db.firm_clients.upsert, client_id, client_ref)
-    except Exception:  # noqa: BLE001 - never block the primary job
-        pass
+    except Exception:
+        logger.warning(
+            "register_firm_client failed for client_id=%s client_ref=%r",
+            client_id,
+            client_ref,
+            exc_info=True,
+        )

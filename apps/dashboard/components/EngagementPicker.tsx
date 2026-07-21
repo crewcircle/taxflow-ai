@@ -22,6 +22,17 @@ interface FirmClient {
   name: string;
 }
 
+// The search endpoint can also return names that have real work on file
+// (documents/queries) but never made it into the firm_clients register — a
+// best-effort background upsert that can miss a name. Surfaced instead of
+// silently omitted so a client who plainly exists never looks like they
+// don't (see FirmClientsRepo.list_for_client's fallback).
+interface FirmClientSuggestion {
+  id: string | null;
+  name: string;
+  registered: boolean;
+}
+
 export interface Engagement {
   id: string;
   firm_client_id: string;
@@ -85,7 +96,7 @@ export function EngagementPicker({
 
   // Step 1 state
   const [clientQuery, setClientQuery] = useState("");
-  const [suggestions, setSuggestions] = useState<FirmClient[]>([]);
+  const [suggestions, setSuggestions] = useState<FirmClientSuggestion[]>([]);
   const [selectedClient, setSelectedClient] = useState<FirmClient | null>(null);
   const [creatingClient, setCreatingClient] = useState(false);
 
@@ -106,7 +117,7 @@ export function EngagementPicker({
       const search = clientQuery.trim();
       fetch(`/api/firm-clients${search ? `?search=${encodeURIComponent(search)}` : ""}`)
         .then((r) => (r.ok ? r.json() : []))
-        .then((rows: FirmClient[]) => setSuggestions(Array.isArray(rows) ? rows : []))
+        .then((rows: FirmClientSuggestion[]) => setSuggestions(Array.isArray(rows) ? rows : []))
         .catch(() => setSuggestions([]));
     }, 200);
     return () => clearTimeout(handle);
@@ -156,24 +167,48 @@ export function EngagementPicker({
     loadEngagements(client.id);
   }
 
+  // Get-or-create by name: idempotent on the backend, so this both creates a
+  // brand-new client AND resolves an "unregistered" suggestion (one with real
+  // work on file but no firm_clients row yet) to a real id in one call.
+  async function resolveClient(name: string): Promise<FirmClient> {
+    const response = await fetch("/api/firm-clients", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) throw new Error("Failed");
+    return response.json();
+  }
+
+  async function selectSuggestion(suggestion: FirmClientSuggestion) {
+    if (suggestion.registered && suggestion.id) {
+      await selectClient({ id: suggestion.id, name: suggestion.name });
+      return;
+    }
+    setCreatingClient(true);
+    setError(null);
+    try {
+      const resolved = await resolveClient(suggestion.name);
+      await selectClient(resolved);
+    } catch {
+      setError("Could not select that client — please try again");
+    } finally {
+      setCreatingClient(false);
+    }
+  }
+
   async function handleClientContinue() {
     setError(null);
     const typed = clientQuery.trim();
     if (!typed) return;
     const exact = suggestions.find((c) => c.name.toLowerCase() === typed.toLowerCase());
     if (exact) {
-      await selectClient(exact);
+      await selectSuggestion(exact);
       return;
     }
     setCreatingClient(true);
     try {
-      const response = await fetch("/api/firm-clients", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: typed }),
-      });
-      if (!response.ok) throw new Error("Failed");
-      const created: FirmClient = await response.json();
+      const created = await resolveClient(typed);
       await selectClient(created);
     } catch {
       setError("Could not create that client — please try again");
@@ -304,14 +339,23 @@ export function EngagementPicker({
 
               <ul className="max-h-48 divide-y divide-border overflow-y-auto rounded-lg border border-border">
                 {suggestions.map((c) => (
-                  <li key={c.id}>
+                  <li key={c.id ?? c.name}>
                     <button
                       type="button"
                       className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-muted"
-                      onClick={() => selectClient(c)}
+                      onClick={() => selectSuggestion(c)}
+                      disabled={creatingClient}
                     >
                       <User className="size-4 text-muted-foreground" />
-                      <span className="flex-1 text-sm font-medium">{c.name}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium">{c.name}</span>
+                        {!c.registered && (
+                          <span className="block text-xs text-muted-foreground">
+                            Has work on file, not yet in your client list — selecting it adds
+                            it
+                          </span>
+                        )}
+                      </span>
                     </button>
                   </li>
                 ))}

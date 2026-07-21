@@ -847,17 +847,44 @@ class FirmClientsRepo:
 
     def list_for_client(self, client_id: str, search: str | None = None) -> list[dict]:
         if search:
-            return _fetchall(
+            registered = _fetchall(
                 """
-                SELECT id, name FROM firm_clients
+                SELECT id, name, true AS registered FROM firm_clients
                 WHERE client_id = %s AND name ILIKE %s
                 ORDER BY name
                 LIMIT 20
                 """,
                 (client_id, f"%{search}%"),
             )
+            if len(registered) >= 20:
+                return registered
+            # Defense in depth (see routers/_shared.py::register_firm_client):
+            # the register is populated by a best-effort upsert that can miss
+            # a name if that upsert ever fails. Fall back to documents'
+            # free-text client_ref for names that exist there but never made
+            # it into firm_clients, so a real client search never goes from
+            # "found nothing" to "create new" when the name plainly has work
+            # on file already. Excludes names already in `registered` so the
+            # same client doesn't appear twice.
+            seen = {r["name"].lower() for r in registered}
+            unregistered = _fetchall(
+                """
+                SELECT DISTINCT client_ref AS name, false AS registered
+                FROM documents
+                WHERE client_id = %s AND client_ref ILIKE %s
+                ORDER BY client_ref
+                LIMIT %s
+                """,
+                (client_id, f"%{search}%", 20 - len(registered)),
+            )
+            registered.extend(
+                {"id": None, "name": row["name"], "registered": False}
+                for row in unregistered
+                if row["name"].lower() not in seen
+            )
+            return registered
         return _fetchall(
-            "SELECT id, name FROM firm_clients WHERE client_id = %s ORDER BY name LIMIT 200",
+            "SELECT id, name, true AS registered FROM firm_clients WHERE client_id = %s ORDER BY name LIMIT 200",
             (client_id,),
         )
 
