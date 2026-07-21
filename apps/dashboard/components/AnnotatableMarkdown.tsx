@@ -23,6 +23,7 @@ import {
   reanchor,
   sourceHash,
   occurrenceBeforeOffset,
+  stripMarkdownEmphasis,
   type AnchorOffsets,
 } from "@/lib/annotations/tokenizer";
 
@@ -406,7 +407,13 @@ export function AnnotatableMarkdown({
           : issue.severity === "warning"
             ? "shadow-[inset_0_-2px_0_theme(colors.amber.500)]"
             : "shadow-[inset_0_-2px_0_theme(colors.slate.400)]";
-      markOccurrenceInBlock(blockEl, quoted, occurrence, () => {
+      // `quoted` is copied from the raw markdown source (it's the claim
+      // VerifyAgent quoted), so it may still carry "**bold**"/"`code`" syntax
+      // that never appears as literal characters in the rendered DOM - strip
+      // it before searching rendered text nodes. Comment quotedText never
+      // carries this syntax (it comes from an actual browser selection of
+      // already-rendered text), so that path deliberately isn't touched.
+      markOccurrenceInBlock(blockEl, stripMarkdownEmphasis(quoted), occurrence, () => {
         const mark = document.createElement("mark");
         mark.dataset.verifyFlag = issue.severity;
         mark.className = cn("cursor-pointer rounded-sm bg-transparent", severityClass);
@@ -817,12 +824,17 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 /**
- * Wrap the `occurrence`-th (0-based) instance of `needle` within a single text
- * node under `blockEl` using a freshly built <mark> (from `makeMark`). Occurrence
- * counting spans all text nodes in the block so a repeated span highlights the
- * intended one. Multi-node matches are skipped (the gutter still shows the
- * thread); this mirrors the prior single-text-node constraint but scoped to the
- * source block + occurrence rather than the whole article.
+ * Wrap the `occurrence`-th (0-based) instance of `needle` under `blockEl` using
+ * freshly built <mark> elements (from `makeMark`, called once per DOM text node
+ * the match touches). Matching runs against the concatenation of ALL text nodes
+ * in the block, not node-by-node, because a needle frequently spans an inline
+ * element boundary - e.g. "...must be **in writing** and..." renders as three
+ * sibling text nodes ("...must be ", "in writing", " and...") once react-markdown
+ * turns "**in writing**" into a <strong>, and a plain per-node substring search
+ * would never see the full phrase in any single node. `Range.surroundContents()`
+ * also can't be used here since it throws when a range only partially contains
+ * an element (exactly the <strong> case above) - so each covered node gets its
+ * own <mark> from a fresh `makeMark()` call instead of one Range-wrapped span.
  */
 function markOccurrenceInBlock(
   blockEl: HTMLElement,
@@ -830,42 +842,49 @@ function markOccurrenceInBlock(
   occurrence: number,
   makeMark: () => HTMLElement
 ): void {
+  if (!needle) return;
   const walker = document.createTreeWalker(blockEl, NodeFilter.SHOW_TEXT);
-  let seen = 0;
+  const segments: { node: Text; start: number; end: number }[] = [];
+  let full = "";
   let node: Node | null;
-  let firstNode: Node | null = null;
-  let firstIdx = -1;
   while ((node = walker.nextNode())) {
     const text = node.textContent ?? "";
-    let from = 0;
-    for (;;) {
-      const idx = text.indexOf(needle, from);
-      if (idx === -1) break;
-      if (firstNode === null) {
-        firstNode = node;
-        firstIdx = idx;
-      }
-      if (seen === occurrence) {
-        wrapRange(node, idx, needle.length, makeMark);
-        return;
-      }
-      seen += 1;
-      from = idx + needle.length;
-    }
+    if (!text) continue;
+    segments.push({ node: node as Text, start: full.length, end: full.length + text.length });
+    full += text;
   }
-  // Requested occurrence not found (e.g. rendered text differs from source):
-  // fall back to the first match so the highlight still appears.
-  if (firstNode) wrapRange(firstNode, firstIdx, needle.length, makeMark);
+
+  const matches: number[] = [];
+  for (let from = 0; ; ) {
+    const idx = full.indexOf(needle, from);
+    if (idx === -1) break;
+    matches.push(idx);
+    from = idx + needle.length;
+  }
+  if (matches.length === 0) return;
+
+  // Requested occurrence not found (e.g. rendered text differs from source in
+  // a way that shifted the count): fall back to the first match.
+  const matchStart = matches[occurrence] ?? matches[0];
+  const matchEnd = matchStart + needle.length;
+
+  for (const seg of segments) {
+    const from = Math.max(seg.start, matchStart);
+    const to = Math.min(seg.end, matchEnd);
+    if (from >= to) continue;
+    wrapNodeRange(seg.node, from - seg.start, to - seg.start, makeMark);
+  }
 }
 
-function wrapRange(node: Node, start: number, length: number, makeMark: () => HTMLElement): void {
+function wrapNodeRange(node: Text, start: number, end: number, makeMark: () => HTMLElement): void {
   try {
     const range = document.createRange();
     range.setStart(node, start);
-    range.setEnd(node, start + length);
+    range.setEnd(node, end);
     range.surroundContents(makeMark());
   } catch {
-    // surroundContents throws if the range partially crosses elements; skip.
+    // surroundContents throws if the range partially crosses elements; skip
+    // this segment (the other covered segments still get marked).
   }
 }
 

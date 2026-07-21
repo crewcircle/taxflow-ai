@@ -42,6 +42,22 @@ export function normalise(text: string): string {
 }
 
 /**
+ * Strip markdown emphasis/code-span syntax, leaving the enclosed text as-is.
+ * Needed because a quoted claim (e.g. from VerifyAgent) is copied from the raw
+ * markdown source and may carry "**bold**"/"__bold__"/"`code`" markers that
+ * never appear as literal characters in the RENDERED DOM - react-markdown
+ * consumes them to produce <strong>/<code> elements. Rendered text nodes only
+ * ever contain the inner text, so a needle destined for DOM text-node matching
+ * must have this same syntax removed first or it can never match.
+ */
+export function stripMarkdownEmphasis(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/`(.+?)`/g, "$1");
+}
+
+/**
  * Split source markdown into top-level blocks on blank lines, preserving each
  * block's character offsets into the original string. Empty/whitespace-only
  * segments are dropped so a run of blank lines never yields a phantom block.
