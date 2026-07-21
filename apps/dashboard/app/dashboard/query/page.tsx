@@ -1173,6 +1173,15 @@ export default function QueryPage() {
             </div>
           )}
 
+          {trace?.firm && (trace.firm.profile_summary || trace.firm.profile_applied || trace.firm.voice_applied) && (
+            <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-accent/10 px-2.5 py-1 text-xs text-accent">
+              <CheckCircle2 className="size-3" />
+              {trace.firm.profile_summary
+                ? `Written in your firm's voice · ${trace.firm.profile_summary}`
+                : "Written in your firm's voice"}
+            </span>
+          )}
+
           {hasBadges && (
             <div className="flex flex-wrap items-center gap-2">
               {verifying && (
