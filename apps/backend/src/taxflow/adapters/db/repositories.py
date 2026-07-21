@@ -176,6 +176,19 @@ def _build_update(
     return sql, params
 
 
+def _present_columns(table: str, candidates: tuple[str, ...]) -> set[str]:
+    """Which of ``candidates`` exist on public.<table> (one information_schema
+    lookup). Lets a read path omit not-yet-migrated columns so a missing column
+    returns null/omitted instead of raising UndefinedColumn. Generalizes 035."""
+    rows = _fetchcol(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = %s "
+        "AND column_name = ANY(%s)",
+        (table, list(candidates)),
+    )
+    return set(rows)
+
+
 def _present_035_columns() -> set[str]:
     """Return which of the migration-035 observability columns
     (``cost_usd``/``citation_valid``/``model_id``) currently exist on
@@ -186,15 +199,7 @@ def _present_035_columns() -> set[str]:
     tells the aggregate which optional fields it can reference so a missing
     column returns ``null`` for its metric instead of raising ``UndefinedColumn``.
     """
-    rows = _fetchcol(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_name = 'queries' AND column_name = ANY(%s)
-        """,
-        (list(_OBSERVABILITY_035_COLUMNS),),
-    )
-    return set(rows)
+    return _present_columns("queries", _OBSERVABILITY_035_COLUMNS)
 
 
 def _num(value):
@@ -297,13 +302,20 @@ class TrialsRepo:
 # --- queries -----------------------------------------------------------------
 class QueriesRepo:
     def list_recent(self, client_id: str, limit: int) -> list[dict]:
+        # Degrade gracefully when 040 (edited_at/deleted_at) has not landed yet:
+        # select edited_at only if present (else NULL AS edited_at keeps the
+        # response shape stable), and filter archived rows only when deleted_at
+        # exists (absent => nothing archived yet, so listing all rows is correct).
+        present = _present_columns("queries", ("edited_at", "deleted_at"))
+        edited_at = "edited_at" if "edited_at" in present else "NULL AS edited_at"
+        archived = " AND deleted_at IS NULL" if "deleted_at" in present else ""
         return _fetchall(
-            """
+            f"""
             SELECT id, question, status, model_used, confidence_score,
                    verification_result, client_ref, context_note, topic_tag,
-                   session_id, re_research_status, edited_at, created_at
+                   session_id, re_research_status, {edited_at}, created_at
             FROM queries
-            WHERE client_id = %s AND deleted_at IS NULL
+            WHERE client_id = %s{archived}
             ORDER BY created_at DESC
             LIMIT %s
             """,
@@ -726,11 +738,19 @@ class AnnotationsRepo:
 # --- documents ---------------------------------------------------------------
 class DocumentsRepo:
     def list_for_client(self, client_id: str, kind_filter: str | None = None) -> list[dict]:
+        # Degrade gracefully when 040 (documents.edited_at) has not landed yet:
+        # select edited_at only if present (else NULL AS edited_at) so a missing
+        # column returns null instead of raising UndefinedColumn.
+        edited_at = (
+            "edited_at"
+            if "edited_at" in _present_columns("documents", ("edited_at",))
+            else "NULL AS edited_at"
+        )
         if kind_filter:
             return _fetchall(
-                """
+                f"""
                 SELECT id, title, status, context_note, created_at,
-                       edited_at, approved_by, approved_at
+                       {edited_at}, approved_by, approved_at
                 FROM documents
                 WHERE client_id = %s AND document_type = %s
                 ORDER BY created_at DESC
@@ -738,9 +758,9 @@ class DocumentsRepo:
                 (client_id, kind_filter),
             )
         return _fetchall(
-            """
+            f"""
             SELECT id, document_type, title, status, client_ref,
-                   context_note, created_at, edited_at, approved_by, approved_at
+                   context_note, created_at, {edited_at}, approved_by, approved_at
             FROM documents
             WHERE client_id = %s
             ORDER BY created_at DESC
@@ -1609,12 +1629,20 @@ class KnowledgeIngestRepo:
         answer, via ``queries.citations``) rather than leaving "which sources
         were used" for the frontend to guess at. Powers ``GET /knowledge/graph``.
         """
+        # Degrade gracefully when 040 (queries.deleted_at) has not landed yet:
+        # only filter archived queries out of the citation counts when the
+        # column exists (absent => nothing archived yet, so count all rows).
+        archived = (
+            " AND deleted_at IS NULL"
+            if "deleted_at" in _present_columns("queries", ("deleted_at",))
+            else ""
+        )
         return _fetchall(
-            """
+            f"""
             WITH citation_counts AS (
                 SELECT elem ->> 'citation' AS citation, count(*) AS cited_count
                 FROM queries, jsonb_array_elements(citations) AS elem
-                WHERE citations IS NOT NULL AND deleted_at IS NULL
+                WHERE citations IS NOT NULL{archived}
                 GROUP BY elem ->> 'citation'
             )
             SELECT
