@@ -5,9 +5,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { startDemoLogin } from "@/lib/demo-login";
 
 const PERSONAS = [
-  { value: "dental", label: "Bayside Dental Group" },
+  { value: "dental", label: "Coogee Bay Dental Group" },
   { value: "property", label: "Riverside Property Partners" },
   { value: "accounting", label: "Chen & Associates" },
+  { value: "hospitality", label: "Enmore Hospitality Accountants" },
+  { value: "construction", label: "Nepean Tradie Accountants" },
 ];
 
 export function DemoPersonaSwitcher({ currentType }: { currentType: string }) {

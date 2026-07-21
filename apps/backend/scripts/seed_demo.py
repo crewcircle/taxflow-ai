@@ -7,7 +7,7 @@ doesn't duplicate data or burn Anthropic credits repeatedly).
 Uses the real agent pipeline against real questions, so the seeded history has
 authentic citations against the live knowledge base - not fabricated content.
 
-Seeds three distinct personas so /auth/demo-login can rotate between them.
+Seeds five distinct personas so /auth/demo-login can rotate between them.
 Each persona is a coherent story that touches every TaxFlow module: research
 queries, a generated document, a firm-knowledge upload, and a sample ATO
 correspondence thread.
@@ -31,8 +31,8 @@ from taxflow.services.knowledge.embedder import embed  # noqa: E402
 
 PERSONAS = [
     {
-        "email": "demo-dental@taxflow.crewcircle.com.au",
-        "business_name": "Bayside Dental Group",
+        "email": "demo+coogeebaydental+priya@crewcircle.com.au",
+        "business_name": "Coogee Bay Dental Group",
         "business_type": "dental",
         "tagline": (
             "Equipment finance, FBT car benefits, and Division 7A for a "
@@ -40,8 +40,8 @@ PERSONAS = [
         ),
         "description": (
             "A 2-person boutique accounting and bookkeeping practice in "
-            "Bayside, Melbourne, exclusively serving 12 dental practices "
-            "across Victoria. A principal accountant plus a bookkeeper "
+            "Coogee, Sydney, exclusively serving 12 dental practices "
+            "across NSW. Principal accountant Priya Nair plus a bookkeeper "
             "handle day-to-day compliance and equipment/FBT/structuring "
             "advice for dental practice owners."
         ),
@@ -54,7 +54,7 @@ PERSONAS = [
         "questions": [
             {
                 "question": (
-                    "Can Bayside Dental Group claim the instant asset write-off for a new "
+                    "Can Coogee Bay Dental Group claim the instant asset write-off for a new "
                     "$180,000 CBCT scanner purchased this financial year?"
                 ),
                 "days_ago": 18,
@@ -104,7 +104,7 @@ PERSONAS = [
         ),
         "firm_knowledge_title": "equipment-finance-policy.txt",
         "firm_knowledge_content": (
-            "Bayside Dental Group - Internal Equipment Finance Policy\n\n"
+            "Coogee Bay Dental Group - Internal Equipment Finance Policy\n\n"
             "Equipment purchases over $50,000 should be financed via a "
             "commercial chattel mortgage rather than a loan from the holding "
             "entity wherever possible, to avoid Division 7A exposure. Where a "
@@ -117,7 +117,7 @@ PERSONAS = [
         "ato_response_md": (
             "## Response to ATO FBT Review Notice\n\n"
             "**Re: Fringe Benefits Tax Return - Statutory Formula Car Benefit**\n\n"
-            "Bayside Dental Group confirms the practice manager's vehicle was "
+            "Coogee Bay Dental Group confirms the practice manager's vehicle was "
             "made available for private use for 312 days of the FBT year. The "
             "taxable value has been calculated using the statutory formula "
             "method at 20% of the car's base value ($42,000), apportioned for "
@@ -127,7 +127,7 @@ PERSONAS = [
         ),
     },
     {
-        "email": "demo-property@taxflow.crewcircle.com.au",
+        "email": "demo+riversideproperty+david@crewcircle.com.au",
         "business_name": "Riverside Property Partners",
         "business_type": "property",
         "tagline": (
@@ -135,11 +135,11 @@ PERSONAS = [
             "for a commercial development."
         ),
         "description": (
-            "A 4-person advisory practice in Sydney specialising in "
-            "property developers and construction groups: 2 partners and "
-            "2 accountants across roughly 8 active development clients, "
-            "focused on GST margin scheme, thin capitalisation, and CGT "
-            "concession work."
+            "A 4-person advisory practice in Parramatta, Sydney specialising "
+            "in property developers and construction groups: partner David "
+            "Okonkwo plus a co-partner and 2 accountants across roughly 8 "
+            "active development clients, focused on GST margin scheme, thin "
+            "capitalisation, and CGT concession work."
         ),
         "voice_sample": (
             "Our clients are developers under deadline pressure, so we "
@@ -227,7 +227,7 @@ PERSONAS = [
         ),
     },
     {
-        "email": "demo-accounting@taxflow.crewcircle.com.au",
+        "email": "demo+chenassociates+michael@crewcircle.com.au",
         "business_name": "Chen & Associates",
         "business_type": "accounting",
         "tagline": (
@@ -318,6 +318,213 @@ PERSONAS = [
             "exclusion applies and there is no reimbursement agreement, section "
             "100A does not apply to this distribution. Beneficiary bank "
             "statements evidencing the use of funds are attached."
+        ),
+    },
+    {
+        "email": "demo+enmorehospitality+elena@crewcircle.com.au",
+        "business_name": "Enmore Hospitality Accountants",
+        "business_type": "hospitality",
+        "tagline": (
+            "Equipment finance, FBT on staff meals, and GST food "
+            "classification for inner-west cafés and restaurants."
+        ),
+        "description": (
+            "A 3-person boutique hospitality accounting practice in "
+            "Enmore, Sydney, serving around 25 cafés, restaurants and "
+            "small bars across the inner west. Principal Elena Vasquez "
+            "plus two accountants handle daily-takings reconciliation, "
+            "casual hospitality-award payroll, and the FBT/GST questions "
+            "that come with running a kitchen."
+        ),
+        "voice_sample": (
+            "Our clients are flat-out running a service on a Friday "
+            "night, not reading tax rulings - we keep advice to what to "
+            "do and by when, with the dollar figure up front."
+        ),
+        "questions": [
+            {
+                "question": (
+                    "Our client is spending $85,000 on new kitchen equipment - "
+                    "commercial ovens, fridges, and a POS system - as part of a "
+                    "renovation. Does this qualify for the instant asset write-off, "
+                    "and does it matter that some items are leased rather than "
+                    "purchased outright?"
+                ),
+                "days_ago": 18,
+                "client_ref": "The Local Kitchen",
+                "topic_tag": "Equipment finance",
+                "context_note": (
+                    "Renovation invoices coming through this month - write-off "
+                    "eligibility confirmed for the owned items before the return is "
+                    "finalised."
+                ),
+            },
+            {
+                "question": (
+                    "We host a staff dinner on-site every Friday night after close, "
+                    "for all kitchen and floor staff - is this exempt from FBT as a "
+                    "minor benefit, or does a different exemption apply?"
+                ),
+                "days_ago": 11,
+                "client_ref": "Harbourside Bistro",
+                "topic_tag": "FBT car benefits",
+                "context_note": (
+                    "FBT return being prepared this quarter - exemption basis "
+                    "confirmed and documented."
+                ),
+            },
+            {
+                "question": (
+                    "We're adding packaged takeaway salads and smoothies to the menu "
+                    "alongside hot food - which items are GST-free under the food "
+                    "classification rules, and which are subject to GST?"
+                ),
+                "days_ago": 3,
+                "client_ref": "Enmore Roasters",
+                "topic_tag": "GST",
+                "context_note": (
+                    "New menu launching next week - GST treatment confirmed per item "
+                    "before pricing is finalised."
+                ),
+            },
+        ],
+        "document_title": "Instant Asset Write-Off - Kitchen Equipment Renovation",
+        "document_context_note": "Client-ready memo on the equipment write-off - sent for sign-off.",
+        "ato_client_ref": "Harbourside Bistro",
+        "ato_context_note": (
+            "ATO flagged the staff-meal FBT exemption for review - response drafted, "
+            "awaiting partner sign-off before sending."
+        ),
+        "firm_knowledge_title": "kitchen-equipment-finance-policy.txt",
+        "firm_knowledge_content": (
+            "Enmore Hospitality Accountants - Internal Equipment Finance "
+            "Policy\n\n"
+            "Kitchen equipment purchases over $20,000 should be reviewed for "
+            "instant asset write-off eligibility before EOFY, and leased "
+            "items should be flagged separately since lease payments (not "
+            "the asset itself) are typically the deductible amount. Confirm "
+            "each item's business-use percentage before applying the "
+            "write-off, particularly for combined front-of-house/kitchen "
+            "equipment."
+        ),
+        "ato_letter_type": "fbt_review_notice",
+        "ato_response_md": (
+            "## Response to ATO FBT Review Notice\n\n"
+            "**Re: Fringe Benefits Tax - Staff Meal Minor Benefits Exemption**\n\n"
+            "Harbourside Bistro confirms the Friday staff dinner is provided "
+            "on the business premises, on a working day, to current "
+            "employees only, and is not provided under a salary sacrifice "
+            "arrangement. The value per employee per occasion is under $300 "
+            "and the benefit is provided infrequently and irregularly, "
+            "consistent with the minor benefits exemption under section "
+            "58P. Rosters and the venue's weekly staff-meal cost summary are "
+            "attached in support."
+        ),
+    },
+    {
+        "email": "demo+nepeantradie+marcus@crewcircle.com.au",
+        "business_name": "Nepean Tradie Accountants",
+        "business_type": "construction",
+        "tagline": (
+            "Division 7A director loans, contractor super obligations, and "
+            "the GST margin scheme for Western Sydney builders and tradies."
+        ),
+        "description": (
+            "A 3-person practice in Penrith, Sydney, serving around 30 "
+            "builders, tradies and small construction companies across "
+            "Western Sydney. Principal Marcus Webb plus two accountants "
+            "handle everyday compliance plus the trickier structuring "
+            "questions that come with project-based work and director "
+            "loans."
+        ),
+        "voice_sample": (
+            "Our clients are on job sites all day, not in front of a "
+            "screen - we keep it short, tell them exactly what to do "
+            "next, and flag anything that needs a lawyer or a private "
+            "ruling before they act."
+        ),
+        "questions": [
+            {
+                "question": (
+                    "Our building company director took a $60,000 advance from the "
+                    "company to help fund a deposit on his own home - is this a "
+                    "Division 7A loan, and what do we need to do before the company's "
+                    "lodgment day to avoid a deemed dividend?"
+                ),
+                "days_ago": 18,
+                "client_ref": "Western Build Co",
+                "topic_tag": "Division 7A",
+                "context_note": (
+                    "Advance made mid-year - complying loan agreement being drafted "
+                    "before lodgment day."
+                ),
+            },
+            {
+                "question": (
+                    "We engage several subcontractors on our residential building "
+                    "sites who provide their own tools and invoice us via ABN - could "
+                    "the ATO reclassify them as employees for superannuation "
+                    "guarantee purposes, and what factors matter most?"
+                ),
+                "days_ago": 11,
+                "client_ref": "Hawkesbury Trade Services",
+                "topic_tag": "Superannuation",
+                "context_note": (
+                    "Contractor arrangements reviewed ahead of the super guarantee "
+                    "due date - classification confirmed as genuine contractors."
+                ),
+            },
+            {
+                "question": (
+                    "One of our builder clients is completing a small 3-lot "
+                    "subdivision and selling the new townhouses - does the GST margin "
+                    "scheme apply to reduce GST payable on the sales, and what "
+                    "records do we need to support the valuation?"
+                ),
+                "days_ago": 3,
+                "client_ref": "Nepean Constructions Pty Ltd",
+                "topic_tag": "GST margin scheme",
+                "context_note": (
+                    "First townhouse settling next month - margin scheme eligibility "
+                    "and valuation confirmed before the BAS is lodged."
+                ),
+            },
+        ],
+        "document_title": "Division 7A Director Loan - Complying Agreement Advice",
+        "document_context_note": "Client-ready memo on the director loan - sent to the director for sign-off.",
+        "ato_client_ref": "Hawkesbury Trade Services",
+        "ato_context_note": (
+            "ATO reviewing subcontractor super guarantee classification - response "
+            "drafted, awaiting partner sign-off before sending."
+        ),
+        "firm_knowledge_title": "subcontractor-engagement-checklist.txt",
+        "firm_knowledge_content": (
+            "Nepean Tradie Accountants - Subcontractor Engagement "
+            "Checklist\n\n"
+            "Before treating a worker as a contractor rather than an "
+            "employee, confirm: (1) they can subcontract or delegate the "
+            "work to someone else; (2) they provide and maintain their own "
+            "tools and equipment; (3) they bear commercial risk for "
+            "defective or late work; (4) they are paid for a result, not by "
+            "time worked. Where any factor is unclear, default to treating "
+            "the worker as an employee for superannuation guarantee "
+            "purposes until reviewed."
+        ),
+        "ato_letter_type": "super_guarantee_review",
+        "ato_response_md": (
+            "## Response to ATO Superannuation Guarantee Review\n\n"
+            "**Re: Subcontractor Classification - Superannuation Guarantee "
+            "Obligations**\n\n"
+            "Hawkesbury Trade Services confirms its site subcontractors each "
+            "hold their own ABN, supply and maintain their own hand tools "
+            "and power tools, carry their own public liability insurance, "
+            "and are engaged and paid per completed stage of work rather "
+            "than by the hour. Each subcontractor has also previously "
+            "worked for other building companies during the review period. "
+            "On this basis they are genuine contractors, not employees, and "
+            "no superannuation guarantee shortfall arises. Subcontractor "
+            "agreements, insurance certificates and invoices are attached "
+            "in support."
         ),
     },
 ]

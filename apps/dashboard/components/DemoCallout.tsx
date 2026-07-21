@@ -27,8 +27,9 @@ export function DemoCallout() {
         See it with real data - no signup
       </p>
       <p className="mb-4 text-sm text-muted-foreground">
-        Explore a fully seeded account as one of three real accounting firms - dental, property,
-        or general SME advisory - and switch between them anytime.
+        Explore a fully seeded account as one of five real accounting firm types - dental,
+        property, general SME advisory, hospitality, or construction/trades - and switch between
+        them anytime.
       </p>
       <Button
         size="lg"
