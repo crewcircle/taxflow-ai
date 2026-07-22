@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   BookOpen,
@@ -763,6 +763,56 @@ function TrustRibbon({
   );
 }
 
+// Isolated and memoized so unrelated state churn elsewhere in QueryPage
+// (history/notifications polling, sidebar UI state, etc - anything that
+// doesn't touch queryId/answer/citations/verificationIssues/streamComplete)
+// can never re-render, let alone remount, this specific subtree. Investigated
+// a live, reproducible bug where this exact block rendered 2-10+ times,
+// stacked vertically, growing over time with zero user interaction and no
+// additional route navigation - correlated with (but not proven caused by)
+// an accelerating notifications-poll -> loadHistory -> setHistory chain
+// elsewhere in this component. Extracting + memoizing the answer body is a
+// defensive, verifiable mitigation regardless of the exact framework-level
+// mechanism: this component's own props are referentially stable across a
+// setHistory-driven re-render (result/verification objects aren't touched by
+// it), so React.memo bails out here even if something upstream misbehaves.
+const AnswerBody = memo(function AnswerBody({
+  annotatableRef,
+  queryId,
+  answer,
+  citations,
+  verificationIssues,
+  streamComplete,
+}: {
+  annotatableRef: React.RefObject<AnnotatableMarkdownHandle | null>;
+  queryId: string | null;
+  answer: string;
+  citations: SourceCitation[];
+  verificationIssues?: VerificationIssue[];
+  streamComplete: boolean;
+}) {
+  return streamComplete && queryId ? (
+    // Annotation layer is enabled ONLY after the stream is [DONE]
+    // (streamComplete) and a persisted query_id exists — offsets/hash are
+    // computed against the final persisted answer, never the mid-stream
+    // buffer (a correction event can replace the whole answer). A restored
+    // history conversation sets streamComplete immediately since it is
+    // already persisted.
+    <AnnotatableMarkdown
+      ref={annotatableRef}
+      key={queryId}
+      targetType="query_answer"
+      targetId={queryId}
+      sourceMarkdown={answer}
+      citations={citations}
+      verificationIssues={verificationIssues}
+      showHint={false}
+    />
+  ) : (
+    <AnswerWithCitationLinks text={answer} citations={citations} />
+  );
+});
+
 export default function QueryPage() {
   const [question, setQuestion] = useState("");
   const [clientRef, setClientRef] = useState("");
@@ -1460,26 +1510,14 @@ export default function QueryPage() {
                   return status ? <ReResearchBadge status={status} /> : null;
                 })()}
 
-              {streamComplete && result.query_id ? (
-                // Annotation layer is enabled ONLY after the stream is [DONE]
-                // (streamComplete) and a persisted query_id exists — offsets/hash
-                // are computed against the final persisted answer, never the
-                // mid-stream buffer (a correction event can replace the whole
-                // answer). A restored history conversation sets streamComplete
-                // immediately since it is already persisted.
-                <AnnotatableMarkdown
-                  ref={annotatableRef}
-                  key={result.query_id}
-                  targetType="query_answer"
-                  targetId={result.query_id}
-                  sourceMarkdown={result.answer}
-                  citations={result.citations}
-                  verificationIssues={verification?.issues}
-                  showHint={false}
-                />
-              ) : (
-                <AnswerWithCitationLinks text={result.answer} citations={result.citations} />
-              )}
+              <AnswerBody
+                annotatableRef={annotatableRef}
+                queryId={result.query_id}
+                answer={result.answer}
+                citations={result.citations}
+                verificationIssues={verification?.issues}
+                streamComplete={streamComplete}
+              />
 
               {trace && (
                 <AnswerTracePanel
