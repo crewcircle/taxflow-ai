@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Plus, MessageSquare, PanelLeftClose } from "lucide-react";
+import { Plus, MessageSquare, MessagesSquare, PanelLeftClose } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -179,7 +179,9 @@ export function QueryHistorySidebar({
   return (
     <div className="flex h-full w-56 shrink-0 flex-col border-r border-border">
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Questions</span>
+        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Clients &amp; conversations
+        </span>
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -263,12 +265,24 @@ export function QueryHistorySidebar({
                           />
                         );
                       }
+                      // Oldest-first turn numbers, since `row.items` is sorted
+                      // newest-first (see groupByClientEngagement) for display -
+                      // "#1" should be the question that started the thread.
+                      const turnNumber = new Map(
+                        [...row.items].reverse().map((item, i) => [item.id, i + 1])
+                      );
                       return (
-                        <div key={row.sessionId} className="mb-1">
-                          <div className="group/qsession flex items-center justify-between gap-1">
-                            <p className="line-clamp-1 px-2 py-1 text-[11px] font-medium text-muted-foreground">
-                              {row.label}
-                            </p>
+                        <div key={row.sessionId} className="mb-1.5">
+                          <div className="group/qsession flex items-center justify-between gap-1 rounded-t-md bg-muted/60 px-2 py-1">
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <MessagesSquare className="size-3 shrink-0 text-accent" />
+                              <p className="line-clamp-1 text-[11px] font-medium text-foreground">
+                                {row.label}
+                              </p>
+                              <span className="shrink-0 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold text-accent">
+                                {row.items.length} turns
+                              </span>
+                            </div>
                             <div className="opacity-0 transition-opacity group-hover/qsession:opacity-100">
                               <ResourceRowActions
                                 label="conversation"
@@ -276,11 +290,12 @@ export function QueryHistorySidebar({
                               />
                             </div>
                           </div>
-                          <div className="space-y-0.5 border-l border-border pl-2">
+                          <div className="space-y-0.5 rounded-b-md border-l-2 border-accent/40 bg-accent/[0.03] pl-2">
                             {row.items.map((item) => (
                               <ItemRow
                                 key={item.id}
                                 item={item}
+                                turnNumber={turnNumber.get(item.id)}
                                 highlightedId={highlightedId}
                                 matchedIds={matchedIds}
                                 itemRefs={itemRefs}
@@ -305,6 +320,10 @@ export function QueryHistorySidebar({
 
 interface ItemRowProps {
   item: QueryListItem;
+  // Only set for a row inside a multi-turn thread group - "#2" etc, oldest
+  // question first, so it reads as "this is turn 2 of one conversation"
+  // rather than a second unrelated question.
+  turnNumber?: number;
   highlightedId?: string | null;
   matchedIds: Set<string> | null;
   itemRefs: RefObject<Map<string, HTMLButtonElement>>;
@@ -314,7 +333,7 @@ interface ItemRowProps {
 
 // A single past question, shared between the direct-under-engagement case and
 // the multi-turn-conversation sub-group case.
-function ItemRow({ item, highlightedId, matchedIds, itemRefs, onSelect, onDeleteQuery }: ItemRowProps) {
+function ItemRow({ item, turnNumber, highlightedId, matchedIds, itemRefs, onSelect, onDeleteQuery }: ItemRowProps) {
   const isHighlighted = item.id === highlightedId || matchedIds?.has(item.id);
   const isDimmed = matchedIds !== null && !matchedIds.has(item.id);
   return (
@@ -332,7 +351,13 @@ function ItemRow({ item, highlightedId, matchedIds, itemRefs, onSelect, onDelete
           isDimmed && "opacity-40"
         )}
       >
-        <MessageSquare className="mt-0.5 size-3.5 shrink-0 opacity-60" />
+        {turnNumber ? (
+          <span className="mt-0.5 flex size-3.5 shrink-0 items-center justify-center rounded-full bg-accent/15 text-[9px] font-semibold text-accent">
+            {turnNumber}
+          </span>
+        ) : (
+          <MessageSquare className="mt-0.5 size-3.5 shrink-0 opacity-60" />
+        )}
         <span className="flex-1 space-y-1">
           <span className="line-clamp-2 block leading-snug">{item.question}</span>
           {item.re_research_status && (

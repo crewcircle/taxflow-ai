@@ -1,7 +1,11 @@
 "use client";
 
-import { ExternalLink, FileText, PanelRightClose } from "lucide-react";
+import { useState } from "react";
+import { ExternalLink, FileSearch, FileText, PanelRightClose } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { SourceDocumentViewer } from "@/components/SourceDocumentViewer";
+import { cn } from "@/lib/utils";
 
 export interface SourceCitation {
   citation: string;
@@ -22,6 +26,26 @@ interface CitationGroup {
   sourceObjectKey: string | null;
   lastScrapedAt: string | null;
   occurrences: { index: number; excerpt: string }[];
+}
+
+// One color per citation NUMBER (1-indexed, matching the [N] marker in the
+// answer), shared between the inline superscript (MarkdownDocument) and this
+// panel's excerpt cards, so "which source did this come from" is answerable
+// by color alone, not just by following the link and reading. Cycles for
+// citation counts beyond the palette rather than introducing a whole
+// citation-color-assignment library for what's fundamentally a 6-8 item list
+// per answer.
+const CITATION_COLORS = [
+  { text: "text-blue-700", bg: "bg-blue-50", border: "border-blue-300", dot: "bg-blue-500" },
+  { text: "text-emerald-700", bg: "bg-emerald-50", border: "border-emerald-300", dot: "bg-emerald-500" },
+  { text: "text-violet-700", bg: "bg-violet-50", border: "border-violet-300", dot: "bg-violet-500" },
+  { text: "text-orange-700", bg: "bg-orange-50", border: "border-orange-300", dot: "bg-orange-500" },
+  { text: "text-pink-700", bg: "bg-pink-50", border: "border-pink-300", dot: "bg-pink-500" },
+  { text: "text-cyan-700", bg: "bg-cyan-50", border: "border-cyan-300", dot: "bg-cyan-500" },
+] as const;
+
+export function citationColor(oneIndexedCitationNumber: number) {
+  return CITATION_COLORS[(oneIndexedCitationNumber - 1) % CITATION_COLORS.length];
 }
 
 function groupByCitation(citations: SourceCitation[]): CitationGroup[] {
@@ -59,6 +83,9 @@ function withTextFragment(url: string, excerpt: string): string {
 
 export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
   const groups = groupByCitation(citations);
+  // Which stored source is open in the in-app viewer modal (replaces the old
+  // "View original PDF - highlighted" link that opened a whole new tab).
+  const [openDoc, setOpenDoc] = useState<{ objectKey: string; excerpt: string; citation: string } | null>(null);
 
   return (
     <div className="flex h-full w-64 shrink-0 flex-col border-l border-border" data-tour="sources-panel">
@@ -92,14 +119,47 @@ export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
           </p>
         ) : (
           <ol className="space-y-3">
-            {groups.map((group) => (
+            {groups.map((group) => {
+              const color = citationColor(group.occurrences[0].index + 1);
+              return (
               <li
                 key={group.citation}
                 id={`source-${group.occurrences[0].index + 1}`}
-                className="scroll-mt-4 rounded-lg border border-border p-3 text-xs target:border-accent target:bg-accent/5"
+                className={cn(
+                  "scroll-mt-4 rounded-lg border-l-4 border-y border-r border-border p-3 text-xs target:bg-accent/5",
+                  color.border
+                )}
               >
                 <div className="mb-1 flex items-start justify-between gap-1.5">
-                  <p className="font-medium text-foreground">{group.citation}</p>
+                  {group.sourceObjectKey ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setOpenDoc({
+                              objectKey: group.sourceObjectKey!,
+                              excerpt: group.occurrences[0].excerpt,
+                              citation: group.citation,
+                            })
+                          }
+                          className="flex items-center gap-1.5 text-left font-medium text-foreground hover:underline"
+                        >
+                          <span className={cn("inline-block size-2 shrink-0 rounded-full", color.dot)} />
+                          {group.citation}
+                          <FileSearch className="size-3 shrink-0 text-muted-foreground" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Opens our stored copy of the PDF here in the app, scrolled to the exact passage cited above
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    <p className="flex items-center gap-1.5 font-medium text-foreground">
+                      <span className={cn("inline-block size-2 shrink-0 rounded-full", color.dot)} />
+                      {group.citation}
+                    </p>
+                  )}
                   {group.occurrences.length > 1 && (
                     <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                       cited {group.occurrences.length}×
@@ -118,8 +178,8 @@ export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
                     </p>
                   ))}
                 </div>
-                <div className="flex flex-wrap gap-3">
-                  {group.url && (
+                {group.url && (
+                  <div className="flex flex-wrap gap-3">
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <a
@@ -137,32 +197,26 @@ export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
                         supported
                       </TooltipContent>
                     </Tooltip>
-                  )}
-                  {group.sourceObjectKey && (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <a
-                          href={`/dashboard/sources/${group.sourceObjectKey}?${new URLSearchParams({
-                            excerpt: group.occurrences[0].excerpt,
-                            citation: group.citation,
-                          })}`}
-                          className="inline-flex items-center gap-1 text-accent hover:underline"
-                        >
-                          View original PDF - highlighted
-                          <ExternalLink className="size-3" />
-                        </a>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        Opens our stored copy of the PDF and scrolls to the exact passage cited above
-                      </TooltipContent>
-                    </Tooltip>
-                  )}
-                </div>
+                  </div>
+                )}
               </li>
-            ))}
+              );
+            })}
           </ol>
         )}
       </div>
+
+      <Dialog open={openDoc != null} onOpenChange={(open) => !open && setOpenDoc(null)}>
+        <DialogContent className="sm:max-w-4xl">
+          {openDoc && (
+            <SourceDocumentViewer
+              objectKey={openDoc.objectKey}
+              excerpt={openDoc.excerpt}
+              citation={openDoc.citation}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

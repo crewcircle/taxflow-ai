@@ -4,7 +4,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { SourceCitation } from "@/components/SourcesPanel";
+import { citationColor, type SourceCitation } from "@/components/SourcesPanel";
 
 const STALE_AFTER_DAYS = 30;
 
@@ -60,29 +60,35 @@ export function buildMarkdownComponents(citations?: SourceCitation[]): Component
           </a>
         );
       }
-      const citation = citations[Number(match[1]) - 1];
+      const num = Number(match[1]);
+      const citation = citations[num - 1];
       const refreshedIso = citation?.last_scraped_at ?? null;
       const stale = refreshedIso ? daysSince(refreshedIso) > STALE_AFTER_DAYS : false;
-      const label = refreshedIso
+      const currency = refreshedIso
         ? `Refreshed ${formatRefreshedDate(refreshedIso)}${stale ? " - check for a newer version" : ""}`
         : "Refresh date unavailable";
+      const color = citationColor(num);
+      // Same color as this citation's card in SourcesPanel (see
+      // citationColor) - a superscript badge rather than inline "[1]" text,
+      // so which passage came from which source reads as a color match
+      // without following the link and comparing text.
       return (
         <Tooltip>
           <TooltipTrigger asChild>
             <a
               href={href}
               className={cn(
-                "font-medium hover:underline",
-                stale ? "text-amber-700" : "text-accent"
+                "ml-0.5 inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 align-super text-[9px] font-bold no-underline",
+                color.bg,
+                color.text
               )}
             >
-              {children}
-              {stale && (
-                <span className="ml-0.5 inline-block size-1.5 rounded-full bg-amber-500 align-super" />
-              )}
+              {num}
             </a>
           </TooltipTrigger>
-          <TooltipContent>{label}</TooltipContent>
+          <TooltipContent>
+            {citation?.citation ? `${citation.citation} — ${currency}` : currency}
+          </TooltipContent>
         </Tooltip>
       );
     },
