@@ -12,6 +12,9 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@annotorious/react": "^3.8.8",
+    "@recogito/react-text-annotator": "^4.2.5",
+    "@recogito/text-annotator": "^4.2.5",
     "@supabase/ssr": "^0.12.0",
     "@supabase/supabase-js": "^2.110.0",
     "class-variance-authority": "^0.7.1",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { MessageSquare, Check, Reply, Pencil, Trash2, HelpCircle, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,27 +14,22 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Annotorious, useAnnotator, useSelection } from "@annotorious/react";
+import { TextAnnotator } from "@recogito/react-text-annotator";
+import type { TextAnnotation, RecogitoTextAnnotator, HighlightStyle } from "@recogito/react-text-annotator";
 import { MarkdownDocument } from "@/components/MarkdownDocument";
 import type { SourceCitation } from "@/components/SourcesPanel";
 import { cn } from "@/lib/utils";
-import {
-  splitBlocks,
-  resolveOffsetsInBlock,
-  reanchor,
-  sourceHash,
-  occurrenceBeforeOffset,
-  stripMarkdownEmphasis,
-  type AnchorOffsets,
-} from "@/lib/annotations/tokenizer";
+import { sourceHash, stripMarkdownEmphasis } from "@/lib/annotations/tokenizer";
 
 export type TargetType = "query_answer" | "document";
 export type AuthorKind = "reviewer" | "user";
 
 // A verification-pass finding, anchored inline the same way a user comment is
-// (via `reanchor`'s exact-then-fuzzy match against the rendered blocks) rather
-// than surfaced only in a separate side panel. Structurally compatible with
-// query/page.tsx's own `VerificationIssue` — kept as a local shape so this
-// component doesn't import a page-level type.
+// (both are placed by exact character offset into the rendered container,
+// resolved once on mount/update - see `useFlaggedClaimOffsets` below).
+// Structurally compatible with query/page.tsx's own `VerificationIssue` - kept
+// as a local shape so this component doesn't import a page-level type.
 export interface VerificationFlag {
   claim: string;
   issue: string;
@@ -61,18 +56,25 @@ export interface Annotation {
   created_at: string;
 }
 
-// A resolved thread: a root annotation, its replies, and the re-anchor status.
+// A resolved thread: a root annotation plus its replies.
 interface Thread {
   root: Annotation;
   replies: Annotation[];
-  anchor: AnchorOffsets | null; // null => detached (fuzzy match failed)
   stale: boolean; // source hash differs from what this annotation was anchored to
+}
+
+interface AnchorOffsets {
+  startOffset: number;
+  endOffset: number;
+  quotedText: string;
 }
 
 interface PendingSelection {
   anchor: AnchorOffsets;
   version: string;
 }
+
+const RECOGITO_CONTAINER_CLASS = "annotatable-recogito-container";
 
 function initials(name: string | null): string {
   if (!name) return "?";
@@ -91,10 +93,13 @@ function relativeTime(iso: string): string {
 
 /**
  * Reusable annotation layer over rendered markdown, keyed by `targetType`.
- * Renders the source through the shared MarkdownDocument, decorates anchored
- * spans with inline <mark> highlights, and shows a gutter thread panel with
- * reply/edit/resolve/delete. Anchoring is computed ONLY against the finalized
- * `sourceMarkdown` passed in (never mid-stream) via the pure tokenizer module.
+ * Renders the source through the shared MarkdownDocument inside a Recogito
+ * TextAnnotator, which owns selection-capture and highlight placement
+ * directly against the rendered DOM (offsets are computed against the actual
+ * container text, so there's no markdown-source-vs-rendered-text mismatch to
+ * reconcile). This component keeps its own thread state (reply/edit/resolve
+ * CRUD against /api/annotations) and only feeds Recogito the flat list of
+ * spans to highlight + a style callback.
  */
 export function AnnotatableMarkdown({
   targetType,
@@ -111,7 +116,6 @@ export function AnnotatableMarkdown({
   authorName?: string | null;
   verificationIssues?: VerificationFlag[];
 }) {
-  const articleRef = useRef<HTMLDivElement>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [serverHash, setServerHash] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
@@ -132,20 +136,7 @@ export function AnnotatableMarkdown({
   // Which flagged claim's detail is open (click on an inline verify-mark).
   const [activeVerifyIssue, setActiveVerifyIssue] = useState<VerificationFlag | null>(null);
 
-  const blocks = useMemo(() => splitBlocks(sourceMarkdown), [sourceMarkdown]);
   const isEmpty = sourceMarkdown.trim().length === 0;
-
-  // Anchor each flagged claim into the rendered blocks via the same
-  // exact-then-fuzzy `reanchor` used for stale user comments — a claim missing
-  // here (paraphrased beyond what the fuzzy fallback accepts) simply isn't
-  // inline-marked; it's never silently dropped from the underlying data, only
-  // from this particular presentation.
-  const verifyAnchors = useMemo(() => {
-    if (!verificationIssues?.length) return [];
-    return verificationIssues
-      .map((issue) => ({ issue, anchor: reanchor(blocks, issue.claim, 0) }))
-      .filter((v): v is { issue: VerificationFlag; anchor: AnchorOffsets } => v.anchor !== null);
-  }, [verificationIssues, blocks]);
 
   const loadAnnotations = useCallback(async () => {
     try {
@@ -167,10 +158,11 @@ export function AnnotatableMarkdown({
     void loadAnnotations();
   }, [loadAnnotations]);
 
-  // Group annotations into threads and resolve each root's anchor. If a root's
-  // stored version matches the current source hash, use its offsets directly;
-  // otherwise mark it stale and fuzzy re-anchor via quoted_text. On a miss the
-  // thread is kept but detached (anchor: null) so a comment is never dropped.
+  // Group annotations into threads. A root whose stored version doesn't match
+  // the current source hash is flagged stale — its offsets may no longer line
+  // up with the (changed) rendered text, so Recogito simply won't find a DOM
+  // range for it and the highlight silently doesn't render; the thread still
+  // shows in the gutter with a "source changed" note rather than being lost.
   const threads = useMemo<Thread[]>(() => {
     const roots = annotations.filter((a) => !a.parent_id);
     const repliesByParent = new Map<string, Annotation[]>();
@@ -181,107 +173,20 @@ export function AnnotatableMarkdown({
         repliesByParent.set(a.parent_id, list);
       }
     }
-    return roots.map((root) => {
-      const stale = serverHash != null && root.target_version !== serverHash;
-      let anchor: AnchorOffsets | null;
-      const block = blocks[root.block_index];
-      if (!stale && block) {
-        // Trust the stored offsets. The highlight needle is the first block's
-        // clamped substring (start_offset..end_offset), NOT root.quoted_text:
-        // for a cross-block selection the stored quote is the full multi-block
-        // text, which never appears inside this single block wrapper. The gutter
-        // still shows the full root.quoted_text for context.
-        anchor = {
-          blockIndex: root.block_index,
-          startOffset: root.start_offset,
-          endOffset: root.end_offset,
-          quotedText: block.text.slice(root.start_offset, root.end_offset),
-        };
-      } else {
-        anchor = reanchor(blocks, root.quoted_text, root.block_index);
-      }
-      return {
-        root,
-        replies: (repliesByParent.get(root.id) ?? []).sort(
-          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-        ),
-        anchor,
-        stale,
-      };
-    });
-  }, [annotations, blocks, serverHash]);
+    return roots.map((root) => ({
+      root,
+      replies: (repliesByParent.get(root.id) ?? []).sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      ),
+      stale: serverHash != null && root.target_version !== serverHash,
+    }));
+  }, [annotations, serverHash]);
 
   const visibleThreads = threads.filter((t) =>
     showResolved ? t.root.resolved_at != null : t.root.resolved_at == null
   );
   const openCount = threads.filter((t) => t.root.resolved_at == null).length;
   const resolvedCount = threads.length - openCount;
-
-  // --- selection -> offsets --------------------------------------------------
-  // On mouseup inside the article, map the actual DOM selection back to
-  // (block_index, start/end offset) in the SOURCE markdown. We locate the
-  // rendered [data-block-index] wrapper the selection STARTS in (not a top-down
-  // scan for the selected string), so selecting the 2nd of two identical spans
-  // anchors the 2nd. When the selection crosses block wrappers we clamp to the
-  // first block per the plan: offsets cover the first block's selected
-  // substring, quoted_text keeps the full selection for fuzzy fallback. Offsets
-  // are computed against the source, before citation linkification, so
-  // highlighting and citation links compose.
-  const handleMouseUp = useCallback(() => {
-    if (isEmpty) return;
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
-    const fullSelected = selection.toString();
-    if (!fullSelected.trim()) return;
-    const range = selection.getRangeAt(0);
-    const article = articleRef.current;
-    if (!article || !article.contains(range.startContainer)) return;
-
-    const startBlockEl = closestBlockEl(range.startContainer);
-    const endBlockEl = closestBlockEl(range.endContainer);
-    if (!startBlockEl) return;
-    const firstBlockIndex = Number(startBlockEl.getAttribute("data-block-index"));
-    const block = blocks[firstBlockIndex];
-    if (!block) return;
-
-    const crossesBlocks = endBlockEl !== startBlockEl;
-    // Text actually selected within the first block: the whole selection for a
-    // single-block drag, or (selection start → end of first block) when it
-    // crosses into later blocks.
-    let selectedInBlock = fullSelected;
-    if (crossesBlocks) {
-      const r = document.createRange();
-      r.setStart(range.startContainer, range.startOffset);
-      r.setEnd(startBlockEl, startBlockEl.childNodes.length);
-      selectedInBlock = r.toString();
-    }
-    if (!selectedInBlock.trim()) return;
-
-    // Which occurrence of the selected text within this block did the user pick?
-    // Count non-overlapping matches in the rendered text before the selection
-    // start so repeated spans disambiguate by position.
-    const prefixRange = document.createRange();
-    prefixRange.setStart(startBlockEl, 0);
-    prefixRange.setEnd(range.startContainer, range.startOffset);
-    const occurrence = countOccurrences(prefixRange.toString(), selectedInBlock.trim());
-
-    const anchor = resolveOffsetsInBlock(block, selectedInBlock, occurrence);
-    if (!anchor) {
-      toast.error("Couldn't anchor that selection — try selecting within a single paragraph");
-      return;
-    }
-    // Preserve the full multi-block selection as the quoted text for fuzzy
-    // fallback + gutter display, while offsets stay clamped to the first block.
-    if (crossesBlocks) {
-      const full = fullSelected.trim();
-      if (full) anchor.quotedText = full;
-    }
-    void sourceHash(sourceMarkdown).then((version) => {
-      setPending({ anchor, version });
-      setComposerKind("user");
-      setComposerBody("");
-    });
-  }, [blocks, isEmpty, sourceMarkdown]);
 
   // --- CRUD ------------------------------------------------------------------
   async function createAnnotation() {
@@ -295,7 +200,7 @@ export function AnnotatableMarkdown({
           target_type: targetType,
           target_id: targetId,
           target_version: pending.version,
-          block_index: pending.anchor.blockIndex,
+          block_index: 0,
           start_offset: pending.anchor.startOffset,
           end_offset: pending.anchor.endOffset,
           quoted_text: pending.anchor.quotedText,
@@ -326,7 +231,7 @@ export function AnnotatableMarkdown({
           target_type: targetType,
           target_id: targetId,
           target_version: thread.root.target_version,
-          block_index: thread.root.block_index,
+          block_index: 0,
           start_offset: thread.root.start_offset,
           end_offset: thread.root.end_offset,
           quoted_text: thread.root.quoted_text,
@@ -370,110 +275,17 @@ export function AnnotatableMarkdown({
     }
   }
 
-  // --- inline highlight decoration -------------------------------------------
-  // After render, wrap each anchored thread's quoted_text in <mark>s inside the
-  // article DOM. The search is scoped to the thread's resolved SOURCE block
-  // (rendered in its own [data-block-index] wrapper) and to the specific
-  // occurrence of the quoted text within that block, so repeated text (e.g.
-  // "$120,000" appearing twice) highlights the span the comment actually
-  // anchored to rather than the first match in the whole article. Clicking a
-  // mark activates its gutter thread.
-  useEffect(() => {
-    const root = articleRef.current;
-    if (!root) return;
-    // Clear previous highlights (unwrap our marks) - both comment marks and
-    // verification-flag marks share this pass since both are pure derived
-    // decoration recomputed from current props/state on every run.
-    root.querySelectorAll("mark[data-annotation], mark[data-verify-flag]").forEach((el) => {
-      const parent = el.parentNode;
-      if (!parent) return;
-      while (el.firstChild) parent.insertBefore(el.firstChild, el);
-      parent.removeChild(el);
-      parent.normalize();
+  function handleNewSelection(anchor: AnchorOffsets) {
+    void sourceHash(sourceMarkdown).then((version) => {
+      setPending({ anchor, version });
+      setComposerKind("user");
+      setComposerBody("");
     });
-
-    for (const { issue, anchor } of verifyAnchors) {
-      const quoted = anchor.quotedText.trim();
-      if (!quoted) continue;
-      const blockEl = root.querySelector<HTMLElement>(`[data-block-index="${anchor.blockIndex}"]`);
-      if (!blockEl) continue;
-      const srcBlock = blocks[anchor.blockIndex];
-      const occurrence = srcBlock
-        ? occurrenceBeforeOffset(srcBlock.text, anchor.startOffset, quoted)
-        : 0;
-      const severityClass =
-        issue.severity === "critical"
-          ? "shadow-[inset_0_-2px_0_theme(colors.destructive.DEFAULT)]"
-          : issue.severity === "warning"
-            ? "shadow-[inset_0_-2px_0_theme(colors.amber.500)]"
-            : "shadow-[inset_0_-2px_0_theme(colors.slate.400)]";
-      // `quoted` is copied from the raw markdown source (it's the claim
-      // VerifyAgent quoted), so it may still carry "**bold**"/"`code`" syntax
-      // that never appears as literal characters in the rendered DOM - strip
-      // it before searching rendered text nodes. Comment quotedText never
-      // carries this syntax (it comes from an actual browser selection of
-      // already-rendered text), so that path deliberately isn't touched.
-      markOccurrenceInBlock(blockEl, stripMarkdownEmphasis(quoted), occurrence, () => {
-        const mark = document.createElement("mark");
-        mark.dataset.verifyFlag = issue.severity;
-        mark.className = cn("cursor-pointer rounded-sm bg-transparent", severityClass);
-        mark.addEventListener("click", (e) => {
-          e.stopPropagation();
-          setActiveVerifyIssue(issue);
-        });
-        return mark;
-      });
-    }
-
-    for (const thread of visibleThreads) {
-      if (!thread.anchor) continue;
-      const quoted = thread.anchor.quotedText.trim();
-      if (!quoted) continue;
-      const blockEl = root.querySelector<HTMLElement>(
-        `[data-block-index="${thread.anchor.blockIndex}"]`
-      );
-      if (!blockEl) continue;
-      // Which occurrence of the quoted text within this block did the anchor
-      // point at? Derive it from the stored source offset so the same span is
-      // re-highlighted after reload.
-      const srcBlock = blocks[thread.anchor.blockIndex];
-      const occurrence = srcBlock
-        ? occurrenceBeforeOffset(srcBlock.text, thread.anchor.startOffset, quoted)
-        : 0;
-      const kindClass =
-        thread.root.resolved_at != null
-          ? "bg-slate-200/60 text-muted-foreground"
-          : thread.root.author_kind === "user"
-            ? "bg-accent/15 shadow-[inset_0_-2px_0_theme(colors.accent.DEFAULT)]"
-            : "bg-slate-400/20 shadow-[inset_0_-2px_0_theme(colors.slate.500)]";
-      // A quoted span that crossed a "**bold**"/"`code`" boundary still has
-      // that raw syntax embedded partway through (resolveOffsetsInBlock can't
-      // exclude source characters strictly between its start/end offsets) -
-      // strip it before searching the rendered DOM, which never contains it.
-      // occurrence is still counted in raw-space above; stripping is
-      // order-preserving so the ordinal carries over.
-      markOccurrenceInBlock(blockEl, stripMarkdownEmphasis(quoted), occurrence, () => {
-        const mark = document.createElement("mark");
-        mark.dataset.annotation = thread.root.id;
-        mark.className = cn(
-          "cursor-pointer rounded-sm",
-          kindClass,
-          activeThreadId === thread.root.id && "ring-2 ring-accent"
-        );
-        mark.addEventListener("click", () => setActiveThreadId(thread.root.id));
-        return mark;
-      });
-    }
-  }, [visibleThreads, blocks, sourceMarkdown, activeThreadId, verifyAnchors]);
+  }
 
   return (
     <div className="flex gap-4">
-      <div
-        ref={articleRef}
-        onMouseUp={handleMouseUp}
-        className="min-w-0 flex-1"
-        data-testid="annotatable-article"
-      >
+      <div className="min-w-0 flex-1" data-testid="annotatable-article">
         {!isEmpty && threads.length === 0 && (
           <p className="mb-3 flex items-center gap-1.5 text-xs text-muted-foreground">
             <MessageSquare className="size-3.5" />
@@ -483,16 +295,18 @@ export function AnnotatableMarkdown({
         {isEmpty ? (
           <p className="text-sm text-muted-foreground">This document has no content to display.</p>
         ) : (
-          // Render each source block in its own wrapper tagged with the block's
-          // index. This makes the DOM source-block-aware: selection→offset
-          // mapping and highlight rendering resolve WITHIN the intended block
-          // (and occurrence) instead of scanning the whole article for a quoted
-          // string, so repeated text (e.g. "$120,000" twice) anchors correctly.
-          blocks.map((block) => (
-            <div key={block.index} data-block-index={block.index}>
-              <MarkdownDocument text={block.text} citations={citations} />
-            </div>
-          ))
+          <Annotorious>
+            <RecogitoLayer
+              sourceMarkdown={sourceMarkdown}
+              citations={citations}
+              threads={visibleThreads}
+              verificationIssues={verificationIssues}
+              activeThreadId={activeThreadId}
+              onNewSelection={handleNewSelection}
+              onClickThread={setActiveThreadId}
+              onClickVerify={setActiveVerifyIssue}
+            />
+          </Annotorious>
         )}
       </div>
 
@@ -574,12 +388,12 @@ export function AnnotatableMarkdown({
               {thread.stale && (
                 <div className="mb-2 flex items-center gap-1 text-[11px] text-amber-700">
                   <AlertTriangle className="size-3" />
-                  {thread.anchor ? "Source changed — re-anchored" : "Source changed — detached"}
+                  Source changed — may no longer be highlighted inline
                 </div>
               )}
 
               <div className="mb-2 border-l-2 border-border pl-2 text-[11px] text-muted-foreground">
-                &ldquo;{stripMarkdownEmphasis(thread.root.quoted_text)}&rdquo;
+                &ldquo;{thread.root.quoted_text}&rdquo;
               </div>
 
               {editingId === thread.root.id ? (
@@ -805,99 +619,168 @@ export function AnnotatableMarkdown({
 }
 
 /**
- * Walk up from a DOM node to the nearest ancestor tagged with a source
- * `data-block-index` (the per-block wrapper we render). Returns null if the
- * node is outside any block wrapper.
+ * Everything that needs the Annotorious context (useAnnotator/useSelection)
+ * lives here, as a child of <Annotorious>. Renders the markdown inside a
+ * Recogito TextAnnotator, feeds it the current thread + verification-flag
+ * spans to highlight, and turns new drag-selections / highlight clicks into
+ * callbacks the parent drives its own Dialog/gutter state from.
  */
-function closestBlockEl(node: Node): HTMLElement | null {
-  let el: Node | null = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
-  while (el && el instanceof HTMLElement) {
-    if (el.hasAttribute("data-block-index")) return el;
-    el = el.parentNode;
-  }
-  return null;
+function RecogitoLayer({
+  sourceMarkdown,
+  citations,
+  threads,
+  verificationIssues,
+  activeThreadId,
+  onNewSelection,
+  onClickThread,
+  onClickVerify,
+}: {
+  sourceMarkdown: string;
+  citations?: SourceCitation[];
+  threads: Thread[];
+  verificationIssues?: VerificationFlag[];
+  activeThreadId: string | null;
+  onNewSelection: (anchor: AnchorOffsets) => void;
+  onClickThread: (id: string) => void;
+  onClickVerify: (issue: VerificationFlag) => void;
+}) {
+  const anno = useAnnotator<RecogitoTextAnnotator>();
+  const { selected } = useSelection<TextAnnotation>();
+
+  const threadByRootId = useMemo(() => {
+    const map = new Map<string, Thread>();
+    for (const thread of threads) map.set(thread.root.id, thread);
+    return map;
+  }, [threads]);
+
+  // Each flagged claim needs a concrete (start, end) into the RENDERED
+  // container text before Recogito can place it - VerifyAgent quotes come
+  // from the raw markdown source (may still carry "**"/"`" syntax), so they're
+  // stripped and located by a plain indexOf against the container's
+  // textContent, which is exactly the same coordinate space Recogito's own
+  // Range-based offsets use. A claim that isn't found (paraphrased beyond an
+  // exact substring) simply isn't inline-marked; it's never dropped from the
+  // underlying verification data, only from this presentation.
+  const [verifyAnchors, setVerifyAnchors] = useState<{ issue: VerificationFlag; id: string; anchor: AnchorOffsets }[]>(
+    []
+  );
+  useEffect(() => {
+    if (!verificationIssues?.length) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setVerifyAnchors([]);
+      return;
+    }
+    const container = document.querySelector<HTMLElement>(`.${RECOGITO_CONTAINER_CLASS}`);
+    if (!container) return;
+    const text = container.textContent ?? "";
+    const found: { issue: VerificationFlag; id: string; anchor: AnchorOffsets }[] = [];
+    verificationIssues.forEach((issue, i) => {
+      const claim = stripMarkdownEmphasis(issue.claim).trim();
+      if (!claim) return;
+      const start = text.indexOf(claim);
+      if (start === -1) return;
+      found.push({
+        issue,
+        id: `verify:${i}`,
+        anchor: { startOffset: start, endOffset: start + claim.length, quotedText: claim },
+      });
+    });
+    setVerifyAnchors(found);
+  }, [verificationIssues, sourceMarkdown]);
+
+  const verifyIssueById = useMemo(() => {
+    const map = new Map<string, VerificationFlag>();
+    for (const v of verifyAnchors) map.set(v.id, v.issue);
+    return map;
+  }, [verifyAnchors]);
+
+  // Push the current set of spans to highlight into Recogito. `replace: true`
+  // so toggling Open/Resolved (which changes `threads`) actually removes
+  // highlights that should no longer show, not just adds new ones.
+  useEffect(() => {
+    if (!anno) return;
+    const threadAnnotations: TextAnnotation[] = threads.map((thread) => ({
+      id: thread.root.id,
+      bodies: [],
+      target: {
+        annotation: thread.root.id,
+        selector: [
+          {
+            quote: thread.root.quoted_text,
+            start: thread.root.start_offset,
+            end: thread.root.end_offset,
+          },
+        ],
+      },
+    }));
+    const verifyAnnotations: TextAnnotation[] = verifyAnchors.map(({ id, anchor }) => ({
+      id,
+      bodies: [],
+      target: {
+        annotation: id,
+        selector: [{ quote: anchor.quotedText, start: anchor.startOffset, end: anchor.endOffset }],
+      },
+    }));
+    anno.setAnnotations([...threadAnnotations, ...verifyAnnotations], true);
+  }, [anno, threads, verifyAnchors]);
+
+  // A selection resolves to one of three things: a click on an already-known
+  // thread highlight (open its gutter card), a click on a verify-flag
+  // highlight (open its detail dialog), or a brand-new drag-selection with no
+  // matching id yet (hand its offsets to the parent to drive the compose
+  // dialog). Either way we immediately cancel Recogito's own "selected" state
+  // since the backend list (via the effect above) is the single source of
+  // truth for what's actually persisted and highlighted.
+  useEffect(() => {
+    if (!anno || selected.length === 0) return;
+    for (const { annotation } of selected) {
+      if (threadByRootId.has(annotation.id)) {
+        onClickThread(annotation.id);
+      } else if (verifyIssueById.has(annotation.id)) {
+        const issue = verifyIssueById.get(annotation.id);
+        if (issue) onClickVerify(issue);
+      } else {
+        const sel = annotation.target?.selector?.[0];
+        const quote = sel?.quote?.trim();
+        if (sel && quote) {
+          onNewSelection({ startOffset: sel.start, endOffset: sel.end, quotedText: quote });
+        }
+      }
+    }
+    anno.cancelSelected();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
+
+  const style = useCallback(
+    (annotation: TextAnnotation): HighlightStyle | undefined => {
+      const id = annotation.id;
+      if (verifyIssueById.has(id)) {
+        const issue = verifyIssueById.get(id)!;
+        const color =
+          issue.severity === "critical" ? "#dc2626" : issue.severity === "warning" ? "#d97706" : "#94a3b8";
+        return { fillOpacity: 0, underlineColor: color, underlineThickness: 2, underlineOffset: 2 };
+      }
+      const thread = threadByRootId.get(id);
+      if (thread) {
+        const resolved = thread.root.resolved_at != null;
+        const active = id === activeThreadId;
+        const color = resolved ? "#94a3b8" : thread.root.author_kind === "user" ? "#ea580c" : "#64748b";
+        return {
+          fill: color,
+          fillOpacity: resolved ? 0.12 : active ? 0.22 : 0.14,
+          underlineColor: color,
+          underlineThickness: active ? 3 : 2,
+          underlineOffset: 2,
+        };
+      }
+      return undefined;
+    },
+    [threadByRootId, verifyIssueById, activeThreadId]
+  );
+
+  return (
+    <TextAnnotator className={RECOGITO_CONTAINER_CLASS} style={style}>
+      <MarkdownDocument text={sourceMarkdown} citations={citations} />
+    </TextAnnotator>
+  );
 }
-
-/**
- * Count non-overlapping occurrences of `needle` in `haystack`. Used to derive
- * which occurrence of a repeated span the user selected, from the rendered text
- * preceding the selection start.
- */
-function countOccurrences(haystack: string, needle: string): number {
-  if (!needle) return 0;
-  let count = 0;
-  let from = 0;
-  for (;;) {
-    const at = haystack.indexOf(needle, from);
-    if (at === -1) return count;
-    count += 1;
-    from = at + needle.length;
-  }
-}
-
-/**
- * Wrap the `occurrence`-th (0-based) instance of `needle` under `blockEl` using
- * freshly built <mark> elements (from `makeMark`, called once per DOM text node
- * the match touches). Matching runs against the concatenation of ALL text nodes
- * in the block, not node-by-node, because a needle frequently spans an inline
- * element boundary - e.g. "...must be **in writing** and..." renders as three
- * sibling text nodes ("...must be ", "in writing", " and...") once react-markdown
- * turns "**in writing**" into a <strong>, and a plain per-node substring search
- * would never see the full phrase in any single node. `Range.surroundContents()`
- * also can't be used here since it throws when a range only partially contains
- * an element (exactly the <strong> case above) - so each covered node gets its
- * own <mark> from a fresh `makeMark()` call instead of one Range-wrapped span.
- */
-function markOccurrenceInBlock(
-  blockEl: HTMLElement,
-  needle: string,
-  occurrence: number,
-  makeMark: () => HTMLElement
-): void {
-  if (!needle) return;
-  const walker = document.createTreeWalker(blockEl, NodeFilter.SHOW_TEXT);
-  const segments: { node: Text; start: number; end: number }[] = [];
-  let full = "";
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    const text = node.textContent ?? "";
-    if (!text) continue;
-    segments.push({ node: node as Text, start: full.length, end: full.length + text.length });
-    full += text;
-  }
-
-  const matches: number[] = [];
-  for (let from = 0; ; ) {
-    const idx = full.indexOf(needle, from);
-    if (idx === -1) break;
-    matches.push(idx);
-    from = idx + needle.length;
-  }
-  if (matches.length === 0) return;
-
-  // Requested occurrence not found (e.g. rendered text differs from source in
-  // a way that shifted the count): fall back to the first match.
-  const matchStart = matches[occurrence] ?? matches[0];
-  const matchEnd = matchStart + needle.length;
-
-  for (const seg of segments) {
-    const from = Math.max(seg.start, matchStart);
-    const to = Math.min(seg.end, matchEnd);
-    if (from >= to) continue;
-    wrapNodeRange(seg.node, from - seg.start, to - seg.start, makeMark);
-  }
-}
-
-function wrapNodeRange(node: Text, start: number, end: number, makeMark: () => HTMLElement): void {
-  try {
-    const range = document.createRange();
-    range.setStart(node, start);
-    range.setEnd(node, end);
-    range.surroundContents(makeMark());
-  } catch {
-    // surroundContents throws if the range partially crosses elements; skip
-    // this segment (the other covered segments still get marked).
-  }
-}
-
-
