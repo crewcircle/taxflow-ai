@@ -320,7 +320,16 @@ class QueriesRepo:
             FROM queries q
             LEFT JOIN engagements e ON e.id = q.engagement_id
             LEFT JOIN firm_clients fc ON fc.id = e.firm_client_id
-            WHERE q.client_id = %s{archived}
+            -- A clarify round-trip persists TWO rows for one logical question: a
+            -- terminal placeholder (model_used='clarify', no answer - the graph
+            -- short-circuited to ask a clarifying question) and then, once the
+            -- user answers, a second row from the real re-submission whose
+            -- question text starts with the same original text. Both showing up
+            -- in the sidebar looked like the same question appearing twice with a
+            -- lag between them. The placeholder isn't a real answer, so hide it
+            -- from history - its row/trace still exists for the per-session
+            -- clarify-cap check, this only affects what the sidebar lists.
+            WHERE q.client_id = %s{archived} AND q.model_used IS DISTINCT FROM 'clarify'
             ORDER BY q.created_at DESC
             LIMIT %s
             """,

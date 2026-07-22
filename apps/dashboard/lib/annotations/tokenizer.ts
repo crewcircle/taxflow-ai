@@ -58,6 +58,45 @@ export function stripMarkdownEmphasis(text: string): string {
 }
 
 /**
+ * Same stripping as `stripMarkdownEmphasis`, but also returns a map from each
+ * character's index in the STRIPPED string back to its index in `raw`. Needed
+ * because a user's DOM selection (`window.getSelection().toString()`) is
+ * always rendered text - it never contains "**"/"__"/"`" - so a selection
+ * that crosses an emphasis/code boundary (e.g. selecting "32.5% offset rate"
+ * out of "the **32.5%** offset rate applies") can never `indexOf` inside the
+ * raw markdown source, which still has the delimiters interposed. Matching
+ * against the stripped text instead, then projecting the match back onto raw
+ * offsets via this map, is what lets `resolveOffsetsInBlock` anchor selections
+ * like that (this was the one-sided version of the fix previously applied
+ * only to VerifyAgent's flagged-claim anchoring, never to user selections).
+ */
+function stripMarkdownEmphasisWithMap(raw: string): { stripped: string; indexMap: number[] } {
+  const pattern = /\*\*(.+?)\*\*|__(.+?)__|`(.+?)`/g;
+  let stripped = "";
+  const indexMap: number[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  function appendPlain(text: string, rawStart: number) {
+    for (let k = 0; k < text.length; k++) {
+      stripped += text[k];
+      indexMap.push(rawStart + k);
+    }
+  }
+
+  while ((match = pattern.exec(raw)) !== null) {
+    appendPlain(raw.slice(cursor, match.index), cursor);
+    const inner = match[1] ?? match[2] ?? match[3] ?? "";
+    const openDelimLen = (match[0].length - inner.length) / 2;
+    appendPlain(inner, match.index + openDelimLen);
+    cursor = match.index + match[0].length;
+  }
+  appendPlain(raw.slice(cursor), cursor);
+  indexMap.push(raw.length);
+  return { stripped, indexMap };
+}
+
+/**
  * Split source markdown into top-level blocks on blank lines, preserving each
  * block's character offsets into the original string. Empty/whitespace-only
  * segments are dropped so a run of blank lines never yields a phantom block.
@@ -127,6 +166,26 @@ export function resolveOffsetsInBlock(
         quotedText: raw,
       };
     }
+  }
+
+  // `raw` came from a rendered DOM selection, so it never contains markdown
+  // emphasis/code syntax - but `block.text` (raw markdown) still does. A
+  // selection spanning a "**bold**" or "`code`" boundary can't `indexOf`
+  // above, so retry against a stripped view of the block and project the
+  // match back onto raw offsets. This is the fix for selections that cross
+  // formatting - the single most common reason "select text, add a comment"
+  // silently failed on answers dense with bolded figures.
+  const { stripped, indexMap } = stripMarkdownEmphasisWithMap(block.text);
+  const strippedIdx = nthIndexOf(stripped, raw, occurrence);
+  if (strippedIdx !== -1) {
+    const rawStart = indexMap[strippedIdx];
+    const rawEnd = indexMap[strippedIdx + raw.length];
+    return {
+      blockIndex: block.index,
+      startOffset: rawStart,
+      endOffset: rawEnd,
+      quotedText: block.text.slice(rawStart, rawEnd),
+    };
   }
 
   // Fuzzy: locate the normalised needle inside the normalised block text, then

@@ -446,7 +446,13 @@ export function AnnotatableMarkdown({
           : thread.root.author_kind === "user"
             ? "bg-accent/15 shadow-[inset_0_-2px_0_theme(colors.accent.DEFAULT)]"
             : "bg-slate-400/20 shadow-[inset_0_-2px_0_theme(colors.slate.500)]";
-      markOccurrenceInBlock(blockEl, quoted, occurrence, () => {
+      // A quoted span that crossed a "**bold**"/"`code`" boundary still has
+      // that raw syntax embedded partway through (resolveOffsetsInBlock can't
+      // exclude source characters strictly between its start/end offsets) -
+      // strip it before searching the rendered DOM, which never contains it.
+      // occurrence is still counted in raw-space above; stripping is
+      // order-preserving so the ordinal carries over.
+      markOccurrenceInBlock(blockEl, stripMarkdownEmphasis(quoted), occurrence, () => {
         const mark = document.createElement("mark");
         mark.dataset.annotation = thread.root.id;
         mark.className = cn(
@@ -490,41 +496,46 @@ export function AnnotatableMarkdown({
         )}
       </div>
 
-      {/* gutter thread panel */}
+      {/* gutter thread panel - only takes up space once there's something to
+          show; an always-visible "Comments 0, Open (0), Resolved (0)" column
+          competed with the answer for no reason on every fresh question. */}
+      {threads.length > 0 && (
       <aside className="hidden w-80 shrink-0 border-l border-border pl-4 lg:block" data-testid="annotation-gutter">
         <div className="mb-3 flex items-center gap-2">
           <MessageSquare className="size-4" />
           <span className="text-sm font-semibold">Comments</span>
           <span className="rounded-full bg-muted px-2 text-xs text-muted-foreground">{threads.length}</span>
-          <div className="ml-auto flex gap-1">
-            <button
-              type="button"
-              onClick={() => setShowResolved(false)}
-              className={cn(
-                "rounded-full border border-border px-2.5 py-0.5 text-xs",
-                !showResolved ? "bg-foreground text-background" : "text-muted-foreground"
-              )}
-            >
-              Open ({openCount})
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowResolved(true)}
-              className={cn(
-                "rounded-full border border-border px-2.5 py-0.5 text-xs",
-                showResolved ? "bg-foreground text-background" : "text-muted-foreground"
-              )}
-            >
-              Resolved ({resolvedCount})
-            </button>
-          </div>
+          {resolvedCount > 0 && (
+            <div className="ml-auto flex gap-1">
+              <button
+                type="button"
+                onClick={() => setShowResolved(false)}
+                className={cn(
+                  "rounded-full border border-border px-2.5 py-0.5 text-xs",
+                  !showResolved ? "bg-foreground text-background" : "text-muted-foreground"
+                )}
+              >
+                Open ({openCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowResolved(true)}
+                className={cn(
+                  "rounded-full border border-border px-2.5 py-0.5 text-xs",
+                  showResolved ? "bg-foreground text-background" : "text-muted-foreground"
+                )}
+              >
+                Resolved ({resolvedCount})
+              </button>
+            </div>
+          )}
         </div>
 
         {visibleThreads.length === 0 && (
           <p className="text-xs text-muted-foreground">
             {showResolved
               ? "No resolved comments."
-              : "No comments yet. Select text in the document to add one."}
+              : "All comments resolved."}
           </p>
         )}
 
@@ -568,7 +579,7 @@ export function AnnotatableMarkdown({
               )}
 
               <div className="mb-2 border-l-2 border-border pl-2 text-[11px] text-muted-foreground">
-                &ldquo;{thread.root.quoted_text}&rdquo;
+                &ldquo;{stripMarkdownEmphasis(thread.root.quoted_text)}&rdquo;
               </div>
 
               {editingId === thread.root.id ? (
@@ -677,6 +688,7 @@ export function AnnotatableMarkdown({
           ))}
         </div>
       </aside>
+      )}
 
       {/* compose dialog — activated by a text selection */}
       <Dialog open={pending != null} onOpenChange={(open) => !open && setPending(null)}>

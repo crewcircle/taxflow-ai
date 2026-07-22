@@ -75,6 +75,38 @@ test("resolveOffsetsInBlock returns null when the text is absent", () => {
   assert.equal(resolveOffsetsInBlock(block, "not present", 0), null);
 });
 
+// A DOM selection is always rendered text (react-markdown has already turned
+// "**32.5%**" into a <strong> element, so window.getSelection().toString()
+// never contains the "**"), but block.text is the raw markdown source, which
+// still does. Selecting across that boundary was the exact scenario that made
+// "select text, add a comment" fail on answers dense with bolded figures.
+test("resolveOffsetsInBlock anchors a selection that crosses a bold boundary", () => {
+  const [block] = splitBlocks("the **32.5%** offset rate applies to this claim.");
+  const hit = resolveOffsetsInBlock(block, "32.5% offset rate", 0);
+  assert.ok(hit);
+  // The raw span starts right at the inner text (after the opening "**") and
+  // necessarily still contains the closing "**" partway through, since a raw
+  // offset span can't skip over source characters that sit strictly between
+  // its start and end - callers that display/re-search this text (the gutter,
+  // DOM re-highlighting) are expected to run it through stripMarkdownEmphasis.
+  assert.equal(block.text.slice(hit!.startOffset, hit!.endOffset), "32.5%** offset rate");
+});
+
+test("resolveOffsetsInBlock anchors a selection that crosses a code-span boundary", () => {
+  const [block] = splitBlocks("run the `--dry-run` flag first before applying.");
+  const hit = resolveOffsetsInBlock(block, "the --dry-run flag", 0);
+  assert.ok(hit);
+  assert.equal(block.text.slice(hit!.startOffset, hit!.endOffset), "the `--dry-run` flag");
+});
+
+test("resolveOffsetsInBlock anchors the requested occurrence even across a bold boundary", () => {
+  const [block] = splitBlocks("first **32.5%** here and second **32.5%** there.");
+  const first = resolveOffsetsInBlock(block, "32.5%", 0);
+  const second = resolveOffsetsInBlock(block, "32.5%", 1);
+  assert.ok(first && second);
+  assert.notEqual(first!.startOffset, second!.startOffset);
+});
+
 test("reanchor prefers the original block then scans others", () => {
   const blocks = splitBlocks("alpha owes tax\n\nbeta owes tax");
   // stored in block 1, still there
