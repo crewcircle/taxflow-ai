@@ -846,7 +846,11 @@ export default function QueryPage() {
   const [repeatCount, setRepeatCount] = useState(0);
   const [copied, setCopied] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(true);
-  const [sourcesOpen, setSourcesOpen] = useState(true);
+  // Collapsed by default - a citation superscript click (href="#source-N")
+  // reveals it and jumps straight to the matching excerpt (see the
+  // hashchange effect below), rather than it permanently occupying the
+  // right column for every answer.
+  const [sourcesOpen, setSourcesOpen] = useState(false);
   const [historyHighlighted, setHistoryHighlighted] = useState(false);
 
   const [history, setHistory] = useState<QueryListItem[]>([]);
@@ -916,6 +920,27 @@ export default function QueryPage() {
     window.addEventListener(NOTIFICATIONS_UPDATED_EVENT, loadHistory);
     return () => window.removeEventListener(NOTIFICATIONS_UPDATED_EVENT, loadHistory);
   }, [loadHistory]);
+
+  // A citation superscript in the answer is a real <a href="#source-N"> (see
+  // MarkdownDocument's linkifyCitations). The browser's native anchor-jump
+  // fires on click, before React has committed the panel into the DOM if it
+  // was collapsed - so that first jump finds nothing. Reveal the panel here,
+  // then re-run the scroll (and :target-style highlight via a manual class,
+  // since a hash that hasn't changed won't retrigger :target) once the
+  // element actually exists.
+  useEffect(() => {
+    function openOnSourceHash() {
+      const hash = window.location.hash;
+      if (!/^#source-\d+$/.test(hash)) return;
+      setSourcesOpen(true);
+      requestAnimationFrame(() => {
+        document.getElementById(hash.slice(1))?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
+    openOnSourceHash();
+    window.addEventListener("hashchange", openOnSourceHash);
+    return () => window.removeEventListener("hashchange", openOnSourceHash);
+  }, []);
 
   // Header "Questions asked" link deep-links here with ?focus=history so it can
   // open the history sidebar (or just flash it if already open) from any page.

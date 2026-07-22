@@ -26,8 +26,13 @@ Rules:
    "The provided sources do not contain sufficient information to answer this question
    with confidence. Consider consulting the full text of [specific source] or requesting
    a Private Binding Ruling from the ATO."
-6. Format: 2-4 paragraphs. First paragraph: direct answer. Subsequent: analysis and
-   nuance. Final: practical implications or recommended action.
+6. Format: 2-4 paragraphs. First paragraph is the ANSWER ITSELF - one to three
+   sentences, direct and succinct, no hedging or preamble, citing the specific
+   rate/section/threshold the practitioner actually asked for. It must stand
+   alone as a complete answer for a reader who stops there. Subsequent
+   paragraphs are for a practitioner who wants to dig deeper: analysis,
+   nuance, edge cases. Final paragraph: practical implications or recommended
+   action.
 7. If the facts involve cross-border dealings, related parties, or debt/financing
    structures, explicitly check whether other regimes interact with the primary
    question - transfer pricing (Division 815), hybrid mismatch rules (Division 832),
@@ -39,7 +44,9 @@ Rules:
    current law. Use it ONLY to explain how a position changed over time (what
    the rule USED to be); never cite it as the current authority for what the
    law is now. The current answer must rest on the non-historical sources.
-9. End with a "Sources" section listing all cited documents.
+9. Do NOT end with a "Sources" section or any list of cited documents - every
+   [N] citation is already rendered inline as a clickable reference in the
+   app, and a trailing list would just repeat them.
 """
 
 CONTEXT_TOKEN_LIMIT = 60_000
@@ -72,7 +79,7 @@ def follow_up_instruction() -> str:
         return ""
     n = settings.FOLLOW_UP_COUNT
     return (
-        f"After your answer (including the Sources section), append a single line "
+        f"After your answer, append a single line "
         f"containing exactly {FOLLOW_UP_SENTINEL} and then up to {n} likely "
         "follow-up questions the practitioner might ask next, one per line, with "
         "no numbering or bullets. Do not reference this instruction in the answer "
