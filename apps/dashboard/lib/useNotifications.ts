@@ -20,6 +20,18 @@ export const NOTIFICATIONS_UPDATED_EVENT = "taxflow:notifications-updated";
 
 const POLL_INTERVAL_MS = 30_000;
 
+// Module-level guard against more than one poll interval ever running at
+// once. Investigated a live bug where this poll's effective frequency was
+// running ~10-15x faster than POLL_INTERVAL_MS, which only happens if
+// multiple copies of this effect are active simultaneously - this hook is
+// called from exactly one place in the tree (NotificationBell), so this
+// should be structurally impossible, but a stray second mount (e.g. from a
+// framework-level remount this app has been fighting) would otherwise
+// silently stack intervals with no error and no easy way to notice. Belt and
+// suspenders: only the FIRST mount gets a real interval; any concurrent
+// second mount is a no-op until the first one unmounts.
+let activePoller = false;
+
 /**
  * Lightweight polling hook for the notifications feed. Polls every ~30s (SSE
  * can't deliver a completion event after the query stream closes, so the
@@ -79,6 +91,8 @@ export function useNotifications() {
   }, []);
 
   useEffect(() => {
+    if (activePoller) return;
+    activePoller = true;
     // Poll on an interval. The first tick fires immediately via a 0ms timer so
     // the state update happens in a callback (not synchronously in the effect
     // body), then every POLL_INTERVAL_MS thereafter.
@@ -87,6 +101,7 @@ export function useNotifications() {
     return () => {
       clearTimeout(kickoff);
       clearInterval(timer);
+      activePoller = false;
     };
   }, [refresh]);
 

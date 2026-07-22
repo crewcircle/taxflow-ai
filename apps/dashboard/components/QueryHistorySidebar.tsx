@@ -1,13 +1,37 @@
 "use client";
 
-import { useEffect, useRef, useState, type RefObject } from "react";
-import { Plus, MessageSquare, MessagesSquare, PanelLeftClose } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { AlertCircle, Plus, MessageSquare, MessagesSquare, PanelLeftClose } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ReResearchBadge } from "@/components/ReResearchBadge";
 import { ResourceRowActions } from "@/components/resource-actions/ResourceRowActions";
+import type { EngagementSelection } from "@/components/EngagementPicker";
 import { cn } from "@/lib/utils";
+
+// Same shape as the old standalone /dashboard/clients page's directory -
+// that page's whole job (which client/engagement needs attention, how much
+// is on file) now lives here instead, since a separate nav destination for
+// it was two doors to the same client/engagement information this sidebar
+// already organizes by.
+interface DirectoryEngagement {
+  id: string;
+  engagement_number: number;
+  description: string;
+  firm_client_id: string;
+  query_count: number;
+  document_count: number;
+  needs_attention: boolean;
+}
+
+interface DirectoryClient {
+  firm_client_id: string;
+  firm_client_name: string;
+  engagements: DirectoryEngagement[];
+  needs_attention_count: number;
+}
 
 export interface QueryListItem {
   id: string;
@@ -43,6 +67,10 @@ interface QueryHistorySidebarProps {
   // session_id -> label, for sessions the user has renamed. Sessions with no
   // entry here fall back to their first question's text.
   sessionLabels?: Record<string, string>;
+  // Starts a fresh question already attached to an engagement that has no
+  // conversations yet (from the directory fetch below) - the old Clients
+  // page equivalent was navigating to /dashboard/query?engagement_id=...
+  onSelectEngagement: (selection: EngagementSelection) => void;
 }
 
 type HistoryRow =
@@ -155,8 +183,51 @@ export function QueryHistorySidebar({
   onDeleteSession,
   highlightedId,
   sessionLabels = {},
+  onSelectEngagement,
 }: QueryHistorySidebarProps) {
   const [clientFilter, setClientFilter] = useState("");
+  const [directory, setDirectory] = useState<DirectoryClient[] | null>(null);
+
+  useEffect(() => {
+    fetch("/api/engagements/directory")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setDirectory)
+      .catch(() => {});
+  }, []);
+
+  const engagementInfoById = useMemo(() => {
+    const map = new Map<string, DirectoryEngagement>();
+    for (const client of directory ?? []) {
+      for (const eng of client.engagements) map.set(eng.id, eng);
+    }
+    return map;
+  }, [directory]);
+
+  const clientAttentionByName = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const client of directory ?? []) map.set(client.firm_client_name, client.needs_attention_count);
+    return map;
+  }, [directory]);
+
+  // Directory engagements with zero conversations yet don't appear in
+  // `history` at all (it's derived purely from past questions) - these are
+  // the ones the old Clients page surfaced as "nothing done here yet."
+  const engagementIdsInHistory = useMemo(
+    () => new Set(history.map((h) => h.engagement_id).filter((id): id is string => !!id)),
+    [history]
+  );
+  const freshEngagements = useMemo(() => {
+    const rows: { client: DirectoryClient; engagement: DirectoryEngagement }[] = [];
+    for (const client of directory ?? []) {
+      for (const engagement of client.engagements) {
+        if (!engagementIdsInHistory.has(engagement.id) && engagement.query_count === 0) {
+          rows.push({ client, engagement });
+        }
+      }
+    }
+    return rows;
+  }, [directory, engagementIdsInHistory]);
+
   // Highlight matches instead of hiding non-matches, so filtering by client
   // never makes the rest of the question history disappear.
   const matchedIds = clientFilter.trim()
@@ -231,21 +302,51 @@ export function QueryHistorySidebar({
         {matchedIds && matchedIds.size === 0 && (
           <p className="p-3 text-xs text-muted-foreground">No questions for this client.</p>
         )}
-        {clientGroups.map((client) => (
+        {clientGroups.map((client) => {
+          const attentionCount = clientAttentionByName.get(client.clientName) ?? 0;
+          return (
           <div key={client.key} className="mb-4">
-            <div className="mb-1 flex items-center justify-between px-2">
-              <p className="truncate text-xs font-semibold text-foreground">{client.clientName}</p>
+            <div className="mb-1 flex items-center justify-between gap-1 px-2">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <p className="truncate text-xs font-semibold text-foreground">{client.clientName}</p>
+                {attentionCount > 0 && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge className="h-4 gap-0.5 border-amber-600/30 bg-amber-100 px-1 text-[9px] text-amber-800">
+                        <AlertCircle className="size-2.5" />
+                        {attentionCount}
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {attentionCount} engagement{attentionCount === 1 ? "" : "s"} with an unresolved comment or
+                      pending re-research
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
               <span className="shrink-0 text-[10px] text-muted-foreground">
                 {formatRelativeTime(client.lastActivity)}
               </span>
             </div>
             <div className="space-y-2">
-              {client.engagements.map((engagementGroup) => (
+              {client.engagements.map((engagementGroup) => {
+                const info = engagementInfoById.get(engagementGroup.key);
+                return (
                 <div key={engagementGroup.key} className="border-l-2 border-border/70 pl-2">
                   <div className="mb-0.5 flex items-center justify-between gap-1 px-1">
-                    <p className="line-clamp-1 text-[11px] font-medium text-muted-foreground">
-                      {engagementGroup.label}
-                    </p>
+                    <div className="flex min-w-0 items-center gap-1">
+                      <p className="line-clamp-1 text-[11px] font-medium text-muted-foreground">
+                        {engagementGroup.label}
+                      </p>
+                      {info?.needs_attention && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <AlertCircle className="size-3 shrink-0 text-amber-600" />
+                          </TooltipTrigger>
+                          <TooltipContent>Has an unresolved comment or a pending re-research</TooltipContent>
+                        </Tooltip>
+                      )}
+                    </div>
                     <span className="shrink-0 text-[10px] text-muted-foreground">
                       {formatRelativeTime(engagementGroup.lastActivity)}
                     </span>
@@ -309,10 +410,45 @@ export function QueryHistorySidebar({
                     })}
                   </div>
                 </div>
+                );
+              })}
+            </div>
+          </div>
+          );
+        })}
+
+        {freshEngagements.length > 0 && (
+          <div className="mb-2">
+            <p className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              No conversations yet
+            </p>
+            <div className="space-y-0.5">
+              {freshEngagements.map(({ client, engagement }) => (
+                <button
+                  key={engagement.id}
+                  type="button"
+                  onClick={() =>
+                    onSelectEngagement({
+                      engagement: {
+                        id: engagement.id,
+                        firm_client_id: engagement.firm_client_id,
+                        engagement_number: engagement.engagement_number,
+                        description: engagement.description,
+                        status: "active",
+                      },
+                      clientName: client.firm_client_name,
+                    })
+                  }
+                  className="flex w-full min-w-0 items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <span className="truncate">
+                    {client.firm_client_name} · #{engagement.engagement_number} {engagement.description}
+                  </span>
+                </button>
               ))}
             </div>
           </div>
-        ))}
+        )}
       </div>
     </div>
   );
