@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { MessageSquare, Check, Reply, Pencil, Trash2, HelpCircle, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -91,6 +91,22 @@ function relativeTime(iso: string): string {
   return "just now";
 }
 
+// Walks the container's text nodes to find the element holding the character
+// at `offset` (same coordinate space as container.textContent, which is what
+// the verify-anchor offsets are computed against) - used to scroll a flagged
+// claim into view without depending on Recogito's internal highlight DOM.
+function findElementAtTextOffset(container: HTMLElement, offset: number): HTMLElement | null {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let acc = 0;
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const len = node.textContent?.length ?? 0;
+    if (acc + len > offset) return node.parentElement;
+    acc += len;
+  }
+  return null;
+}
+
 /**
  * Reusable annotation layer over rendered markdown, keyed by `targetType`.
  * Renders the source through the shared MarkdownDocument inside a Recogito
@@ -101,21 +117,35 @@ function relativeTime(iso: string): string {
  * CRUD against /api/annotations) and only feeds Recogito the flat list of
  * spans to highlight + a style callback.
  */
-export function AnnotatableMarkdown({
-  targetType,
-  targetId,
-  sourceMarkdown,
-  citations,
-  authorName,
-  verificationIssues,
-}: {
+// Imperative handle so a sibling outside the Annotorious tree (the query
+// page's TrustRibbon) can drive "jump to the next flagged claim" without
+// owning any of Recogito's internal state itself.
+export interface AnnotatableMarkdownHandle {
+  focusNextFlag: (severity?: "critical" | "warning" | "note") => void;
+}
+
+export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
   targetType: TargetType;
   targetId: string;
   sourceMarkdown: string;
   citations?: SourceCitation[];
   authorName?: string | null;
   verificationIssues?: VerificationFlag[];
-}) {
+  showHint?: boolean;
+}>(function AnnotatableMarkdown({
+  targetType,
+  targetId,
+  sourceMarkdown,
+  citations,
+  authorName,
+  verificationIssues,
+  // The "select text to comment" hint. Defaults on (the document viewer shows
+  // one document at a time, so it's fine there) - the query page passes
+  // false and renders its own persistent, non-repeating hint instead, since
+  // a fresh AnnotatableMarkdown mounts per answer there and the hint would
+  // otherwise reappear after every question.
+  showHint = true,
+}, ref) {
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [serverHash, setServerHash] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
@@ -137,6 +167,66 @@ export function AnnotatableMarkdown({
   const [activeVerifyIssue, setActiveVerifyIssue] = useState<VerificationFlag | null>(null);
 
   const isEmpty = sourceMarkdown.trim().length === 0;
+
+  // Lifted out of RecogitoLayer (rather than computed there) so this
+  // component - outside the Annotorious tree - can also drive "jump to the
+  // next flagged claim" from the ribbon via the imperative handle below.
+  // Each flagged claim needs a concrete (start, end) into the RENDERED
+  // container text - VerifyAgent quotes come from the raw markdown source
+  // (may still carry "**"/"`" syntax), so they're stripped and located by a
+  // plain indexOf against the container's textContent, the same coordinate
+  // space Recogito's own Range-based offsets use. A claim that isn't found
+  // (paraphrased beyond an exact substring) simply isn't inline-marked; it's
+  // never dropped from the underlying verification data, only from this
+  // presentation.
+  const [verifyAnchors, setVerifyAnchors] = useState<
+    { issue: VerificationFlag; id: string; anchor: AnchorOffsets }[]
+  >([]);
+  useEffect(() => {
+    if (!verificationIssues?.length) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setVerifyAnchors([]);
+      return;
+    }
+    const container = document.querySelector<HTMLElement>(`.${RECOGITO_CONTAINER_CLASS}`);
+    if (!container) return;
+    const text = container.textContent ?? "";
+    const found: { issue: VerificationFlag; id: string; anchor: AnchorOffsets }[] = [];
+    verificationIssues.forEach((issue, i) => {
+      const claim = stripMarkdownEmphasis(issue.claim).trim();
+      if (!claim) return;
+      const start = text.indexOf(claim);
+      if (start === -1) return;
+      found.push({
+        issue,
+        id: `verify:${i}`,
+        anchor: { startOffset: start, endOffset: start + claim.length, quotedText: claim },
+      });
+    });
+    // Reading order, so "next" cycles top-to-bottom through the answer.
+    found.sort((a, b) => a.anchor.startOffset - b.anchor.startOffset);
+    setVerifyAnchors(found);
+  }, [verificationIssues, sourceMarkdown]);
+
+  const flagCursorRef = useRef(0);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      focusNextFlag(severity) {
+        const container = document.querySelector<HTMLElement>(`.${RECOGITO_CONTAINER_CLASS}`);
+        if (!container) return;
+        const candidates = severity ? verifyAnchors.filter((v) => v.issue.severity === severity) : verifyAnchors;
+        if (candidates.length === 0) return;
+        const target = candidates[flagCursorRef.current % candidates.length];
+        flagCursorRef.current += 1;
+        const el = findElementAtTextOffset(container, target.anchor.startOffset);
+        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+        setActiveVerifyIssue(target.issue);
+      },
+    }),
+    [verifyAnchors]
+  );
 
   const loadAnnotations = useCallback(async () => {
     try {
@@ -286,7 +376,7 @@ export function AnnotatableMarkdown({
   return (
     <div className="flex gap-4">
       <div className="min-w-0 flex-1" data-testid="annotatable-article">
-        {!isEmpty && threads.length === 0 && (
+        {showHint && !isEmpty && threads.length === 0 && (
           <p className="mb-3 flex items-center gap-1.5 text-xs text-muted-foreground">
             <MessageSquare className="size-3.5" />
             Select any text below to ask a question or leave a note on it
@@ -300,7 +390,7 @@ export function AnnotatableMarkdown({
               sourceMarkdown={sourceMarkdown}
               citations={citations}
               threads={visibleThreads}
-              verificationIssues={verificationIssues}
+              verifyAnchors={verifyAnchors}
               activeThreadId={activeThreadId}
               onNewSelection={handleNewSelection}
               onClickThread={setActiveThreadId}
@@ -616,7 +706,7 @@ export function AnnotatableMarkdown({
       </Dialog>
     </div>
   );
-}
+});
 
 /**
  * Everything that needs the Annotorious context (useAnnotator/useSelection)
@@ -629,7 +719,7 @@ function RecogitoLayer({
   sourceMarkdown,
   citations,
   threads,
-  verificationIssues,
+  verifyAnchors,
   activeThreadId,
   onNewSelection,
   onClickThread,
@@ -638,7 +728,7 @@ function RecogitoLayer({
   sourceMarkdown: string;
   citations?: SourceCitation[];
   threads: Thread[];
-  verificationIssues?: VerificationFlag[];
+  verifyAnchors: { issue: VerificationFlag; id: string; anchor: AnchorOffsets }[];
   activeThreadId: string | null;
   onNewSelection: (anchor: AnchorOffsets) => void;
   onClickThread: (id: string) => void;
@@ -652,41 +742,6 @@ function RecogitoLayer({
     for (const thread of threads) map.set(thread.root.id, thread);
     return map;
   }, [threads]);
-
-  // Each flagged claim needs a concrete (start, end) into the RENDERED
-  // container text before Recogito can place it - VerifyAgent quotes come
-  // from the raw markdown source (may still carry "**"/"`" syntax), so they're
-  // stripped and located by a plain indexOf against the container's
-  // textContent, which is exactly the same coordinate space Recogito's own
-  // Range-based offsets use. A claim that isn't found (paraphrased beyond an
-  // exact substring) simply isn't inline-marked; it's never dropped from the
-  // underlying verification data, only from this presentation.
-  const [verifyAnchors, setVerifyAnchors] = useState<{ issue: VerificationFlag; id: string; anchor: AnchorOffsets }[]>(
-    []
-  );
-  useEffect(() => {
-    if (!verificationIssues?.length) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setVerifyAnchors([]);
-      return;
-    }
-    const container = document.querySelector<HTMLElement>(`.${RECOGITO_CONTAINER_CLASS}`);
-    if (!container) return;
-    const text = container.textContent ?? "";
-    const found: { issue: VerificationFlag; id: string; anchor: AnchorOffsets }[] = [];
-    verificationIssues.forEach((issue, i) => {
-      const claim = stripMarkdownEmphasis(issue.claim).trim();
-      if (!claim) return;
-      const start = text.indexOf(claim);
-      if (start === -1) return;
-      found.push({
-        issue,
-        id: `verify:${i}`,
-        anchor: { startOffset: start, endOffset: start + claim.length, quotedText: claim },
-      });
-    });
-    setVerifyAnchors(found);
-  }, [verificationIssues, sourceMarkdown]);
 
   const verifyIssueById = useMemo(() => {
     const map = new Map<string, VerificationFlag>();

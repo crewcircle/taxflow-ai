@@ -1,51 +1,26 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Bell } from "lucide-react";
 import { DashboardNavLink } from "@/components/DashboardNavLink";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-const LAST_SEEN_KEY = "taxflow_regulatory_last_seen";
-
+// Plain nav link now - new-alert signaling lives in the single header
+// NotificationBell instead of a second, independent unread dot here. Two
+// separate "something's new" indicators in two corners of the screen was
+// the actual confusion being reported, not this link itself.
 export function RegulatoryBellLink({ collapsed }: { collapsed?: boolean }) {
-  const [hasUnread, setHasUnread] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/regulatory-alerts")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((alerts: { detected_at: string }[]) => {
-        if (!alerts.length) return;
-        const latest = alerts[0].detected_at;
-        const lastSeen = window.localStorage.getItem(LAST_SEEN_KEY);
-        setHasUnread(!lastSeen || new Date(latest) > new Date(lastSeen));
-      })
-      .catch(() => {});
-  }, []);
-
-  function markSeen() {
-    window.localStorage.setItem(LAST_SEEN_KEY, new Date().toISOString());
-    setHasUnread(false);
-  }
-
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="relative" onClick={markSeen}>
-          <DashboardNavLink
-            href="/dashboard/library?tab=reference"
-            icon={<Bell className="size-4" />}
-            collapsed={collapsed}
-          >
-            Regulatory updates
-          </DashboardNavLink>
-          {hasUnread && (
-            <span className="absolute right-2 top-2 size-1.5 rounded-full bg-accent" aria-label="New regulatory updates" />
-          )}
-        </div>
+        <DashboardNavLink
+          href="/dashboard/library?tab=reference"
+          icon={<Bell className="size-4" />}
+          collapsed={collapsed}
+        >
+          Regulatory updates
+        </DashboardNavLink>
       </TooltipTrigger>
-      <TooltipContent side="right">
-        {hasUnread ? "New ATO/tax law updates since you last checked" : "Recent ATO and tax law changes relevant to your clients"}
-      </TooltipContent>
+      <TooltipContent side="right">Recent ATO and tax law changes relevant to your clients</TooltipContent>
     </Tooltip>
   );
 }

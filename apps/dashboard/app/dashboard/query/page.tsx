@@ -9,6 +9,7 @@ import {
   FileDown,
   HelpCircle,
   MessageCircleQuestion,
+  MessageSquare,
   Pencil,
   ThumbsUp,
   ThumbsDown,
@@ -18,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHistorySidebar";
@@ -36,7 +38,8 @@ import { CollapsedPanelRail } from "@/components/CollapsedPanelRail";
 import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
 import { ReResearchBadge } from "@/components/ReResearchBadge";
 import { MarkdownDocument } from "@/components/MarkdownDocument";
-import { AnnotatableMarkdown } from "@/components/AnnotatableMarkdown";
+import { AnnotatableMarkdown, type AnnotatableMarkdownHandle } from "@/components/AnnotatableMarkdown";
+import { DocumentTemplatesPanel } from "@/components/DocumentTemplatesPanel";
 import { NOTIFICATIONS_UPDATED_EVENT } from "@/lib/useNotifications";
 
 interface DocumentTemplate {
@@ -360,6 +363,51 @@ function AnswerActionsBar({
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const [editDocOpen, setEditDocOpen] = useState(false);
+  const [editDocLoading, setEditDocLoading] = useState(false);
+  const [editDocSaving, setEditDocSaving] = useState(false);
+  const [editDocTitle, setEditDocTitle] = useState("");
+  const [editDocContent, setEditDocContent] = useState("");
+  const [editDocError, setEditDocError] = useState<string | null>(null);
+  const selectedTemplateLabel = templates.find((t) => t.type === docType)?.label ?? "document";
+
+  async function openEditDoc() {
+    if (!savedDocId) return;
+    setEditDocOpen(true);
+    setEditDocLoading(true);
+    setEditDocError(null);
+    try {
+      const res = await fetch(`/api/documents/${savedDocId}`);
+      if (!res.ok) throw new Error("load failed");
+      const doc: { title: string; content_md: string } = await res.json();
+      setEditDocTitle(doc.title);
+      setEditDocContent(doc.content_md);
+    } catch {
+      setEditDocError("Could not load this document - please try again");
+    } finally {
+      setEditDocLoading(false);
+    }
+  }
+
+  async function saveEditDoc() {
+    if (!savedDocId || !editDocContent.trim()) return;
+    setEditDocSaving(true);
+    setEditDocError(null);
+    try {
+      const res = await fetch(`/api/documents/${savedDocId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: editDocTitle.trim() || undefined, content_md: editDocContent }),
+      });
+      if (!res.ok) throw new Error("save failed");
+      setEditDocOpen(false);
+    } catch {
+      setEditDocError("Could not save your changes - please try again");
+    } finally {
+      setEditDocSaving(false);
+    }
+  }
   // Terminal states after a successful feedback submit.
   const [outcome, setOutcome] = useState<"re_researching" | "sent_for_approval" | "recorded" | null>(null);
 
@@ -447,14 +495,36 @@ function AnswerActionsBar({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           {savedDocId ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button asChild variant="secondary" size="sm">
-                  <Link href="/dashboard/workspace">View saved document →</Link>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Opens the Documents list where this was just saved</TooltipContent>
-            </Tooltip>
+            <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button asChild variant="secondary" size="sm">
+                    <Link href="/dashboard/workspace">View saved document →</Link>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Opens the Documents list where this was just saved</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="outline" size="sm" onClick={openEditDoc}>
+                    <Pencil className="size-3.5" />
+                    Edit document
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Edit the saved document&apos;s title and text directly</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="sm" onClick={() => setTemplateDialogOpen(true)}>
+                    Customize template
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Edit the {selectedTemplateLabel.toLowerCase()} drafting template used for future answers - this
+                  doesn&apos;t change the document you just saved
+                </TooltipContent>
+              </Tooltip>
+            </>
           ) : (
             <>
               <Tooltip>
@@ -478,22 +548,25 @@ function AnswerActionsBar({
                 <TooltipTrigger asChild>
                   <Button size="sm" disabled={savingDoc} onClick={onSave}>
                     <FileDown className="size-3.5" />
-                    {savingDoc ? "Saving..." : "Save as document"}
+                    {savingDoc ? "Saving..." : `Save as ${selectedTemplateLabel}`}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Saves this answer as a new {templates.find((t) => t.type === docType)?.label.toLowerCase() ?? "document"}{" "}
+                  Saves this answer as a new {selectedTemplateLabel.toLowerCase()}{" "}
                   under Documents{clientRef.trim() ? `, tagged to ${clientRef.trim()}` : " (no client tagged)"}
                 </TooltipContent>
               </Tooltip>
               {(docType === "advice_memo" || docType === "client_letter") && (
                 <span className="text-xs text-muted-foreground">
-                  Using your firm&apos;s{" "}
-                  {templates.find((t) => t.type === docType)?.label.toLowerCase() ?? "document"} template
+                  Using your firm&apos;s {selectedTemplateLabel.toLowerCase()} template
                   {" — "}
-                  <Link href="/dashboard/settings" className="text-accent hover:underline">
+                  <button
+                    type="button"
+                    onClick={() => setTemplateDialogOpen(true)}
+                    className="text-accent hover:underline"
+                  >
                     customize it
-                  </Link>
+                  </button>
                 </span>
               )}
             </>
@@ -571,6 +644,51 @@ function AnswerActionsBar({
       )}
 
       {feedbackError && <p className="text-sm text-destructive">{feedbackError}</p>}
+
+      <Dialog open={templateDialogOpen} onOpenChange={setTemplateDialogOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Document templates</DialogTitle>
+          </DialogHeader>
+          <DocumentTemplatesPanel initialKey={docType} />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editDocOpen} onOpenChange={setEditDocOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit saved document</DialogTitle>
+          </DialogHeader>
+          {editDocLoading ? (
+            <p className="text-sm text-muted-foreground">Loading...</p>
+          ) : (
+            <>
+              <div className="space-y-1.5">
+                <Label htmlFor="edit_doc_title">Title</Label>
+                <Input id="edit_doc_title" value={editDocTitle} onChange={(e) => setEditDocTitle(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="edit_doc_content">Content</Label>
+                <Textarea
+                  id="edit_doc_content"
+                  value={editDocContent}
+                  onChange={(e) => setEditDocContent(e.target.value)}
+                  className="min-h-64 font-mono text-xs"
+                />
+              </div>
+              {editDocError && <p className="text-sm text-destructive">{editDocError}</p>}
+            </>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditDocOpen(false)} disabled={editDocSaving}>
+              Cancel
+            </Button>
+            <Button onClick={saveEditDoc} disabled={editDocSaving || editDocLoading || !editDocContent.trim()}>
+              {editDocSaving ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -580,7 +698,17 @@ function AnswerActionsBar({
 // issues panel. Per-claim detail now lives behind the inline flagged marks in
 // the answer itself (AnnotatableMarkdown's verificationIssues prop), not a
 // second copy of the same list here.
-function TrustRibbon({ verification }: { verification: Verification }) {
+// Hex values must match the underline color AnnotatableMarkdown's RecogitoLayer
+// gives each severity (see the `style` callback there) - critical #dc2626 is
+// Tailwind red-600, warning #d97706 is Tailwind amber-600 - so the ribbon text
+// reads as "this label IS that highlight," not just a same-ish color near it.
+function TrustRibbon({
+  verification,
+  onFocusFlag,
+}: {
+  verification: Verification;
+  onFocusFlag: (severity: "critical" | "warning") => void;
+}) {
   if (verification.overall_status === "parse_error") return null;
 
   const critical = verification.issues.filter((i) => i.severity === "critical");
@@ -597,19 +725,37 @@ function TrustRibbon({ verification }: { verification: Verification }) {
       ) : (
         <>
           {critical.length > 0 && (
-            <span className="flex items-center gap-1.5 text-destructive">
-              <span className="size-2 rounded-full bg-destructive" />
-              {critical.length} claim{critical.length === 1 ? "" : "s"} need review
-            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onFocusFlag("critical")}
+                  className="flex items-center gap-1.5 text-red-600 hover:underline"
+                >
+                  <span className="size-2 rounded-full bg-red-600" />
+                  {critical.length} claim{critical.length === 1 ? "" : "s"} need review
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Click to jump to each flagged claim in the answer, one at a time</TooltipContent>
+            </Tooltip>
           )}
           {warning.length > 0 && (
-            <span className="flex items-center gap-1.5 text-amber-700">
-              <span className="size-2 rounded-full bg-amber-500" />
-              {warning.length} worth a second look
-            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onFocusFlag("warning")}
+                  className="flex items-center gap-1.5 text-amber-600 hover:underline"
+                >
+                  <span className="size-2 rounded-full bg-amber-600" />
+                  {warning.length} worth a second look
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Click to jump to each flagged claim in the answer, one at a time</TooltipContent>
+            </Tooltip>
           )}
           <span className="text-xs text-muted-foreground">
-            Flagged text is underlined in the answer below - click it to see why
+            Flagged text is underlined in the answer below - click a badge above or the text itself to see why
           </span>
         </>
       )}
@@ -669,6 +815,9 @@ export default function QueryPage() {
   const [savingAnswer, setSavingAnswer] = useState(false);
 
   const hasAutoLoaded = useRef(false);
+  // Lets TrustRibbon (a sibling of AnnotatableMarkdown here, not a parent)
+  // drive "jump to next flagged claim" without owning any Recogito state.
+  const annotatableRef = useRef<AnnotatableMarkdownHandle>(null);
 
   const loadHistory = useCallback(() => {
     fetch("/api/query")
@@ -1174,9 +1323,29 @@ export default function QueryPage() {
         <div className="flex-1 space-y-4 overflow-y-auto p-6">
           {result && (
             <div className="space-y-0.5">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Conversation title
-              </p>
+              <div className="flex items-center gap-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Conversation title
+                </p>
+                {(() => {
+                  const turnCount = history.filter((h) => h.session_id === sessionId).length;
+                  if (turnCount < 2) return null;
+                  return (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="flex items-center gap-1 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold text-accent">
+                          <MessageCircleQuestion className="size-2.5" />
+                          {turnCount}-turn thread
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        This answer continues an existing conversation - your follow-up below stays in the
+                        same thread. Start &ldquo;New question&rdquo; in the sidebar to begin a separate one.
+                      </TooltipContent>
+                    </Tooltip>
+                  );
+                })()}
+              </div>
               {editingLabel ? (
                 <Input
                   autoFocus
@@ -1226,7 +1395,12 @@ export default function QueryPage() {
                   Verifying...
                 </Badge>
               )}
-              {verification && <TrustRibbon verification={verification} />}
+              {verification && (
+                <TrustRibbon
+                  verification={verification}
+                  onFocusFlag={(severity) => annotatableRef.current?.focusNextFlag(severity)}
+                />
+              )}
             </div>
           )}
 
@@ -1261,12 +1435,24 @@ export default function QueryPage() {
 
           {result && (
             <div className="space-y-4">
-              {result.askedQuestion && (
-                <p className="text-sm text-muted-foreground">
-                  <span className="font-medium text-foreground">You asked: </span>
-                  {result.askedQuestion}
-                </p>
-              )}
+              <div className="flex items-start justify-between gap-3">
+                {result.askedQuestion && (
+                  <p className="text-sm text-muted-foreground">
+                    <span className="font-medium text-foreground">You asked: </span>
+                    {result.askedQuestion}
+                  </p>
+                )}
+                {streamComplete && result.query_id && (
+                  // Lives here once, not inside AnnotatableMarkdown - a fresh
+                  // instance mounts per answer (key={result.query_id}), which
+                  // repeated this hint after every question when it lived
+                  // inside that component.
+                  <p className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+                    <MessageSquare className="size-3.5" />
+                    Select any text to ask a question or leave a note
+                  </p>
+                )}
+              </div>
 
               {result.query_id &&
                 (() => {
@@ -1282,12 +1468,14 @@ export default function QueryPage() {
                 // answer). A restored history conversation sets streamComplete
                 // immediately since it is already persisted.
                 <AnnotatableMarkdown
+                  ref={annotatableRef}
                   key={result.query_id}
                   targetType="query_answer"
                   targetId={result.query_id}
                   sourceMarkdown={result.answer}
                   citations={result.citations}
                   verificationIssues={verification?.issues}
+                  showHint={false}
                 />
               ) : (
                 <AnswerWithCitationLinks text={result.answer} citations={result.citations} />
