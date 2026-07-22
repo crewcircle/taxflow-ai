@@ -35,7 +35,17 @@ function CrewCircleMark({ className }: { className?: string }) {
 // stay readable instead of using the light-theme near-black foreground color.
 export function Logo({ href = "/", onDark = false }: { href?: string; onDark?: boolean }) {
   return (
-    <Link href={href} className="flex items-center gap-2">
+    <Link
+      href={href}
+      // The dashboard header passes href="/dashboard", which is just a
+      // server-side redirect() to whatever the active dashboard page is (see
+      // app/dashboard/page.tsx) - there's no scenario where prefetching it is
+      // useful, and left on, this persistent header link kept re-prefetching
+      // its own current page every ~15s, re-executing that page's client tree
+      // (the same duplicate-mount bug the sidebar nav link had).
+      prefetch={href === "/dashboard" ? false : undefined}
+      className="flex items-center gap-2"
+    >
       <CrewCircleMark className="h-8 w-8 shrink-0" />
       <span className="flex flex-col leading-none">
         <span className={`text-xl font-bold tracking-tight ${onDark ? "text-white" : "text-foreground"}`}>
