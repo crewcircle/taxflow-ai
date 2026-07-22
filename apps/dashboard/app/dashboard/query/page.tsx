@@ -1110,6 +1110,15 @@ export default function QueryPage() {
     if (selection) setClientRef(selection.clientName);
   }
 
+  // The sidebar's "No conversations yet" list (an engagement from the
+  // directory with zero questions on file) - starts a fresh thread already
+  // attached to that engagement, same as picking one from the top bar but
+  // in one click from where the user spotted it.
+  function handleSelectEngagement(selection: EngagementSelection) {
+    handleNewQuestion();
+    handleEngagementChange(selection);
+  }
+
   // Selecting a past question - from the sidebar or a scenario tag - shows
   // that conversation (answer + sources), same as the auto-loaded most
   // recent one. The ask box is left as-is so the user can type a follow-up.
@@ -1374,6 +1383,7 @@ export default function QueryPage() {
             onDeleteSession={(sid) => setDeleteSessionTarget(sid)}
             highlightedId={highlightedHistoryId}
             sessionLabels={sessionLabels}
+            onSelectEngagement={handleSelectEngagement}
           />
         </div>
       ) : (
