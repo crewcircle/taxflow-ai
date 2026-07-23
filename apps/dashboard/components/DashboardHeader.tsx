@@ -39,7 +39,10 @@ export function DashboardHeader({
     <header className="relative flex h-14 shrink-0 items-center gap-4 border-b border-border px-4">
       <Logo href="/dashboard" />
 
-      <nav className="flex items-center gap-1" data-tour="nav-sidebar">
+      <nav
+        className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1"
+        data-tour="nav-sidebar"
+      >
         {navLinks.map((link) => (
           <HeaderNavLink key={link.href} href={link.href} icon={link.icon}>
             {link.label}
@@ -50,20 +53,23 @@ export function DashboardHeader({
       <div className="ml-auto flex items-center gap-2 pr-10">
         <NotificationBell />
 
-        {businessName && isDemo && (
-          <div className="flex items-center gap-3" data-tour="identity-strip">
-            <OnboardingTour
-              businessName={businessName}
-              businessType={businessType}
-              demoTagline={demoTagline}
-              demoDescription={demoDescription}
-              isDemo={isDemo}
-            />
-            <DemoPersonaSwitcher currentType={businessType} />
-          </div>
+        {isDemo && (
+          <OnboardingTour
+            businessName={businessName}
+            businessType={businessType}
+            demoTagline={demoTagline}
+            demoDescription={demoDescription}
+            isDemo={isDemo}
+          />
         )}
 
         <AccountMenu />
+
+        {businessName && isDemo && (
+          <div data-tour="identity-strip">
+            <DemoPersonaSwitcher currentType={businessType} />
+          </div>
+        )}
       </div>
 
       {isDemo && (
