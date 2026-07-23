@@ -28,12 +28,12 @@ import { QueryHistorySidebar, type QueryListItem } from "@/components/QueryHisto
 import { ConfirmDialog } from "@/components/resource-actions/ConfirmDialog";
 import { useResourceMutation } from "@/components/resource-actions/useResourceMutation";
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  Sheet,
+  SheetContent,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
 import { AnswerTracePanel, type AnswerTrace } from "@/components/AnswerTracePanel";
 import { CollapsedPanelRail } from "@/components/CollapsedPanelRail";
@@ -637,50 +637,52 @@ function AnswerActionsBar({
 
       {feedbackError && <p className="text-sm text-destructive">{feedbackError}</p>}
 
-      <Dialog open={templateDialogOpen} onOpenChange={setTemplateDialogOpen}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Document templates</DialogTitle>
-          </DialogHeader>
-          <DocumentTemplatesPanel initialKey={docType} />
-        </DialogContent>
-      </Dialog>
+      <Sheet open={templateDialogOpen} onOpenChange={setTemplateDialogOpen}>
+        <SheetContent>
+          <SheetHeader>
+            <SheetTitle>Document templates</SheetTitle>
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <DocumentTemplatesPanel initialKey={docType} />
+          </div>
+        </SheetContent>
+      </Sheet>
 
-      <Dialog open={editDocOpen} onOpenChange={setEditDocOpen}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Edit saved document</DialogTitle>
-          </DialogHeader>
+      <Sheet open={editDocOpen} onOpenChange={setEditDocOpen}>
+        <SheetContent>
+          <SheetHeader>
+            <SheetTitle>Edit saved document</SheetTitle>
+          </SheetHeader>
           {editDocLoading ? (
             <p className="text-sm text-muted-foreground">Loading...</p>
           ) : (
-            <>
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
               <div className="space-y-1.5">
                 <Label htmlFor="edit_doc_title">Title</Label>
                 <Input id="edit_doc_title" value={editDocTitle} onChange={(e) => setEditDocTitle(e.target.value)} />
               </div>
-              <div className="space-y-1.5">
+              <div className="flex min-h-0 flex-1 flex-col gap-1.5">
                 <Label htmlFor="edit_doc_content">Content</Label>
                 <Textarea
                   id="edit_doc_content"
                   value={editDocContent}
                   onChange={(e) => setEditDocContent(e.target.value)}
-                  className="min-h-64 font-mono text-xs"
+                  className="flex-1 resize-none font-mono text-xs"
                 />
               </div>
               {editDocError && <p className="text-sm text-destructive">{editDocError}</p>}
-            </>
+            </div>
           )}
-          <DialogFooter>
+          <SheetFooter>
             <Button variant="outline" onClick={() => setEditDocOpen(false)} disabled={editDocSaving}>
               Cancel
             </Button>
             <Button onClick={saveEditDoc} disabled={editDocSaving || editDocLoading || !editDocContent.trim()}>
               {editDocSaving ? "Saving..." : "Save"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
@@ -1717,17 +1719,17 @@ export default function QueryPage() {
         }}
       />
 
-      <Dialog
+      <Sheet
         open={editingAnswer}
         onOpenChange={(open) => {
           if (!open) setEditingAnswer(false);
         }}
       >
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Edit answer</DialogTitle>
-          </DialogHeader>
-          <p className="text-xs text-muted-foreground">
+        <SheetContent>
+          <SheetHeader>
+            <SheetTitle>Edit answer</SheetTitle>
+          </SheetHeader>
+          <p className="shrink-0 text-xs text-muted-foreground">
             Saving replaces the stored answer with your edited text and clears the automated
             verification status, since it no longer describes your wording. This does not re-run
             research.
@@ -1735,9 +1737,9 @@ export default function QueryPage() {
           <Textarea
             value={answerDraft}
             onChange={(e) => setAnswerDraft(e.target.value)}
-            className="min-h-64 font-mono text-xs"
+            className="min-h-0 flex-1 resize-none font-mono text-xs"
           />
-          <DialogFooter>
+          <SheetFooter>
             <Button
               variant="outline"
               onClick={() => setEditingAnswer(false)}
@@ -1748,9 +1750,9 @@ export default function QueryPage() {
             <Button onClick={saveAnswerEdit} disabled={savingAnswer || !answerDraft.trim()}>
               {savingAnswer ? "Saving..." : "Save"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

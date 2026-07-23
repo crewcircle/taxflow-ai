@@ -28,10 +28,9 @@ interface SourcesPanelProps {
 interface CitationGroup {
   citation: string;
   url: string;
-  section: string | null;
   sourceObjectKey: string | null;
   lastScrapedAt: string | null;
-  occurrences: { index: number; excerpt: string }[];
+  occurrences: { index: number; excerpt: string; section: string | null }[];
 }
 
 // One color per citation NUMBER (1-indexed, matching the [N] marker in the
@@ -66,16 +65,16 @@ function groupByCitation(citations: SourceCitation[]): CitationGroup[] {
   const groups = new Map<string, CitationGroup>();
   citations.forEach((c, i) => {
     const existing = groups.get(c.citation);
+    const occurrence = { index: i, excerpt: c.excerpt, section: c.section ?? null };
     if (existing) {
-      existing.occurrences.push({ index: i, excerpt: c.excerpt });
+      existing.occurrences.push(occurrence);
     } else {
       groups.set(c.citation, {
         citation: c.citation,
         url: c.url,
-        section: c.section ?? null,
         sourceObjectKey: c.source_object_key ?? null,
         lastScrapedAt: c.last_scraped_at ?? null,
-        occurrences: [{ index: i, excerpt: c.excerpt }],
+        occurrences: [occurrence],
       });
     }
   });
@@ -181,19 +180,26 @@ export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
                     </span>
                   )}
                 </div>
-                {group.section && (
-                  <p className="mb-1.5 text-[11px] text-muted-foreground">{group.section}</p>
-                )}
                 {group.lastScrapedAt && (
                   <p className="mb-1.5 text-[10px] text-muted-foreground">
                     Refreshed {formatRefreshedDate(group.lastScrapedAt)}
                   </p>
                 )}
-                <div className="mb-2 space-y-1.5">
+                <div className="mb-2 space-y-2">
                   {group.occurrences.map((occ) => (
-                    <p key={occ.index} id={`source-${occ.index + 1}`} className="scroll-mt-4 text-muted-foreground">
-                      {occ.excerpt}
-                    </p>
+                    <div key={occ.index} id={`source-${occ.index + 1}`} className="scroll-mt-4">
+                      {/* Each occurrence's own section/heading, not one shared
+                          per citation name - two occurrences of "GST Act" can
+                          come from two different sections, and this must
+                          match exactly what that occurrence's superscript
+                          tooltip shows (MarkdownDocument's citationReference). */}
+                      {occ.section && (
+                        <p className="text-[11px] font-medium text-foreground">
+                          {group.citation}, {occ.section}
+                        </p>
+                      )}
+                      <p className="text-muted-foreground">{occ.excerpt}</p>
+                    </div>
                   ))}
                 </div>
                 {group.url && (
