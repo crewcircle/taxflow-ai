@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client, require_permission
 from taxflow.rbac import has_permission
-from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
+from taxflow.routers._shared import register_firm_client, resolve_or_default_engagement
 from taxflow.services.ato_correspondence.classifier import ATOLetterClassifier
 from taxflow.services.ato_correspondence.drafter import ATOResponseDrafter
 from taxflow.services.ato_correspondence.handlers import get_handler
@@ -49,8 +49,10 @@ async def upload_ato_letter(
 ):
     file_bytes = await file.read()
 
-    # Reject a spoofed engagement_id that belongs to another tenant.
-    await ensure_engagement_owned(db, client["id"], engagement_id)
+    # Reject a spoofed engagement_id that belongs to another tenant, or -
+    # when none was supplied - resolve the tenant's "Unattributed" bucket so
+    # this response is never left orphaned.
+    resolved = await resolve_or_default_engagement(db, client["id"], engagement_id)
 
     extracted_text = _extract_text(file_bytes)
 
@@ -85,8 +87,8 @@ async def upload_ato_letter(
             # in the free-text title) so provenance is traceable and the
             # per-subtype template can be resolved.
             "ato_letter_type": classification["letter_type"],
-            "client_ref": client_ref,
-            "engagement_id": engagement_id,
+            "engagement_id": resolved["engagement_id"],
+            "firm_client_id": resolved["firm_client_id"],
             "created_by_user_id": client.get("user_id"),
         },
     )

@@ -128,6 +128,7 @@ class EngagementsRepo(Protocol):
     def create(self, client_id: str, firm_client_id: str, description: str, created_by: str | None = None) -> dict: ...
     def list_for_client(self, client_id: str, firm_client_id: str | None = None, status: str | None = None) -> list[dict]: ...
     def get_for_client(self, client_id: str, engagement_id: str) -> dict | None: ...
+    def get_by_firm_client_and_description(self, client_id: str, firm_client_id: str, description: str) -> dict | None: ...
 
 
 @runtime_checkable
@@ -138,6 +139,17 @@ class EngagementBackfillRepo(Protocol):
 
     def distinct_unlinked_buckets(self, client_id: str | None = None) -> list[dict]: ...
     def link_bucket(self, client_id: str, client_ref: str | None, engagement_id: str) -> int: ...
+
+
+@runtime_checkable
+class FirmClientBackfillRepo(Protocol):
+    """Read/link helpers for the one-time firm_client_id backfill (migration
+    045 follow-up). Idempotent (only rows with ``firm_client_id IS NULL`` are
+    ever touched)."""
+
+    def link_via_engagement(self, client_id: str | None = None) -> int: ...
+    def distinct_fully_orphaned_clients(self) -> list[str]: ...
+    def link_orphans_to_engagement(self, client_id: str, engagement_id: str, firm_client_id: str) -> int: ...
 
 
 @runtime_checkable
@@ -275,6 +287,7 @@ class RelationalDataPort(Protocol):
     firm_clients: FirmClientsRepo
     engagements: EngagementsRepo
     engagement_backfill: EngagementBackfillRepo
+    firm_client_backfill: FirmClientBackfillRepo
     query_sessions: QuerySessionsRepo
     document_templates: DocumentTemplatesRepo
     firm_knowledge: FirmKnowledgeRepo

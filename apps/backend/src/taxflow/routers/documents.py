@@ -10,7 +10,7 @@ from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client, require_permission
 from taxflow.rbac import has_permission
 from taxflow.providers import get_document_renderer
-from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
+from taxflow.routers._shared import register_firm_client, resolve_or_default_engagement
 from taxflow.services.agents.document_graph import document_graph
 from taxflow.services.knowledge.embedder import embed
 
@@ -74,8 +74,10 @@ async def generate_document(
     if body.document_type not in TEMPLATE_REGISTRY:
         raise HTTPException(status_code=400, detail=f"Unknown document_type: {body.document_type}")
 
-    # Reject a spoofed engagement_id that belongs to another tenant.
-    await ensure_engagement_owned(db, client["id"], body.engagement_id)
+    # Reject a spoofed engagement_id that belongs to another tenant, or -
+    # when none was supplied - resolve the tenant's "Unattributed" bucket so
+    # this document is never left orphaned.
+    resolved = await resolve_or_default_engagement(db, client["id"], body.engagement_id)
 
     await register_firm_client(db, client["id"], body.client_ref)
 
@@ -113,8 +115,8 @@ async def generate_document(
             "document_type": body.document_type,
             "title": body.title,
             "content_md": content_md,
-            "client_ref": body.client_ref,
-            "engagement_id": body.engagement_id,
+            "engagement_id": resolved["engagement_id"],
+            "firm_client_id": resolved["firm_client_id"],
             "created_by_user_id": client.get("user_id"),
         },
     )

@@ -16,7 +16,7 @@ from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.middleware.trial_gate import check_trial_gate, increment_usage
 from taxflow.rbac import has_permission
-from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
+from taxflow.routers._shared import register_firm_client, resolve_or_default_engagement
 from taxflow.services import answer_cache
 from taxflow.services.answer_cache import normalise_question
 from taxflow.services.agents.graph import research_graph
@@ -314,6 +314,11 @@ async def submit_query(
     # clarifications) this is byte-identical to body.question.
     effective_question = build_effective_question(body.question, body.clarifications)
 
+    # POST /query has never taken an engagement_id (only GET /stream, the
+    # path the dashboard actually uses, does) - always resolve to the
+    # tenant's "Unattributed" bucket so this row is never left orphaned.
+    resolved = await resolve_or_default_engagement(db, client["id"], None)
+
     # Task B3: check the per-client DB-backed answer cache before running the
     # pipeline. A hit skips OpenAI embed + Anthropic generation entirely. The key
     # includes the client_id and knowledge_version, so an ingest invalidates and
@@ -334,7 +339,14 @@ async def submit_query(
         # count-before-completed ordering used on the non-cached path).
         repeat_count = await answer_cache.count_prior_asks(client["id"], effective_question)
         query_id = await asyncio.to_thread(
-            _persist_cached_query, db, client, effective_question, body.module, cached, start
+            _persist_cached_query,
+            db,
+            client,
+            effective_question,
+            body.module,
+            cached,
+            start,
+            {"engagement_id": resolved["engagement_id"], "firm_client_id": resolved["firm_client_id"]},
         )
         await increment_usage(client["id"], "queries")
         return {
@@ -363,7 +375,8 @@ async def submit_query(
                 "module": body.module,
                 "status": "processing",
                 "session_id": body.session_id,
-                "client_ref": body.client_ref,
+                "engagement_id": resolved["engagement_id"],
+                "firm_client_id": resolved["firm_client_id"],
                 "created_by_user_id": client.get("user_id"),
             }
         )
@@ -592,8 +605,11 @@ async def stream_query(
     effective_question = build_effective_question(question, parsed_clarifications)
 
     # Reject a spoofed engagement_id that belongs to another tenant (Postgres
-    # only checks the FK exists, not that its client_id matches).
-    await ensure_engagement_owned(db, client["id"], engagement_id)
+    # only checks the FK exists, not that its client_id matches), or - when
+    # none was supplied - resolve the tenant's "Unattributed" bucket so this
+    # query is never left orphaned (audit finding: no client_ref + no
+    # engagement_id used to be a normal, permitted state).
+    resolved = await resolve_or_default_engagement(db, client["id"], engagement_id)
 
     # Client register (Settings audit follow-up): grows organically from real
     # use rather than requiring firms to pre-seed a client list. Upsert is a
@@ -609,9 +625,9 @@ async def stream_query(
                 "question": effective_question,
                 "module": "research",
                 "status": status,
-                "client_ref": client_ref,
                 "session_id": session_id,
-                "engagement_id": engagement_id,
+                "engagement_id": resolved["engagement_id"],
+                "firm_client_id": resolved["firm_client_id"],
                 "created_by_user_id": client.get("user_id"),
                 **(extra or {}),
             }
@@ -641,7 +657,7 @@ async def stream_query(
             "research",
             cached,
             start,
-            {"client_ref": client_ref, "engagement_id": engagement_id},
+            {"engagement_id": resolved["engagement_id"], "firm_client_id": resolved["firm_client_id"]},
         )
         await increment_usage(client["id"], "queries")
 
