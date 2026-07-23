@@ -11,6 +11,7 @@ import {
   HelpCircle,
   MessageCircleQuestion,
   MessageSquare,
+  MessagesSquare,
   Pencil,
   ThumbsUp,
   ThumbsDown,
@@ -1411,7 +1412,12 @@ export default function QueryPage() {
           />
         </div>
       ) : (
-        <CollapsedPanelRail side="left" label="Show questions" onShow={() => setHistoryOpen(true)} />
+        <CollapsedPanelRail
+          side="left"
+          label="Show questions"
+          icon={MessagesSquare}
+          onShow={() => setHistoryOpen(true)}
+        />
       )}
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -1654,7 +1660,12 @@ export default function QueryPage() {
       {sourcesOpen ? (
         <SourcesPanel citations={displayedCitations} onHide={() => setSourcesOpen(false)} />
       ) : (
-        <CollapsedPanelRail side="right" label="Show sources" onShow={() => setSourcesOpen(true)} />
+        <CollapsedPanelRail
+          side="right"
+          label="Show sources"
+          icon={FileText}
+          onShow={() => setSourcesOpen(true)}
+        />
       )}
 
       <ConfirmDialog

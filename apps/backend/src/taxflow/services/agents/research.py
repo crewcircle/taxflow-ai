@@ -1000,6 +1000,12 @@ class ResearchAgent:
                         "citation": entry["citation"],
                         "url": entry["source_url"],
                         "excerpt": self._trim_excerpt(chunk["content"]),
+                        # The source's own section/heading (e.g. "75-10 Amount
+                        # of GST on a taxable supply"), when the source has one
+                        # - lets the UI show a proper reference ("GST Act, s
+                        # 75-10 - Amount of GST on a taxable supply") instead of
+                        # only the bare Act/ruling name or the raw excerpt text.
+                        "section": chunk.get("heading_path"),
                         "source_object_key": chunk.get("source_object_key"),
                         "last_scraped_at": last_scraped_at.isoformat() if last_scraped_at else None,
                     }
