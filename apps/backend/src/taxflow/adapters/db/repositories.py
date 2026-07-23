@@ -997,10 +997,35 @@ class FirmClientsRepo:
         """Real client directory (Nisho's #5 recommendation): one row per
         registered client with how much work is on file for them and when
         they were last touched, instead of the sidebar's flat "highlight by
-        client" dimming filter over every question. `queries`/`documents`
-        never got a `firm_client_id` FK (see 026_firm_clients.sql - client_ref
-        stays free text so old history isn't broken), so activity is matched
-        by case-insensitive name against each row's own `client_id` tenant."""
+        client" dimming filter over every question.
+
+        Phase 2 gave `queries`/`documents` a real `firm_client_id` FK
+        (045_queries_documents_firm_client.sql) - joined here when present.
+        Guarded by `_present_columns` so this degrades to the original
+        case-insensitive `client_ref` name-match (026-era rows, or any
+        deploy where the 045 backfill hasn't finished yet) rather than
+        raising `UndefinedColumn` on an un-migrated database."""
+        has_fk = bool(_present_columns("queries", ("firm_client_id",))) and bool(
+            _present_columns("documents", ("firm_client_id",))
+        )
+        if has_fk:
+            return _fetchall(
+                """
+                SELECT
+                    fc.id,
+                    fc.name,
+                    (SELECT count(*) FROM queries q WHERE q.firm_client_id = fc.id) AS query_count,
+                    (SELECT count(*) FROM documents d WHERE d.firm_client_id = fc.id) AS document_count,
+                    GREATEST(
+                        (SELECT max(q.created_at) FROM queries q WHERE q.firm_client_id = fc.id),
+                        (SELECT max(d.created_at) FROM documents d WHERE d.firm_client_id = fc.id)
+                    ) AS last_activity
+                FROM firm_clients fc
+                WHERE fc.client_id = %s
+                ORDER BY last_activity DESC NULLS LAST, fc.name
+                """,
+                (client_id,),
+            )
         return _fetchall(
             """
             SELECT
@@ -1181,6 +1206,25 @@ class EngagementsRepo:
             (engagement_id, client_id),
         )
 
+    def get_by_firm_client_and_description(
+        self, client_id: str, firm_client_id: str, description: str
+    ) -> dict | None:
+        """Look up an existing engagement by its (firm_client, description) —
+        used by _shared.py::resolve_or_default_engagement to get-or-create the
+        one "General" engagement under a firm's Unattributed bucket, instead of
+        minting a new engagement (and burning a sequence number) on every
+        un-attributed query/document. Most recent match if more than one
+        exists (e.g. a rare concurrent-create race — never enforced unique)."""
+        return _fetchone(
+            f"""
+            SELECT {self._COLS} FROM engagements
+            WHERE client_id = %s AND firm_client_id = %s AND description = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (client_id, firm_client_id, description),
+        )
+
     def list_directory(self, client_id: str) -> list[dict]:
         """Per-firm-client rollup of every engagement's activity (Clients &
         Engagements page): billing is per-engagement, so "which engagement is
@@ -1317,12 +1361,113 @@ class EngagementBackfillRepo:
         return total
 
 
+# --- firm_client_id backfill (Phase 2, one-time guarded data step) -----------
+class FirmClientBackfillRepo:
+    """Read/link helpers for the one-time firm_client_id backfill (scripts/
+    backfill_firm_client_ids.py). All SQL lives here; the script only
+    orchestrates. Two passes:
+
+    1. ``link_via_engagement`` — a pure join: every row that already has an
+       ``engagement_id`` (from the earlier 042/EngagementBackfillRepo pass, or
+       from normal runtime use) gets its ``firm_client_id`` copied straight
+       from that engagement. Idempotent (only touches ``firm_client_id IS
+       NULL`` rows).
+    2. ``distinct_fully_orphaned_clients`` / ``link_orphans_to_engagement`` —
+       for the rarer case of a row with BOTH still NULL (predates even the
+       engagement backfill, or was created between deploys): the script
+       resolves the tenant's Unattributed bucket itself (same sentinel as
+       ``routers/_shared.py::resolve_or_default_engagement``) and this links
+       every such row to it in one statement per table.
+    """
+
+    def link_via_engagement(self, client_id: str | None = None) -> int:
+        client_pred = " AND t.client_id = %s" if client_id else ""
+        params = (client_id,) if client_id else ()
+        total = 0
+        with get_pg_conn() as conn:
+            cur = conn.cursor()
+            for table in ("queries", "documents"):
+                cur.execute(
+                    f"""
+                    UPDATE {table} t
+                       SET firm_client_id = e.firm_client_id
+                      FROM engagements e
+                     WHERE t.engagement_id = e.id
+                       AND t.firm_client_id IS NULL{client_pred}
+                    """,
+                    params,
+                )
+                total += cur.rowcount
+            conn.commit()
+            cur.close()
+        return total
+
+    def distinct_fully_orphaned_clients(self) -> list[str]:
+        """client_ids with at least one queries/documents row that STILL has
+        both firm_client_id IS NULL and engagement_id IS NULL after
+        link_via_engagement."""
+        return _fetchcol(
+            """
+            SELECT DISTINCT client_id FROM (
+                SELECT client_id FROM queries WHERE firm_client_id IS NULL AND engagement_id IS NULL
+                UNION
+                SELECT client_id FROM documents WHERE firm_client_id IS NULL AND engagement_id IS NULL
+            ) t
+            """
+        )
+
+    def link_orphans_to_engagement(
+        self, client_id: str, engagement_id: str, firm_client_id: str
+    ) -> int:
+        """Link every remaining fully-orphaned row for this tenant to the
+        given (engagement, firm_client). Idempotent — only touches rows where
+        both columns are still NULL."""
+        total = 0
+        with get_pg_conn() as conn:
+            cur = conn.cursor()
+            for table in ("queries", "documents"):
+                cur.execute(
+                    f"""
+                    UPDATE {table}
+                       SET firm_client_id = %s, engagement_id = %s
+                     WHERE client_id = %s AND firm_client_id IS NULL AND engagement_id IS NULL
+                    """,
+                    (firm_client_id, engagement_id, client_id),
+                )
+                total += cur.rowcount
+            conn.commit()
+            cur.close()
+        return total
+
+
 # --- query_sessions ------------------------------------------------------------
 class QuerySessionsRepo:
     def list_for_client(self, client_id: str) -> list[dict]:
         return _fetchall(
             "SELECT session_id, label FROM query_sessions WHERE client_id = %s",
             (client_id,),
+        )
+
+    def get_or_create(
+        self,
+        client_id: str,
+        session_id: str,
+        engagement_id: str | None,
+        firm_client_id: str | None,
+    ) -> None:
+        """Eagerly create the conversation-thread row on the FIRST query of a
+        session (Phase 3), instead of the old lazy-on-rename behaviour that
+        left most sessions with no row at all. ``ON CONFLICT DO NOTHING`` so a
+        later turn in the same session (or a session that was already
+        renamed, giving it a row with a real label) never overwrites the
+        existing row's label/attribution."""
+        _execute(
+            """
+            INSERT INTO query_sessions (session_id, client_id, engagement_id, firm_client_id)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (session_id) DO NOTHING
+            """,
+            (session_id, client_id, engagement_id, firm_client_id),
         )
 
     def upsert_label(self, client_id: str, session_id: str, label: str) -> dict:
@@ -1336,6 +1481,24 @@ class QuerySessionsRepo:
             """,
             (session_id, client_id, label),
             returning=True,
+        )
+
+    def distinct_sessions_missing_row(self) -> list[dict]:
+        """One row per distinct ``queries.session_id`` with no matching
+        ``query_sessions`` row yet (scripts/backfill_query_sessions.py) -
+        every session created before Phase 3's eager-creation change, or any
+        that was never renamed under the old lazy-on-rename behaviour.
+        Attribution is taken from that session's MOST RECENT query (a single
+        deterministic representative, not a merge across turns)."""
+        return _fetchall(
+            """
+            SELECT DISTINCT ON (q.session_id)
+                q.session_id, q.client_id, q.engagement_id, q.firm_client_id
+            FROM queries q
+            LEFT JOIN query_sessions qs ON qs.session_id = q.session_id
+            WHERE q.session_id IS NOT NULL AND qs.session_id IS NULL
+            ORDER BY q.session_id, q.created_at DESC
+            """
         )
 
 
@@ -2166,6 +2329,7 @@ class Repositories:
         self.document_templates = DocumentTemplatesRepo()
         self.engagements = EngagementsRepo()
         self.engagement_backfill = EngagementBackfillRepo()
+        self.firm_client_backfill = FirmClientBackfillRepo()
         self.query_sessions = QuerySessionsRepo()
         self.firm_knowledge = FirmKnowledgeRepo()
         self.knowledge_suggestions = KnowledgeSuggestionsRepo()
