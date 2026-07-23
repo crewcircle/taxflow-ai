@@ -531,6 +531,18 @@ function AnswerActionsBar({
             <>
               <Tooltip>
                 <TooltipTrigger asChild>
+                  <Button size="sm" disabled={savingDoc} onClick={onSave}>
+                    <FileDown className="size-3.5" />
+                    {savingDoc ? "Saving..." : `Save as ${selectedTemplateLabel}`}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Saves this answer as a new {selectedTemplateLabel.toLowerCase()}{" "}
+                  under Documents{clientRef.trim() ? `, tagged to ${clientRef.trim()}` : " (no client tagged)"}
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
                   <Select value={docType} onValueChange={onDocTypeChange}>
                     <SelectTrigger size="sm" className="w-[180px] bg-background">
                       <SelectValue />
@@ -546,45 +558,8 @@ function AnswerActionsBar({
                 </TooltipTrigger>
                 <TooltipContent>Choose the document style to generate - e.g. an advice memo vs. a client letter</TooltipContent>
               </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button size="sm" disabled={savingDoc} onClick={onSave}>
-                    <FileDown className="size-3.5" />
-                    {savingDoc ? "Saving..." : `Save as ${selectedTemplateLabel}`}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Saves this answer as a new {selectedTemplateLabel.toLowerCase()}{" "}
-                  under Documents{clientRef.trim() ? `, tagged to ${clientRef.trim()}` : " (no client tagged)"}
-                </TooltipContent>
-              </Tooltip>
-              {(docType === "advice_memo" || docType === "client_letter") && (
-                <span className="text-xs text-muted-foreground">
-                  Using your firm&apos;s {selectedTemplateLabel.toLowerCase()} template
-                  {" — "}
-                  <button
-                    type="button"
-                    onClick={() => setTemplateDialogOpen(true)}
-                    className="text-accent hover:underline"
-                  >
-                    customize it
-                  </button>
-                </span>
-              )}
             </>
           )}
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="outline" size="sm" onClick={onCopy}>
-                <Copy className="size-3.5" />
-                {copied ? "Copied!" : "Copy"}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              Copies the plain answer text to your clipboard - handy for pasting into an email or another document
-            </TooltipContent>
-          </Tooltip>
 
           {queryId && (
             <Tooltip>
@@ -602,7 +577,21 @@ function AnswerActionsBar({
         </div>
 
         {queryId && (
-          <div className="flex shrink-0 items-center gap-2 border-l border-border pl-3">{feedbackSegment}</div>
+          <div className="flex shrink-0 items-center gap-2 border-l border-border pl-3">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="outline" size="sm" onClick={onCopy}>
+                  <Copy className="size-3.5" />
+                  {copied ? "Copied!" : "Copy"}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Copies the plain answer text to your clipboard - handy for pasting into an email or another
+                document
+              </TooltipContent>
+            </Tooltip>
+            {feedbackSegment}
+          </div>
         )}
       </div>
 
@@ -1030,6 +1019,31 @@ export default function QueryPage() {
     resetPane();
     setQuestion("");
     setClientRef(item.client_ref ?? "");
+    // The top bar's Client/Engagement/Conversation picker must reflect what's
+    // actually loaded, not sit empty - `item` already carries the engagement
+    // fields the history list joins in, so no extra fetch is needed. Bypasses
+    // handleEngagementChange (its null branch resets the pane we're mid-way
+    // through populating).
+    if (
+      item.engagement_id &&
+      item.engagement_number != null &&
+      item.engagement_description &&
+      item.firm_client_id &&
+      item.firm_client_name
+    ) {
+      setEngagement({
+        engagement: {
+          id: item.engagement_id,
+          firm_client_id: item.firm_client_id,
+          engagement_number: item.engagement_number,
+          description: item.engagement_description,
+          status: "active",
+        },
+        clientName: item.firm_client_name,
+      });
+    } else {
+      setEngagement(null);
+    }
     try {
       const response = await fetch(`/api/query/${item.id}`);
       if (!response.ok) return;

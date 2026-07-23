@@ -24,6 +24,7 @@ export interface QueryListItem {
   engagement_id?: string | null;
   engagement_number?: number | null;
   engagement_description?: string | null;
+  firm_client_id?: string | null;
   firm_client_name?: string | null;
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Table,
   TableBody,
@@ -17,11 +17,29 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Upload } from "lucide-react";
 import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
 import { ResourceRowActions } from "@/components/resource-actions/ResourceRowActions";
 import { ConfirmDialog } from "@/components/resource-actions/ConfirmDialog";
 import { ResourceEditDialog } from "@/components/resource-actions/ResourceEditDialog";
 import { useResourceMutation } from "@/components/resource-actions/useResourceMutation";
+
+interface AtoUploadResult {
+  document_id: string;
+  classification: {
+    letter_type: string;
+    confidence: number;
+    ato_reference: string;
+    deadline_days: number | null;
+    key_issue: string;
+  };
+  handler_result: {
+    response_strategy: string;
+    evidence_checklist: string[];
+    timeline: string;
+  };
+  draft_response: string;
+}
 
 interface DocumentRow {
   id: string;
@@ -101,6 +119,38 @@ export default function DocumentsPage() {
     content_md: "",
     client_ref: "",
   });
+
+  // ATO-facing upload - merged in from the old standalone ATO Correspondence
+  // tab (see Bucket/BUCKETS above), shown only while that bucket is selected.
+  const [atoEngagement, setAtoEngagement] = useState<EngagementSelection | null>(null);
+  const [atoUploading, setAtoUploading] = useState(false);
+  const [atoResult, setAtoResult] = useState<AtoUploadResult | null>(null);
+  const [atoError, setAtoError] = useState<string | null>(null);
+  const atoFileInput = useRef<HTMLInputElement>(null);
+
+  async function handleAtoUpload() {
+    const file = atoFileInput.current?.files?.[0];
+    if (!file) return;
+    setAtoUploading(true);
+    setAtoError(null);
+    setAtoResult(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      if (atoEngagement) {
+        formData.append("engagement_id", atoEngagement.engagement.id);
+        formData.append("client_ref", atoEngagement.clientName);
+      }
+      const response = await fetch("/api/ato-response/upload", { method: "POST", body: formData });
+      if (!response.ok) throw new Error("Upload failed");
+      setAtoResult(await response.json());
+      loadDocuments();
+    } catch {
+      setAtoError("Could not process this letter - please try again");
+    } finally {
+      setAtoUploading(false);
+    }
+  }
 
   // Header "Documents generated" dropdown deep-links here with ?client=X to
   // pre-select that client's documents.
@@ -247,6 +297,64 @@ export default function DocumentsPage() {
           </button>
         ))}
       </div>
+
+      {bucket === "ato" && (
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-center gap-4 py-4 text-center">
+            <Upload className="size-6 text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">
+              Upload an ATO letter (PDF) to get a classification, response strategy, and drafted reply -
+              it&apos;s added to the list below as a draft.
+            </p>
+            <input ref={atoFileInput} type="file" accept="application/pdf" className="text-sm" />
+            <EngagementPicker
+              value={atoEngagement}
+              onChange={setAtoEngagement}
+              triggerLabel="Select client & engagement"
+              disabled={atoUploading}
+              variant="bar"
+              autoRestoreLast
+              className="w-full max-w-md"
+            />
+            <Button onClick={handleAtoUpload} disabled={atoUploading || !atoEngagement}>
+              {atoUploading ? "Analysing letter..." : "Upload and analyse"}
+            </Button>
+            {atoError && <p className="text-sm text-destructive">{atoError}</p>}
+          </CardContent>
+        </Card>
+      )}
+
+      {atoResult && (
+        <Card>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <Badge variant="outline">{atoResult.classification.letter_type.replace(/_/g, " ")}</Badge>
+              {atoResult.classification.deadline_days !== null && (
+                <span className="text-xs text-destructive">
+                  Deadline: {atoResult.classification.deadline_days} days
+                </span>
+              )}
+            </div>
+            <p className="text-sm">{atoResult.classification.key_issue}</p>
+            <div>
+              <p className="mb-1 text-xs font-semibold text-muted-foreground">RESPONSE STRATEGY</p>
+              <p className="text-sm">{atoResult.handler_result.response_strategy}</p>
+            </div>
+            <div>
+              <p className="mb-1 text-xs font-semibold text-muted-foreground">EVIDENCE CHECKLIST</p>
+              <ul className="list-disc space-y-1 pl-5 text-sm">
+                {atoResult.handler_result.evidence_checklist.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="mb-1 text-xs font-semibold text-muted-foreground">DRAFT RESPONSE</p>
+              <p className="whitespace-pre-wrap rounded-lg bg-muted p-3 text-sm">{atoResult.draft_response}</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {creating && (
         <Card>

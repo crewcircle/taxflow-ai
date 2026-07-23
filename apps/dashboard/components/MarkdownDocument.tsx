@@ -64,9 +64,6 @@ export function buildMarkdownComponents(citations?: SourceCitation[]): Component
       const citation = citations[num - 1];
       const refreshedIso = citation?.last_scraped_at ?? null;
       const stale = refreshedIso ? daysSince(refreshedIso) > STALE_AFTER_DAYS : false;
-      const currency = refreshedIso
-        ? `Refreshed ${formatRefreshedDate(refreshedIso)}${stale ? " - check for a newer version" : ""}`
-        : "Refresh date unavailable";
       const color = citationColor(num);
       // Same color as this citation's card in SourcesPanel (see
       // citationColor) - a superscript badge rather than inline "[1]" text,
@@ -86,8 +83,21 @@ export function buildMarkdownComponents(citations?: SourceCitation[]): Component
               {num}
             </a>
           </TooltipTrigger>
-          <TooltipContent>
-            {citation?.citation ? `${citation.citation} — ${currency}` : currency}
+          <TooltipContent className="max-w-xs">
+            {citation ? (
+              <>
+                <span className="block font-semibold">{citation.citation}</span>
+                <span className="block text-xs opacity-90">{citation.excerpt}</span>
+                {stale && (
+                  <span className="mt-1 block text-xs text-amber-300">
+                    Refreshed {refreshedIso ? formatRefreshedDate(refreshedIso) : "a while ago"} - check for a
+                    newer version
+                  </span>
+                )}
+              </>
+            ) : (
+              "Source unavailable"
+            )}
           </TooltipContent>
         </Tooltip>
       );
