@@ -274,5 +274,5 @@ def test_full_migration_sequence_applied(_migrated_db):
         conn.close()
 
     assert applied == expected
-    assert applied[-1] == "044_work_attribution.sql"
-    assert len(applied) == 44
+    assert applied[-1] == "045_queries_documents_firm_client.sql"
+    assert len(applied) == 45

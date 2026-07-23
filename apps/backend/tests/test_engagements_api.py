@@ -194,7 +194,10 @@ def test_create_firm_client_rejects_blank_name(client):
 
 def test_ato_upload_persists_engagement_id_and_client_ref(client, monkeypatch):
     """Regression lock: the ATO upload previously inserted the document with NO
-    client_ref/engagement_id. It must now persist BOTH on the inserted row."""
+    client_ref/engagement_id. It must now persist a real firm_client_id
+    (resolved from the engagement) on the inserted row - client_ref itself is
+    no longer written to the row (Phase 2: retired in favour of the real FK),
+    though the best-effort firm_clients register upsert still runs from it."""
     import taxflow.routers.ato_response as ato
 
     async def _fake_classify(self, text):
@@ -210,6 +213,7 @@ def test_ato_upload_persists_engagement_id_and_client_ref(client, monkeypatch):
     monkeypatch.setattr(ato, "build_client_profile", lambda c: {})
 
     mock_db = MagicMock()
+    mock_db.engagements.get_for_client.return_value = {"id": "eng-1", "firm_client_id": "fc-1"}
     mock_db.documents.insert.return_value = {"id": "doc-1"}
     _override(CLIENT, mock_db)
     try:
@@ -221,7 +225,8 @@ def test_ato_upload_persists_engagement_id_and_client_ref(client, monkeypatch):
         assert resp.status_code == 200
         inserted = mock_db.documents.insert.call_args.args[0]
         assert inserted["engagement_id"] == "eng-1"
-        assert inserted["client_ref"] == "Acme Pty Ltd"
+        assert inserted["firm_client_id"] == "fc-1"
+        assert "client_ref" not in inserted
         assert inserted["document_type"] == "ato_response"
         # Best-effort firm-client register upsert mirroring query/documents.
         mock_db.firm_clients.upsert.assert_called_once_with("client-1", "Acme Pty Ltd")
@@ -239,6 +244,7 @@ async def test_stream_query_insert_payload_includes_engagement_id():
 
     captured = {}
     mock_db = MagicMock()
+    mock_db.engagements.get_for_client.return_value = {"id": "eng-1", "firm_client_id": "fc-1"}
 
     def _capture_insert(row):
         captured.update(row)
@@ -269,6 +275,7 @@ async def test_stream_query_insert_payload_includes_engagement_id():
         _ = [c async for c in response.body_iterator]
 
     assert captured["engagement_id"] == "eng-1"
+    assert captured["firm_client_id"] == "fc-1"
     assert captured["client_id"] == "client-1"
 
 
@@ -278,6 +285,7 @@ async def test_generate_document_insert_payload_includes_engagement_id():
 
     captured = {}
     mock_db = MagicMock()
+    mock_db.engagements.get_for_client.return_value = {"id": "eng-1", "firm_client_id": "fc-1"}
 
     def _capture_insert(row):
         captured.update(row)
@@ -300,6 +308,7 @@ async def test_generate_document_insert_payload_includes_engagement_id():
         await d.generate_document(body=body, client=CLIENT, db=mock_db)
 
     assert captured["engagement_id"] == "eng-1"
+    assert captured["firm_client_id"] == "fc-1"
     assert captured["client_id"] == "client-1"
 
 
@@ -392,7 +401,7 @@ async def test_stream_query_cache_hit_persists_engagement_id():
     captured = {}
     mock_db = MagicMock()
     # Not a foreign engagement — get_for_client returns a row so validation passes.
-    mock_db.engagements.get_for_client.return_value = {"id": "eng-1"}
+    mock_db.engagements.get_for_client.return_value = {"id": "eng-1", "firm_client_id": "fc-1"}
 
     def _capture_insert(row):
         captured.update(row)
@@ -419,4 +428,5 @@ async def test_stream_query_cache_hit_persists_engagement_id():
         _ = [c async for c in response.body_iterator]
 
     assert captured["engagement_id"] == "eng-1"
+    assert captured["firm_client_id"] == "fc-1"
     assert captured["model_used"] == "cache"
