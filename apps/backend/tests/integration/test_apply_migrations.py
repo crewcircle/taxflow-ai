@@ -214,8 +214,8 @@ def test_bootstrap_through_040_then_applies_only_041():
     #    reflects the prod rollout state: schema applied through 040, nothing
     #    after that applied yet. (Applying everything in step 1 was only to
     #    satisfy the bootstrap preflight that the ≤040 objects exist.) 042 is a
-    #    pure idempotent data backfill (no DDL), so only 041's and 043's schema
-    #    objects need dropping here.
+    #    pure idempotent data backfill (no DDL), so only 041's, 043's and 044's
+    #    schema objects need dropping here.
     conn = psycopg2.connect(_MIGRATION_URL)
     try:
         conn.autocommit = True
@@ -223,6 +223,9 @@ def test_bootstrap_through_040_then_applies_only_041():
             cur.execute("DROP SCHEMA IF EXISTS taxflow_internal CASCADE;")
             cur.execute("DROP TABLE IF EXISTS document_templates CASCADE;")
             cur.execute("ALTER TABLE documents DROP COLUMN IF EXISTS ato_letter_type;")
+            cur.execute("ALTER TABLE queries DROP COLUMN IF EXISTS created_by_user_id;")
+            cur.execute("ALTER TABLE documents DROP COLUMN IF EXISTS created_by_user_id;")
+            cur.execute("ALTER TABLE engagements DROP COLUMN IF EXISTS created_by_user_id;")
             cur.execute("DROP TABLE IF EXISTS users CASCADE;")
     finally:
         conn.close()

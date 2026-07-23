@@ -23,6 +23,7 @@ from taxflow.routers import (
     webhooks,
     admin,
     settings as settings_router,
+    staff,
 )
 from taxflow.scheduler import start_scheduler, stop_scheduler
 
@@ -79,3 +80,4 @@ app.include_router(regulatory_alerts.router)
 app.include_router(webhooks.router)
 app.include_router(admin.router)
 app.include_router(settings_router.router)
+app.include_router(staff.router)

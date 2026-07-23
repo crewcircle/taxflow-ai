@@ -1,9 +1,11 @@
 import asyncio
+from typing import Callable
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
 from taxflow import providers
 from taxflow.ports.auth import AuthError
+from taxflow.rbac import has_permission
 
 
 async def get_current_client(request: Request) -> dict:
@@ -80,3 +82,22 @@ def _get_or_provision_client(identity) -> dict:
     db.trials.create(client["id"])
     user = db.users.create(identity.sub, client["id"], identity.email, role="owner")
     return {**client, "role": user["role"], "user_id": user["id"]}
+
+
+def require_permission(permission: str) -> Callable:
+    """Dependency factory gating a route on ``permission`` (see ``taxflow.rbac``).
+
+    Runs ``get_current_client`` first (so the usual 401s still apply), then
+    403s if the caller's role doesn't hold ``permission``. A role missing
+    from the client dict defaults to "owner" - this only happens for a
+    request served mid-rollout, before every ``get_current_client`` caller is
+    guaranteed to carry a real role, and erring toward the existing owner's
+    full access is safer than a false 403 on legitimate traffic.
+    """
+
+    async def _dependency(client: dict = Depends(get_current_client)) -> dict:
+        if not has_permission(client.get("role", "owner"), permission):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        return client
+
+    return _dependency
