@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Annotorious, useAnnotator, useSelection } from "@annotorious/react";
-import { TextAnnotator } from "@recogito/react-text-annotator";
+import { TextAnnotator, TextAnnotationPopup } from "@recogito/react-text-annotator";
 import type { TextAnnotation, RecogitoTextAnnotator, HighlightStyle } from "@recogito/react-text-annotator";
 import { MarkdownDocument } from "@/components/MarkdownDocument";
 import type { SourceCitation } from "@/components/SourcesPanel";
@@ -67,11 +67,6 @@ interface AnchorOffsets {
   startOffset: number;
   endOffset: number;
   quotedText: string;
-}
-
-interface PendingSelection {
-  anchor: AnchorOffsets;
-  version: string;
 }
 
 const RECOGITO_CONTAINER_CLASS = "annotatable-recogito-container";
@@ -150,12 +145,6 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
   const [serverHash, setServerHash] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [showResolved, setShowResolved] = useState(false);
-
-  // composer (create) state
-  const [pending, setPending] = useState<PendingSelection | null>(null);
-  const [composerKind, setComposerKind] = useState<AuthorKind>("user");
-  const [composerBody, setComposerBody] = useState("");
-  const [saving, setSaving] = useState(false);
 
   // reply / edit inline state
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
@@ -279,35 +268,36 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
   const resolvedCount = threads.length - openCount;
 
   // --- CRUD ------------------------------------------------------------------
-  async function createAnnotation() {
-    if (!pending || !composerBody.trim() || saving) return;
-    setSaving(true);
+  // Takes explicit args rather than reading composer state, since the compose
+  // UI now lives in RecogitoLayer's inline selection popup (TextAnnotationPopup),
+  // outside this component - only the actual persistence + refresh needs to
+  // stay here alongside loadAnnotations.
+  async function createAnnotation(anchor: AnchorOffsets, kind: AuthorKind, body: string): Promise<boolean> {
     try {
+      const version = await sourceHash(sourceMarkdown);
       const res = await fetch("/api/annotations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           target_type: targetType,
           target_id: targetId,
-          target_version: pending.version,
+          target_version: version,
           block_index: 0,
-          start_offset: pending.anchor.startOffset,
-          end_offset: pending.anchor.endOffset,
-          quoted_text: pending.anchor.quotedText,
-          author_kind: composerKind,
+          start_offset: anchor.startOffset,
+          end_offset: anchor.endOffset,
+          quoted_text: anchor.quotedText,
+          author_kind: kind,
           author_name: authorName ?? null,
-          body: composerBody.trim(),
+          body: body.trim(),
         }),
       });
       if (!res.ok) throw new Error("save failed");
-      setPending(null);
-      setComposerBody("");
-      toast.success(composerKind === "user" ? "Question added" : "Comment added");
+      toast.success(kind === "user" ? "Question added" : "Comment added");
       await loadAnnotations();
+      return true;
     } catch {
       toast.error("Could not save your comment");
-    } finally {
-      setSaving(false);
+      return false;
     }
   }
 
@@ -325,7 +315,7 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
           start_offset: thread.root.start_offset,
           end_offset: thread.root.end_offset,
           quoted_text: thread.root.quoted_text,
-          author_kind: composerKind,
+          author_kind: thread.root.author_kind,
           author_name: authorName ?? null,
           body: replyBody.trim(),
           parent_id: thread.root.id,
@@ -365,14 +355,6 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
     }
   }
 
-  function handleNewSelection(anchor: AnchorOffsets) {
-    void sourceHash(sourceMarkdown).then((version) => {
-      setPending({ anchor, version });
-      setComposerKind("user");
-      setComposerBody("");
-    });
-  }
-
   return (
     <div className="flex gap-4">
       <div className="min-w-0 flex-1" data-testid="annotatable-article">
@@ -392,7 +374,7 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
               threads={visibleThreads}
               verifyAnchors={verifyAnchors}
               activeThreadId={activeThreadId}
-              onNewSelection={handleNewSelection}
+              onCreateAnnotation={createAnnotation}
               onClickThread={setActiveThreadId}
               onClickVerify={setActiveVerifyIssue}
             />
@@ -594,64 +576,6 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
       </aside>
       )}
 
-      {/* compose dialog — activated by a text selection */}
-      <Dialog open={pending != null} onOpenChange={(open) => !open && setPending(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add {composerKind === "user" ? "question" : "comment"}</DialogTitle>
-          </DialogHeader>
-          {pending && (
-            <div className="rounded-lg bg-accent/10 px-3 py-2 text-xs text-foreground">
-              <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-accent">
-                Selected text
-              </span>
-              &ldquo;{pending.anchor.quotedText}&rdquo;
-            </div>
-          )}
-          <div className="inline-flex overflow-hidden rounded-lg border border-border">
-            <button
-              type="button"
-              onClick={() => setComposerKind("user")}
-              className={cn(
-                "inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium",
-                composerKind === "user" ? "bg-accent/10 text-accent" : "text-muted-foreground"
-              )}
-            >
-              <HelpCircle className="size-3.5" /> Question
-            </button>
-            <button
-              type="button"
-              onClick={() => setComposerKind("reviewer")}
-              className={cn(
-                "inline-flex items-center gap-1.5 border-l border-border px-3 py-1.5 text-xs font-medium",
-                composerKind === "reviewer" ? "bg-accent/10 text-accent" : "text-muted-foreground"
-              )}
-            >
-              <MessageSquare className="size-3.5" /> Comment
-            </button>
-          </div>
-          <Textarea
-            value={composerBody}
-            onChange={(e) => setComposerBody(e.target.value)}
-            rows={4}
-            autoFocus
-            placeholder={
-              composerKind === "user"
-                ? "Ask a question about this passage…"
-                : "Add a reviewer comment…"
-            }
-          />
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setPending(null)}>
-              Cancel
-            </Button>
-            <Button onClick={() => void createAnnotation()} disabled={saving || !composerBody.trim()}>
-              {saving ? "Saving…" : composerKind === "user" ? "Add question" : "Add comment"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       {/* verification-flag detail — opened by clicking an inline flagged claim */}
       <Dialog open={activeVerifyIssue != null} onOpenChange={(open) => !open && setActiveVerifyIssue(null)}>
         <DialogContent>
@@ -712,8 +636,11 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
  * Everything that needs the Annotorious context (useAnnotator/useSelection)
  * lives here, as a child of <Annotorious>. Renders the markdown inside a
  * Recogito TextAnnotator, feeds it the current thread + verification-flag
- * spans to highlight, and turns new drag-selections / highlight clicks into
- * callbacks the parent drives its own Dialog/gutter state from.
+ * spans to highlight, turns highlight clicks into callbacks the parent drives
+ * its own gutter/verify-detail state from, and shows the new-comment composer
+ * as an inline popup anchored to the selection itself (TextAnnotationPopup,
+ * shipped by @recogito/react-text-annotator - no dialog/modal involved, and
+ * no extra dependency since it's already part of the installed package).
  */
 function RecogitoLayer({
   sourceMarkdown,
@@ -721,7 +648,7 @@ function RecogitoLayer({
   threads,
   verifyAnchors,
   activeThreadId,
-  onNewSelection,
+  onCreateAnnotation,
   onClickThread,
   onClickVerify,
 }: {
@@ -730,7 +657,7 @@ function RecogitoLayer({
   threads: Thread[];
   verifyAnchors: { issue: VerificationFlag; id: string; anchor: AnchorOffsets }[];
   activeThreadId: string | null;
-  onNewSelection: (anchor: AnchorOffsets) => void;
+  onCreateAnnotation: (anchor: AnchorOffsets, kind: AuthorKind, body: string) => Promise<boolean>;
   onClickThread: (id: string) => void;
   onClickVerify: (issue: VerificationFlag) => void;
 }) {
@@ -779,30 +706,27 @@ function RecogitoLayer({
     anno.setAnnotations([...threadAnnotations, ...verifyAnnotations], true);
   }, [anno, threads, verifyAnchors]);
 
-  // A selection resolves to one of three things: a click on an already-known
-  // thread highlight (open its gutter card), a click on a verify-flag
-  // highlight (open its detail dialog), or a brand-new drag-selection with no
-  // matching id yet (hand its offsets to the parent to drive the compose
-  // dialog). Either way we immediately cancel Recogito's own "selected" state
-  // since the backend list (via the effect above) is the single source of
-  // truth for what's actually persisted and highlighted.
+  // A selection resolves to one of two things: a click on an already-known
+  // thread highlight (open its gutter card) or a click on a verify-flag
+  // highlight (open its detail dialog) - both resolved instantly, so we
+  // cancel Recogito's own "selected" state right away (the backend list via
+  // the effect above is the single source of truth for what's persisted and
+  // highlighted). A brand-new drag-selection with no matching id is NOT
+  // cancelled here - it's left selected so TextAnnotationPopup below can
+  // anchor the inline compose popup to it; that popup cancels the selection
+  // itself once the user submits or dismisses it.
   useEffect(() => {
     if (!anno || selected.length === 0) return;
     for (const { annotation } of selected) {
       if (threadByRootId.has(annotation.id)) {
         onClickThread(annotation.id);
+        anno.cancelSelected();
       } else if (verifyIssueById.has(annotation.id)) {
         const issue = verifyIssueById.get(annotation.id);
         if (issue) onClickVerify(issue);
-      } else {
-        const sel = annotation.target?.selector?.[0];
-        const quote = sel?.quote?.trim();
-        if (sel && quote) {
-          onNewSelection({ startOffset: sel.start, endOffset: sel.end, quotedText: quote });
-        }
+        anno.cancelSelected();
       }
     }
-    anno.cancelSelected();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
@@ -836,6 +760,102 @@ function RecogitoLayer({
   return (
     <TextAnnotator className={RECOGITO_CONTAINER_CLASS} style={style}>
       <MarkdownDocument text={sourceMarkdown} citations={citations} />
+      <TextAnnotationPopup
+        popup={({ annotation }) => {
+          // Only a brand-new selection gets the compose popup - clicks on an
+          // existing thread/verify highlight are already routed elsewhere
+          // (gutter card / detail dialog) and cancelled by the effect above
+          // before this would ever render for them.
+          if (threadByRootId.has(annotation.id) || verifyIssueById.has(annotation.id)) return null;
+          const sel = annotation.target?.selector?.[0];
+          const quote = sel?.quote?.trim();
+          if (!sel || !quote) return null;
+          return (
+            <ComposerPopup
+              anchor={{ startOffset: sel.start, endOffset: sel.end, quotedText: quote }}
+              onCreateAnnotation={onCreateAnnotation}
+              onDone={() => anno?.cancelSelected()}
+            />
+          );
+        }}
+      />
     </TextAnnotator>
+  );
+}
+
+// The inline "ask a question / leave a comment" form, positioned by
+// TextAnnotationPopup right at the current selection - replaces what used to
+// be a centered Dialog that hid the rest of the answer while composing.
+function ComposerPopup({
+  anchor,
+  onCreateAnnotation,
+  onDone,
+}: {
+  anchor: AnchorOffsets;
+  onCreateAnnotation: (anchor: AnchorOffsets, kind: AuthorKind, body: string) => Promise<boolean>;
+  onDone: () => void;
+}) {
+  const [kind, setKind] = useState<AuthorKind>("user");
+  const [body, setBody] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (!body.trim() || saving) return;
+    setSaving(true);
+    const ok = await onCreateAnnotation(anchor, kind, body);
+    setSaving(false);
+    if (ok) onDone();
+  }
+
+  return (
+    <div className="w-80 space-y-2 rounded-lg border border-border bg-popover p-3 text-sm text-popover-foreground shadow-xl">
+      <div className="rounded-lg bg-accent/10 px-2.5 py-1.5 text-xs text-foreground">
+        <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-accent">
+          Selected text
+        </span>
+        &ldquo;{anchor.quotedText}&rdquo;
+      </div>
+      <div className="inline-flex overflow-hidden rounded-lg border border-border">
+        <button
+          type="button"
+          onClick={() => setKind("user")}
+          className={cn(
+            "inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium",
+            kind === "user" ? "bg-accent/10 text-accent" : "text-muted-foreground"
+          )}
+        >
+          <HelpCircle className="size-3.5" /> Question
+        </button>
+        <button
+          type="button"
+          onClick={() => setKind("reviewer")}
+          className={cn(
+            "inline-flex items-center gap-1.5 border-l border-border px-2.5 py-1 text-xs font-medium",
+            kind === "reviewer" ? "bg-accent/10 text-accent" : "text-muted-foreground"
+          )}
+        >
+          <MessageSquare className="size-3.5" /> Comment
+        </button>
+      </div>
+      <Textarea
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        rows={3}
+        autoFocus
+        className="text-sm"
+        placeholder={kind === "user" ? "Ask a question about this passage…" : "Add a reviewer comment…"}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onDone();
+        }}
+      />
+      <div className="flex justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={onDone} disabled={saving}>
+          Cancel
+        </Button>
+        <Button size="sm" onClick={() => void submit()} disabled={saving || !body.trim()}>
+          {saving ? "Saving…" : kind === "user" ? "Add question" : "Add comment"}
+        </Button>
+      </div>
+    </div>
   );
 }

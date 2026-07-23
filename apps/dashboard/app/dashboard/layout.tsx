@@ -21,7 +21,7 @@ import { Toaster } from "@/components/ui/sonner";
 // library + the regulatory feed, previously three separate access patterns:
 // a nav item, a header link, and a sidebar bell).
 const NAV_LINKS = [
-  { href: "/dashboard/query", label: "Ask TaxFlow", icon: MessageSquareText },
+  { href: "/dashboard/query", label: "Research", icon: MessageSquareText },
   { href: "/dashboard/workspace", label: "Workspace", icon: FileText },
   { href: "/dashboard/library", label: "Library", icon: BookOpen },
 ];
