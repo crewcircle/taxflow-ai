@@ -1,37 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { AlertCircle, Plus, MessageSquare, MessagesSquare, PanelLeftClose } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { useMemo, useState } from "react";
+import { MessageSquare, MessagesSquare, PanelLeftClose, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ReResearchBadge } from "@/components/ReResearchBadge";
 import { ResourceRowActions } from "@/components/resource-actions/ResourceRowActions";
-import type { EngagementSelection } from "@/components/EngagementPicker";
 import { cn } from "@/lib/utils";
-
-// Same shape as the old standalone /dashboard/clients page's directory -
-// that page's whole job (which client/engagement needs attention, how much
-// is on file) now lives here instead, since a separate nav destination for
-// it was two doors to the same client/engagement information this sidebar
-// already organizes by.
-interface DirectoryEngagement {
-  id: string;
-  engagement_number: number;
-  description: string;
-  firm_client_id: string;
-  query_count: number;
-  document_count: number;
-  needs_attention: boolean;
-}
-
-interface DirectoryClient {
-  firm_client_id: string;
-  firm_client_name: string;
-  engagements: DirectoryEngagement[];
-  needs_attention_count: number;
-}
 
 export interface QueryListItem {
   id: string;
@@ -55,7 +30,6 @@ export interface QueryListItem {
 interface QueryHistorySidebarProps {
   history: QueryListItem[];
   onSelect: (id: string) => void;
-  onNewQuestion: () => void;
   onHide: () => void;
   // Delete a single past question.
   onDeleteQuery: (id: string) => void;
@@ -67,39 +41,40 @@ interface QueryHistorySidebarProps {
   // session_id -> label, for sessions the user has renamed. Sessions with no
   // entry here fall back to their first question's text.
   sessionLabels?: Record<string, string>;
-  // Starts a fresh question already attached to an engagement that has no
-  // conversations yet (from the directory fetch below) - the old Clients
-  // page equivalent was navigating to /dashboard/query?engagement_id=...
-  onSelectEngagement: (selection: EngagementSelection) => void;
 }
 
-type HistoryRow =
-  | { type: "single"; item: QueryListItem }
-  | { type: "session"; sessionId: string; label: string; items: QueryListItem[] };
+// A "conversation" row: one or more questions sharing a session_id (or a
+// single standalone question with none). Client/engagement attribution is
+// now the top bar's job (ConversationBar) - this panel is purely a
+// chronological, searchable history, not a second navigation hierarchy.
+interface ConversationRow {
+  key: string;
+  items: QueryListItem[];
+  lastActivity: string;
+  label: string;
+}
 
-// Multi-turn sessions (same session_id on more than one question) render as
-// one sub-group under their label; single-turn sessions render exactly as
-// before, so the common case has no visual change.
-function groupBySession(items: QueryListItem[], sessionLabels: Record<string, string>): HistoryRow[] {
-  const rows: HistoryRow[] = [];
+function groupIntoConversations(history: QueryListItem[], sessionLabels: Record<string, string>): ConversationRow[] {
+  const rows: ConversationRow[] = [];
   const seen = new Set<string>();
-  for (const item of items) {
+  for (const item of history) {
     if (item.session_id) {
       if (seen.has(item.session_id)) continue;
-      const sessionItems = items.filter((i) => i.session_id === item.session_id);
-      if (sessionItems.length > 1) {
-        seen.add(item.session_id);
-        rows.push({
-          type: "session",
-          sessionId: item.session_id,
-          label: sessionLabels[item.session_id] ?? sessionItems[sessionItems.length - 1].question,
-          items: sessionItems,
-        });
-        continue;
-      }
+      seen.add(item.session_id);
+      const items = history
+        .filter((h) => h.session_id === item.session_id)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at));
+      rows.push({
+        key: item.session_id,
+        items,
+        lastActivity: items[0].created_at,
+        label: sessionLabels[item.session_id] ?? items[items.length - 1].question,
+      });
+      continue;
     }
-    rows.push({ type: "single", item });
+    rows.push({ key: item.id, items: [item], lastActivity: item.created_at, label: item.question });
   }
+  rows.sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
   return rows;
 }
 
@@ -117,141 +92,33 @@ function formatRelativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString("en-AU", { day: "numeric", month: "short" });
 }
 
-interface EngagementGroup {
-  key: string;
-  label: string;
-  lastActivity: string;
-  items: QueryListItem[];
-}
-
-interface ClientGroup {
-  key: string;
-  clientName: string;
-  lastActivity: string;
-  engagements: EngagementGroup[];
-}
-
-// Billing is per-engagement, so the sidebar's primary hierarchy is client ->
-// engagement (most recently active first) instead of raw date buckets -
-// "which engagement is this question part of" should be answerable by
-// scanning down the list, not by opening each one.
-function groupByClientEngagement(history: QueryListItem[]): ClientGroup[] {
-  const clientMap = new Map<string, Map<string, QueryListItem[]>>();
-  for (const item of history) {
-    const clientKey = item.firm_client_name ?? "__unassigned__";
-    const engagementKey = item.engagement_id ?? "__none__";
-    if (!clientMap.has(clientKey)) clientMap.set(clientKey, new Map());
-    const engagementMap = clientMap.get(clientKey)!;
-    if (!engagementMap.has(engagementKey)) engagementMap.set(engagementKey, []);
-    engagementMap.get(engagementKey)!.push(item);
-  }
-
-  const clientGroups: ClientGroup[] = [];
-  for (const [clientKey, engagementMap] of clientMap) {
-    const engagements: EngagementGroup[] = [];
-    for (const [engagementKey, items] of engagementMap) {
-      const sorted = [...items].sort((a, b) => b.created_at.localeCompare(a.created_at));
-      const first = sorted[0];
-      engagements.push({
-        key: engagementKey,
-        label:
-          engagementKey === "__none__"
-            ? "Unattributed"
-            : `#${first.engagement_number} · ${first.engagement_description}`,
-        lastActivity: sorted[0].created_at,
-        items: sorted,
-      });
-    }
-    engagements.sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
-    clientGroups.push({
-      key: clientKey,
-      clientName: clientKey === "__unassigned__" ? "Unassigned" : clientKey,
-      lastActivity: engagements[0]?.lastActivity ?? "",
-      engagements,
-    });
-  }
-  clientGroups.sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
-  return clientGroups;
-}
-
 export function QueryHistorySidebar({
   history,
   onSelect,
-  onNewQuestion,
   onHide,
   onDeleteQuery,
   onDeleteSession,
   highlightedId,
   sessionLabels = {},
-  onSelectEngagement,
 }: QueryHistorySidebarProps) {
-  const [clientFilter, setClientFilter] = useState("");
-  const [directory, setDirectory] = useState<DirectoryClient[] | null>(null);
+  const [search, setSearch] = useState("");
 
-  useEffect(() => {
-    fetch("/api/engagements/directory")
-      .then((r) => (r.ok ? r.json() : []))
-      .then(setDirectory)
-      .catch(() => {});
-  }, []);
+  const conversations = useMemo(() => groupIntoConversations(history, sessionLabels), [history, sessionLabels]);
 
-  const engagementInfoById = useMemo(() => {
-    const map = new Map<string, DirectoryEngagement>();
-    for (const client of directory ?? []) {
-      for (const eng of client.engagements) map.set(eng.id, eng);
-    }
-    return map;
-  }, [directory]);
-
-  const clientAttentionByName = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const client of directory ?? []) map.set(client.firm_client_name, client.needs_attention_count);
-    return map;
-  }, [directory]);
-
-  // Directory engagements with zero conversations yet don't appear in
-  // `history` at all (it's derived purely from past questions) - these are
-  // the ones the old Clients page surfaced as "nothing done here yet."
-  const engagementIdsInHistory = useMemo(
-    () => new Set(history.map((h) => h.engagement_id).filter((id): id is string => !!id)),
-    [history]
-  );
-  const freshEngagements = useMemo(() => {
-    const rows: { client: DirectoryClient; engagement: DirectoryEngagement }[] = [];
-    for (const client of directory ?? []) {
-      for (const engagement of client.engagements) {
-        if (!engagementIdsInHistory.has(engagement.id) && engagement.query_count === 0) {
-          rows.push({ client, engagement });
-        }
-      }
-    }
-    return rows;
-  }, [directory, engagementIdsInHistory]);
-
-  // Highlight matches instead of hiding non-matches, so filtering by client
-  // never makes the rest of the question history disappear.
-  const matchedIds = clientFilter.trim()
-    ? new Set(
-        history
-          .filter((h) => h.client_ref?.toLowerCase().includes(clientFilter.trim().toLowerCase()))
-          .map((h) => h.id)
-      )
-    : null;
-  const clientGroups = groupByClientEngagement(history);
-  const hasAnyClientRef = history.some((h) => h.client_ref);
-
-  const itemRefs = useRef(new Map<string, HTMLButtonElement>());
-
-  useEffect(() => {
-    if (!highlightedId) return;
-    itemRefs.current.get(highlightedId)?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [highlightedId]);
+  // One free-text box searches every past question's text (not just a
+  // client tag) - a conversation matches if ANY of its turns match, so a
+  // hit on an old follow-up still surfaces the whole thread.
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return conversations;
+    return conversations.filter((c) => c.items.some((i) => i.question.toLowerCase().includes(q)));
+  }, [conversations, search]);
 
   return (
-    <div className="flex h-full w-56 shrink-0 flex-col border-r border-border">
+    <div className="flex h-full w-72 shrink-0 flex-col border-r border-border">
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Clients &amp; conversations
+          Conversations
         </span>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -264,191 +131,99 @@ export function QueryHistorySidebar({
               <PanelLeftClose className="size-4" />
             </button>
           </TooltipTrigger>
-          <TooltipContent>Hide this panel to give the answer more room - click the arrow to bring it back</TooltipContent>
+          <TooltipContent>Hide this panel - click the arrow to bring it back</TooltipContent>
         </Tooltip>
       </div>
-      <div className="space-y-2 border-b border-border p-3">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button size="sm" className="w-full gap-1.5" onClick={onNewQuestion}>
-              <Plus className="size-4" />
-              New question
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            Start a fresh conversation thread - clears the current answer. You can attach it to the same or a
-            different engagement above.
-          </TooltipContent>
-        </Tooltip>
-        {hasAnyClientRef && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Input
-                value={clientFilter}
-                onChange={(e) => setClientFilter(e.target.value)}
-                placeholder="Highlight by client..."
-                className="h-8 text-xs"
-              />
-            </TooltipTrigger>
-            <TooltipContent>Type a client name to highlight their questions below - the rest stay visible, just dimmed</TooltipContent>
-          </Tooltip>
-        )}
+      <div className="border-b border-border p-3">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search all past questions…"
+            className="h-8 pl-7 text-xs"
+          />
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
-        {clientGroups.length === 0 && (
-          <p className="p-3 text-xs text-muted-foreground">Your past questions will appear here.</p>
+        {conversations.length === 0 && (
+          <p className="p-3 text-xs text-muted-foreground">Your past conversations will appear here.</p>
         )}
-        {matchedIds && matchedIds.size === 0 && (
-          <p className="p-3 text-xs text-muted-foreground">No questions for this client.</p>
+        {conversations.length > 0 && filtered.length === 0 && (
+          <p className="p-3 text-xs text-muted-foreground">No questions match &ldquo;{search}&rdquo;.</p>
         )}
-        {clientGroups.map((client) => {
-          const attentionCount = clientAttentionByName.get(client.clientName) ?? 0;
-          return (
-          <div key={client.key} className="mb-4">
-            <div className="mb-1 flex items-center justify-between gap-1 px-2">
-              <div className="flex min-w-0 items-center gap-1.5">
-                <p className="truncate text-xs font-semibold text-foreground">{client.clientName}</p>
-                {attentionCount > 0 && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Badge className="h-4 gap-0.5 border-amber-600/30 bg-amber-100 px-1 text-[9px] text-amber-800">
-                        <AlertCircle className="size-2.5" />
-                        {attentionCount}
-                      </Badge>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {attentionCount} engagement{attentionCount === 1 ? "" : "s"} with an unresolved comment or
-                      pending re-research
-                    </TooltipContent>
-                  </Tooltip>
-                )}
-              </div>
-              <span className="shrink-0 text-[10px] text-muted-foreground">
-                {formatRelativeTime(client.lastActivity)}
-              </span>
-            </div>
-            <div className="space-y-2">
-              {client.engagements.map((engagementGroup) => {
-                const info = engagementInfoById.get(engagementGroup.key);
-                return (
-                <div key={engagementGroup.key} className="border-l-2 border-border/70 pl-2">
-                  <div className="mb-0.5 flex items-center justify-between gap-1 px-1">
-                    <div className="flex min-w-0 items-center gap-1">
-                      <p className="line-clamp-1 text-[11px] font-medium text-muted-foreground">
-                        {engagementGroup.label}
-                      </p>
-                      {info?.needs_attention && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <AlertCircle className="size-3 shrink-0 text-amber-600" />
-                          </TooltipTrigger>
-                          <TooltipContent>Has an unresolved comment or a pending re-research</TooltipContent>
-                        </Tooltip>
-                      )}
-                    </div>
-                    <span className="shrink-0 text-[10px] text-muted-foreground">
-                      {formatRelativeTime(engagementGroup.lastActivity)}
-                    </span>
-                  </div>
-                  <div className="space-y-0.5">
-                    {groupBySession(engagementGroup.items, sessionLabels).map((row) => {
-                      if (row.type === "single") {
-                        return (
-                          <ItemRow
-                            key={row.item.id}
-                            item={row.item}
-                            highlightedId={highlightedId}
-                            matchedIds={matchedIds}
-                            itemRefs={itemRefs}
-                            onSelect={onSelect}
-                            onDeleteQuery={onDeleteQuery}
-                          />
-                        );
-                      }
-                      // Oldest-first turn numbers, since `row.items` is sorted
-                      // newest-first (see groupByClientEngagement) for display -
-                      // "#1" should be the question that started the thread.
-                      const turnNumber = new Map(
-                        [...row.items].reverse().map((item, i) => [item.id, i + 1])
-                      );
-                      return (
-                        <div key={row.sessionId} className="mb-1.5">
-                          <div className="group/qsession flex items-center justify-between gap-1 rounded-t-md bg-muted/60 px-2 py-1">
-                            <div className="flex min-w-0 items-center gap-1.5">
-                              <MessagesSquare className="size-3 shrink-0 text-accent" />
-                              <p className="line-clamp-1 text-[11px] font-medium text-foreground">
-                                {row.label}
-                              </p>
-                              <span className="shrink-0 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold text-accent">
-                                {row.items.length} turns
-                              </span>
-                            </div>
-                            <div className="opacity-0 transition-opacity group-hover/qsession:opacity-100">
-                              <ResourceRowActions
-                                label="conversation"
-                                actions={{ delete: () => onDeleteSession(row.sessionId) }}
-                              />
-                            </div>
-                          </div>
-                          <div className="space-y-0.5 rounded-b-md border-l-2 border-accent/40 bg-accent/[0.03] pl-2">
-                            {row.items.map((item) => (
-                              <ItemRow
-                                key={item.id}
-                                item={item}
-                                turnNumber={turnNumber.get(item.id)}
-                                highlightedId={highlightedId}
-                                matchedIds={matchedIds}
-                                itemRefs={itemRefs}
-                                onSelect={onSelect}
-                                onDeleteQuery={onDeleteQuery}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-                );
-              })}
-            </div>
-          </div>
-          );
-        })}
+        <div className="space-y-1">
+          {filtered.map((row) =>
+            row.items.length === 1 ? (
+              <ItemRow
+                key={row.key}
+                item={row.items[0]}
+                highlightedId={highlightedId}
+                onSelect={onSelect}
+                onDeleteQuery={onDeleteQuery}
+              />
+            ) : (
+              <ConversationGroup
+                key={row.key}
+                row={row}
+                highlightedId={highlightedId}
+                onSelect={onSelect}
+                onDeleteQuery={onDeleteQuery}
+                onDeleteSession={onDeleteSession}
+              />
+            )
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-        {freshEngagements.length > 0 && (
-          <div className="mb-2">
-            <p className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              No conversations yet
-            </p>
-            <div className="space-y-0.5">
-              {freshEngagements.map(({ client, engagement }) => (
-                <button
-                  key={engagement.id}
-                  type="button"
-                  onClick={() =>
-                    onSelectEngagement({
-                      engagement: {
-                        id: engagement.id,
-                        firm_client_id: engagement.firm_client_id,
-                        engagement_number: engagement.engagement_number,
-                        description: engagement.description,
-                        status: "active",
-                      },
-                      clientName: client.firm_client_name,
-                    })
-                  }
-                  className="flex w-full min-w-0 items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                >
-                  <span className="truncate">
-                    {client.firm_client_name} · #{engagement.engagement_number} {engagement.description}
-                  </span>
-                </button>
-              ))}
-            </div>
+function ConversationGroup({
+  row,
+  highlightedId,
+  onSelect,
+  onDeleteQuery,
+  onDeleteSession,
+}: {
+  row: ConversationRow;
+  highlightedId?: string | null;
+  onSelect: (id: string) => void;
+  onDeleteQuery: (id: string) => void;
+  onDeleteSession: (sessionId: string) => void;
+}) {
+  // Oldest-first turn numbers, since `row.items` is sorted newest-first for
+  // display - "#1" should be the question that started the thread.
+  const turnNumber = new Map([...row.items].reverse().map((item, i) => [item.id, i + 1]));
+  return (
+    <div className="mb-1.5">
+      <div className="group/qsession flex items-center justify-between gap-1 rounded-t-md bg-muted/60 px-2 py-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <MessagesSquare className="size-3 shrink-0 text-accent" />
+          <p className="line-clamp-1 text-[11px] font-medium text-foreground">{row.label}</p>
+          <span className="shrink-0 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold text-accent">
+            {row.items.length} turns
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <span className="text-[10px] text-muted-foreground">{formatRelativeTime(row.lastActivity)}</span>
+          <div className="opacity-0 transition-opacity group-hover/qsession:opacity-100">
+            <ResourceRowActions label="conversation" actions={{ delete: () => onDeleteSession(row.key) }} />
           </div>
-        )}
+        </div>
+      </div>
+      <div className="space-y-0.5 rounded-b-md border-l-2 border-accent/40 bg-accent/[0.03] pl-2">
+        {row.items.map((item) => (
+          <ItemRow
+            key={item.id}
+            item={item}
+            turnNumber={turnNumber.get(item.id)}
+            highlightedId={highlightedId}
+            onSelect={onSelect}
+            onDeleteQuery={onDeleteQuery}
+          />
+        ))}
       </div>
     </div>
   );
@@ -461,30 +236,22 @@ interface ItemRowProps {
   // rather than a second unrelated question.
   turnNumber?: number;
   highlightedId?: string | null;
-  matchedIds: Set<string> | null;
-  itemRefs: RefObject<Map<string, HTMLButtonElement>>;
   onSelect: (id: string) => void;
   onDeleteQuery: (id: string) => void;
 }
 
-// A single past question, shared between the direct-under-engagement case and
+// A single past question, shared between the standalone-conversation case and
 // the multi-turn-conversation sub-group case.
-function ItemRow({ item, turnNumber, highlightedId, matchedIds, itemRefs, onSelect, onDeleteQuery }: ItemRowProps) {
-  const isHighlighted = item.id === highlightedId || matchedIds?.has(item.id);
-  const isDimmed = matchedIds !== null && !matchedIds.has(item.id);
+function ItemRow({ item, turnNumber, highlightedId, onSelect, onDeleteQuery }: ItemRowProps) {
+  const isHighlighted = item.id === highlightedId;
   return (
     <div className="group/qrow flex items-start gap-0.5">
       <button
-        ref={(el) => {
-          if (el) itemRefs.current.set(item.id, el);
-          else itemRefs.current.delete(item.id);
-        }}
         onClick={() => onSelect(item.id)}
         className={cn(
           "flex min-w-0 flex-1 items-start gap-2 rounded-lg border-l-2 border-transparent px-2 py-1.5 text-left text-sm transition-all",
           "text-foreground hover:bg-muted",
-          isHighlighted && "border-accent bg-accent/10",
-          isDimmed && "opacity-40"
+          isHighlighted && "border-accent bg-accent/10"
         )}
       >
         {turnNumber ? (
@@ -496,11 +263,15 @@ function ItemRow({ item, turnNumber, highlightedId, matchedIds, itemRefs, onSele
         )}
         <span className="flex-1 space-y-1">
           <span className="line-clamp-2 block leading-snug">{item.question}</span>
-          {item.re_research_status && (
-            <span className="flex flex-wrap items-center gap-1">
-              <ReResearchBadge status={item.re_research_status} />
-            </span>
-          )}
+          <span className="flex flex-wrap items-center gap-1.5">
+            {item.firm_client_name && (
+              <span className="text-[10px] text-muted-foreground">{item.firm_client_name}</span>
+            )}
+            {!turnNumber && (
+              <span className="text-[10px] text-muted-foreground">· {formatRelativeTime(item.created_at)}</span>
+            )}
+            {item.re_research_status && <ReResearchBadge status={item.re_research_status} />}
+          </span>
         </span>
       </button>
       <div className="pt-1 opacity-0 transition-opacity group-hover/qrow:opacity-100">

@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Copy,
   FileDown,
+  FileText,
   HelpCircle,
   MessageCircleQuestion,
   MessageSquare,
@@ -35,7 +36,8 @@ import {
 import { SourcesPanel, type SourceCitation } from "@/components/SourcesPanel";
 import { AnswerTracePanel, type AnswerTrace } from "@/components/AnswerTracePanel";
 import { CollapsedPanelRail } from "@/components/CollapsedPanelRail";
-import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
+import type { EngagementSelection } from "@/components/EngagementPicker";
+import { ConversationBar } from "@/components/ConversationBar";
 import { ReResearchBadge } from "@/components/ReResearchBadge";
 import { MarkdownDocument } from "@/components/MarkdownDocument";
 import { AnnotatableMarkdown, type AnnotatableMarkdownHandle } from "@/components/AnnotatableMarkdown";
@@ -693,36 +695,52 @@ function AnswerActionsBar({
   );
 }
 
-// One always-visible line answering "can I trust this?" - no click needed to
-// see the count, replacing the old click-to-expand badge + separately-gated
-// issues panel. Per-claim detail now lives behind the inline flagged marks in
-// the answer itself (AnnotatableMarkdown's verificationIssues prop), not a
-// second copy of the same list here.
-// Hex values must match the underline color AnnotatableMarkdown's RecogitoLayer
-// gives each severity (see the `style` callback there) - critical #dc2626 is
-// Tailwind red-600, warning #d97706 is Tailwind amber-600 - so the ribbon text
-// reads as "this label IS that highlight," not just a same-ish color near it.
-function TrustRibbon({
+// The single info bar for a finished answer - trust status, how many
+// sources it drew on (click opens the Sources panel), and the annotation
+// hint. These used to be three separate things scattered around the answer
+// (a verification ribbon above "You asked", a source count only visible by
+// opening the panel, a hint reprinted per-answer) - consolidated into one
+// row directly under the question so there's exactly one place to look for
+// "what do I need to know about this response" instead of hunting around it.
+// Hex values in the flagged-claim buttons must match the underline color
+// AnnotatableMarkdown's RecogitoLayer gives each severity (see the `style`
+// callback there) - critical #dc2626 is Tailwind red-600, warning #d97706 is
+// Tailwind amber-600 - so the label IS that highlight, not just a near match.
+function AnswerInfoBar({
+  verifying,
   verification,
+  sourceCount,
+  onOpenSources,
   onFocusFlag,
 }: {
-  verification: Verification;
+  verifying: boolean;
+  verification: Verification | null;
+  sourceCount: number;
+  onOpenSources: () => void;
   onFocusFlag: (severity: "critical" | "warning") => void;
 }) {
-  if (verification.overall_status === "parse_error") return null;
-
-  const critical = verification.issues.filter((i) => i.severity === "critical");
-  const warning = verification.issues.filter((i) => i.severity === "warning");
-  const clean = verification.overall_status === "verified" || verification.issues.length === 0;
+  const critical = verification?.issues.filter((i) => i.severity === "critical") ?? [];
+  const warning = verification?.issues.filter((i) => i.severity === "warning") ?? [];
+  const clean =
+    verification != null &&
+    verification.overall_status !== "parse_error" &&
+    (verification.overall_status === "verified" || verification.issues.length === 0);
+  const showFlags = verification != null && verification.overall_status !== "parse_error" && !clean;
 
   return (
     <div className="flex flex-wrap items-center gap-4 rounded-lg bg-muted px-3 py-2 text-sm">
-      {clean ? (
+      {verifying && (
+        <Badge variant="outline" className="text-muted-foreground">
+          Verifying...
+        </Badge>
+      )}
+      {!verifying && clean && (
         <span className="flex items-center gap-1.5 text-green-700">
           <CheckCircle2 className="size-4" />
           Verified against sources
         </span>
-      ) : (
+      )}
+      {!verifying && showFlags && (
         <>
           {critical.length > 0 && (
             <Tooltip>
@@ -754,11 +772,29 @@ function TrustRibbon({
               <TooltipContent>Click to jump to each flagged claim in the answer, one at a time</TooltipContent>
             </Tooltip>
           )}
-          <span className="text-xs text-muted-foreground">
-            Flagged text is underlined in the answer below - click a badge above or the text itself to see why
-          </span>
         </>
       )}
+
+      {sourceCount > 0 && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onOpenSources}
+              className="flex items-center gap-1.5 text-accent hover:underline"
+            >
+              <FileText className="size-3.5" />
+              Used {sourceCount} source{sourceCount === 1 ? "" : "s"}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Opens the Sources panel with every passage this answer drew on</TooltipContent>
+        </Tooltip>
+      )}
+
+      <span className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+        <MessageSquare className="size-3.5" />
+        Select any text to ask a question or leave a note
+      </span>
     </div>
   );
 }
@@ -845,7 +881,10 @@ export default function QueryPage() {
   const [promoteState, setPromoteState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [repeatCount, setRepeatCount] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(true);
+  // Closed by default - the conversation-level picker in the top bar now
+  // handles "which conversation am I in," so this panel is an opt-in
+  // chronological search/browse view, not the primary navigation surface.
+  const [historyOpen, setHistoryOpen] = useState(false);
   // Collapsed by default - a citation superscript click (href="#source-N")
   // reveals it and jumps straight to the matching excerpt (see the
   // hashchange effect below), rather than it permanently occupying the
@@ -965,34 +1004,6 @@ export default function QueryPage() {
       .catch(() => {});
   }, []);
 
-  // The Clients page links here with the engagement pre-selected (everything
-  // it needs is already in the URL, so no extra round-trip to resolve it) -
-  // clicking an engagement there should land you ready to ask a question
-  // against it, not have to reopen the picker.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const engagementId = params.get("engagement_id");
-    if (!engagementId) return;
-    const engagementNumber = Number(params.get("engagement_number"));
-    const description = params.get("engagement_description");
-    const clientName = params.get("client_name");
-    const firmClientId = params.get("firm_client_id");
-    window.history.replaceState(null, "", window.location.pathname);
-    if (!description || !clientName || !firmClientId || Number.isNaN(engagementNumber)) return;
-    const setTimer = setTimeout(() => {
-      handleEngagementChange({
-        engagement: {
-          id: engagementId,
-          firm_client_id: firmClientId,
-          engagement_number: engagementNumber,
-          description,
-          status: "active",
-        },
-        clientName,
-      });
-    }, 0);
-    return () => clearTimeout(setTimer);
-  }, []);
 
   function resetPane() {
     setResult(null);
@@ -1095,28 +1106,30 @@ export default function QueryPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history]);
 
-  function handleNewQuestion() {
+  // A new conversation is a new thread WITHIN the current engagement, not a
+  // reset of which client/engagement the work is billed to.
+  function handleNewConversation() {
     setQuestion("");
-    setClientRef("");
-    setEngagement(null);
     setSessionId(crypto.randomUUID());
     resetPane();
   }
 
   // Selecting an engagement mirrors its end-client into clientRef so the legacy
   // client_ref plumbing (document tagging, history highlighting) keeps working.
+  // Clearing it (switching to a different client in the top bar, before an
+  // engagement under them is chosen) resets the whole pane the same way a
+  // fresh question does - the old engagement's answer shouldn't linger under
+  // a client it no longer belongs to.
   function handleEngagementChange(selection: EngagementSelection | null) {
     setEngagement(selection);
-    if (selection) setClientRef(selection.clientName);
-  }
-
-  // The sidebar's "No conversations yet" list (an engagement from the
-  // directory with zero questions on file) - starts a fresh thread already
-  // attached to that engagement, same as picking one from the top bar but
-  // in one click from where the user spotted it.
-  function handleSelectEngagement(selection: EngagementSelection) {
-    handleNewQuestion();
-    handleEngagementChange(selection);
+    if (selection) {
+      setClientRef(selection.clientName);
+    } else {
+      setClientRef("");
+      setQuestion("");
+      setSessionId(crypto.randomUUID());
+      resetPane();
+    }
   }
 
   // Selecting a past question - from the sidebar or a scenario tag - shows
@@ -1361,7 +1374,6 @@ export default function QueryPage() {
   }
 
   const displayedCitations = result?.citations ?? [];
-  const hasBadges = verifying || Boolean(verification);
 
   return (
     <div className="flex h-[calc(100vh-8rem)] min-h-[420px] w-full min-w-0 overflow-hidden rounded-xl border border-border">
@@ -1374,7 +1386,6 @@ export default function QueryPage() {
           <QueryHistorySidebar
             history={history}
             onSelect={handleSelectHistory}
-            onNewQuestion={handleNewQuestion}
             onHide={() => setHistoryOpen(false)}
             onDeleteQuery={(id) => {
               const item = history.find((h) => h.id === id) ?? null;
@@ -1383,7 +1394,6 @@ export default function QueryPage() {
             onDeleteSession={(sid) => setDeleteSessionTarget(sid)}
             highlightedId={highlightedHistoryId}
             sessionLabels={sessionLabels}
-            onSelectEngagement={handleSelectEngagement}
           />
         </div>
       ) : (
@@ -1396,12 +1406,14 @@ export default function QueryPage() {
             the top, instead of being split across a session-label header, a
             client field lower down, and a picker buried in the ask box. */}
         <div className="shrink-0 border-b border-border p-4 pb-3">
-          <EngagementPicker
+          <ConversationBar
             value={engagement}
-            onChange={handleEngagementChange}
+            onChangeEngagement={handleEngagementChange}
+            history={history}
+            currentSessionId={sessionId}
+            onSelectConversation={handleSelectHistory}
+            onNewConversation={handleNewConversation}
             disabled={loading}
-            variant="bar"
-            autoRestoreLast
           />
         </div>
 
@@ -1473,22 +1485,6 @@ export default function QueryPage() {
             </span>
           )}
 
-          {hasBadges && (
-            <div className="flex flex-wrap items-center gap-2">
-              {verifying && (
-                <Badge variant="outline" className="text-muted-foreground">
-                  Verifying...
-                </Badge>
-              )}
-              {verification && (
-                <TrustRibbon
-                  verification={verification}
-                  onFocusFlag={(severity) => annotatableRef.current?.focusNextFlag(severity)}
-                />
-              )}
-            </div>
-          )}
-
           {!result && !loading && history.length === 0 && (
             <p className="text-sm text-muted-foreground">Ask a question below to get started.</p>
           )}
@@ -1527,16 +1523,6 @@ export default function QueryPage() {
                     {result.askedQuestion}
                   </p>
                 )}
-                {streamComplete && result.query_id && (
-                  // Lives here once, not inside AnnotatableMarkdown - a fresh
-                  // instance mounts per answer (key={result.query_id}), which
-                  // repeated this hint after every question when it lived
-                  // inside that component.
-                  <p className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
-                    <MessageSquare className="size-3.5" />
-                    Select any text to ask a question or leave a note
-                  </p>
-                )}
               </div>
 
               {result.query_id &&
@@ -1544,6 +1530,22 @@ export default function QueryPage() {
                   const status = history.find((h) => h.id === result.query_id)?.re_research_status;
                   return status ? <ReResearchBadge status={status} /> : null;
                 })()}
+
+              {streamComplete && result.query_id && (
+                // The one place all response metadata lives - trust status,
+                // source count (opens the Sources panel), and the annotation
+                // hint - instead of scattered around the answer. Lives here,
+                // not inside AnnotatableMarkdown, since a fresh instance
+                // mounts per answer (key={result.query_id}) and would
+                // otherwise repeat every piece of this after every question.
+                <AnswerInfoBar
+                  verifying={verifying}
+                  verification={verification}
+                  sourceCount={new Set(displayedCitations.map((c) => c.citation)).size}
+                  onOpenSources={() => setSourcesOpen(true)}
+                  onFocusFlag={(severity) => annotatableRef.current?.focusNextFlag(severity)}
+                />
+              )}
 
               <AnswerBody
                 annotatableRef={annotatableRef}
