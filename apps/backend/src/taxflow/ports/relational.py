@@ -31,6 +31,29 @@ class ClientsRepo(Protocol):
 
 
 @runtime_checkable
+class UsersRepo(Protocol):
+    """Individual logins within a firm (migration 043). ``id`` is the Supabase
+    Auth user id (JWT ``sub``) — the stable identity key auth resolves by."""
+
+    def get_by_id(self, user_id: str) -> dict | None: ...
+    def get_by_client_and_email(self, client_id: str, email: str) -> dict | None: ...
+    def create(
+        self,
+        user_id: str,
+        client_id: str,
+        email: str,
+        role: str = "owner",
+        display_name: str | None = None,
+        invited_by: str | None = None,
+        status: str = "active",
+    ) -> dict: ...
+    def list_for_client(self, client_id: str) -> list[dict]: ...
+    def update_role(self, client_id: str, user_id: str, role: str) -> dict | None: ...
+    def set_status(self, client_id: str, user_id: str, status: str) -> dict | None: ...
+    def count_active_owners(self, client_id: str) -> int: ...
+
+
+@runtime_checkable
 class TrialsRepo(Protocol):
     def create(self, client_id: str) -> dict: ...
     def latest_for_client(self, client_id: str) -> dict | None: ...
@@ -243,6 +266,7 @@ class RelationalDataPort(Protocol):
     """Facade exposing one repository per aggregate."""
 
     clients: ClientsRepo
+    users: UsersRepo
     trials: TrialsRepo
     queries: QueriesRepo
     query_feedback: QueryFeedbackRepo

@@ -275,6 +275,77 @@ class ClientsRepo:
         return _fetchval("SELECT voice_sample FROM clients WHERE id = %s", (client_id,)) or None
 
 
+# --- users ---------------------------------------------------------------
+class UsersRepo:
+    """Individual logins within a firm (migration 043). ``id`` is the
+    Supabase Auth user id (JWT ``sub``), never a generated uuid."""
+
+    def get_by_id(self, user_id: str) -> dict | None:
+        return _fetchone(
+            "SELECT * FROM users WHERE id = %s AND status != 'removed'", (user_id,)
+        )
+
+    def get_by_client_and_email(self, client_id: str, email: str) -> dict | None:
+        return _fetchone(
+            "SELECT * FROM users WHERE client_id = %s AND lower(email) = lower(%s)",
+            (client_id, email),
+        )
+
+    def create(
+        self,
+        user_id: str,
+        client_id: str,
+        email: str,
+        role: str = "owner",
+        display_name: str | None = None,
+        invited_by: str | None = None,
+        status: str = "active",
+    ) -> dict:
+        return _execute(
+            """
+            INSERT INTO users (id, client_id, email, role, display_name, invited_by, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (user_id, client_id, email, role, display_name, invited_by, status),
+            returning=True,
+        )
+
+    def list_for_client(self, client_id: str) -> list[dict]:
+        return _fetchall(
+            "SELECT * FROM users WHERE client_id = %s AND status != 'removed' ORDER BY created_at",
+            (client_id,),
+        )
+
+    def update_role(self, client_id: str, user_id: str, role: str) -> dict | None:
+        return _execute(
+            """
+            UPDATE users SET role = %s, updated_at = now()
+            WHERE id = %s AND client_id = %s
+            RETURNING *
+            """,
+            (role, user_id, client_id),
+            returning=True,
+        )
+
+    def set_status(self, client_id: str, user_id: str, status: str) -> dict | None:
+        return _execute(
+            """
+            UPDATE users SET status = %s, updated_at = now()
+            WHERE id = %s AND client_id = %s
+            RETURNING *
+            """,
+            (status, user_id, client_id),
+            returning=True,
+        )
+
+    def count_active_owners(self, client_id: str) -> int:
+        return _fetchval(
+            "SELECT count(*) FROM users WHERE client_id = %s AND role = 'owner' AND status = 'active'",
+            (client_id,),
+        )
+
+
 # --- trials ------------------------------------------------------------------
 class TrialsRepo:
     def create(self, client_id: str) -> dict:
@@ -2085,6 +2156,7 @@ class Repositories:
     """Concrete ``RelationalDataPort`` facade wiring one repo per aggregate."""
     def __init__(self) -> None:
         self.clients = ClientsRepo()
+        self.users = UsersRepo()
         self.trials = TrialsRepo()
         self.queries = QueriesRepo()
         self.query_feedback = QueryFeedbackRepo()

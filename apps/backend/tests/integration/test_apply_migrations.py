@@ -210,10 +210,12 @@ def test_bootstrap_through_040_then_applies_only_041():
     applied_all = _run_script()
     assert applied_all.returncode == 0, applied_all.stderr
 
-    # 2. Wipe the ledger AND drop the 041-created objects so the DB genuinely
-    #    reflects the prod rollout state: schema applied through 040, 041 NOT yet
-    #    applied. (Applying everything in step 1 was only to satisfy the
-    #    bootstrap preflight that the ≤040 objects exist.)
+    # 2. Wipe the ledger AND drop the >040-created objects so the DB genuinely
+    #    reflects the prod rollout state: schema applied through 040, nothing
+    #    after that applied yet. (Applying everything in step 1 was only to
+    #    satisfy the bootstrap preflight that the ≤040 objects exist.) 042 is a
+    #    pure idempotent data backfill (no DDL), so only 041's and 043's schema
+    #    objects need dropping here.
     conn = psycopg2.connect(_MIGRATION_URL)
     try:
         conn.autocommit = True
@@ -221,6 +223,7 @@ def test_bootstrap_through_040_then_applies_only_041():
             cur.execute("DROP SCHEMA IF EXISTS taxflow_internal CASCADE;")
             cur.execute("DROP TABLE IF EXISTS document_templates CASCADE;")
             cur.execute("ALTER TABLE documents DROP COLUMN IF EXISTS ato_letter_type;")
+            cur.execute("DROP TABLE IF EXISTS users CASCADE;")
     finally:
         conn.close()
 

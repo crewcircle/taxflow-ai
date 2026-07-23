@@ -47,6 +47,7 @@ class SupabaseAuthAdapter:
 
         return Identity(
             email=user_response.user.email,
+            sub=user_response.user.id,
             metadata=user_response.user.user_metadata or {},
         )
 
@@ -67,6 +68,20 @@ class SupabaseAuthAdapter:
             access_token=session.session.access_token,
             refresh_token=session.session.refresh_token,
         )
+
+    def invite_user(self, email: str) -> Identity:
+        """Invite ``email`` via Supabase Auth's admin invite flow.
+
+        Sends the vendor's own invite email (accept link) and returns the
+        newly-created auth user's identity so the caller can create the
+        matching ``users`` row immediately, before the invitee ever logs in.
+        """
+        sb = get_supabase_client()
+        try:
+            response = sb.auth.admin.invite_user_by_email(email)
+        except AuthApiError as e:
+            raise AuthError(str(e)) from e
+        return Identity(email=response.user.email, sub=response.user.id, metadata={})
 
     @staticmethod
     def _create_anon_client():
