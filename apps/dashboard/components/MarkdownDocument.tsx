@@ -4,7 +4,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { citationColor, type SourceCitation } from "@/components/SourcesPanel";
+import { citationColor, citationReference, type SourceCitation } from "@/components/SourcesPanel";
 
 const STALE_AFTER_DAYS = 30;
 
@@ -86,8 +86,7 @@ export function buildMarkdownComponents(citations?: SourceCitation[]): Component
           <TooltipContent className="max-w-xs">
             {citation ? (
               <>
-                <span className="block font-semibold">{citation.citation}</span>
-                <span className="block text-xs opacity-90">{citation.excerpt}</span>
+                <span className="block font-semibold">{citationReference(citation)}</span>
                 {stale && (
                   <span className="mt-1 block text-xs text-amber-300">
                     Refreshed {refreshedIso ? formatRefreshedDate(refreshedIso) : "a while ago"} - check for a

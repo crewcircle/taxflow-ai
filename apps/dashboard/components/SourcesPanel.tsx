@@ -11,6 +11,11 @@ export interface SourceCitation {
   citation: string;
   url: string;
   excerpt: string;
+  // The source's own section/heading (e.g. "75-10 Amount of GST on a
+  // taxable supply"), when it has one - lets a reference read as "GST Act,
+  // s 75-10 - Amount of GST on a taxable supply" instead of only the bare
+  // Act/ruling name.
+  section?: string | null;
   source_object_key?: string | null;
   last_scraped_at?: string | null;
 }
@@ -23,6 +28,7 @@ interface SourcesPanelProps {
 interface CitationGroup {
   citation: string;
   url: string;
+  section: string | null;
   sourceObjectKey: string | null;
   lastScrapedAt: string | null;
   occurrences: { index: number; excerpt: string }[];
@@ -48,6 +54,14 @@ export function citationColor(oneIndexedCitationNumber: number) {
   return CITATION_COLORS[(oneIndexedCitationNumber - 1) % CITATION_COLORS.length];
 }
 
+// "GST Act, s 75-10 - Amount of GST on a taxable supply" - a proper
+// reference to what was actually cited, not the raw legislative text quoted
+// from it (that's what the excerpt is for, still visible in the Sources
+// panel itself).
+export function citationReference(citation: SourceCitation): string {
+  return citation.section ? `${citation.citation}, ${citation.section}` : citation.citation;
+}
+
 function groupByCitation(citations: SourceCitation[]): CitationGroup[] {
   const groups = new Map<string, CitationGroup>();
   citations.forEach((c, i) => {
@@ -58,6 +72,7 @@ function groupByCitation(citations: SourceCitation[]): CitationGroup[] {
       groups.set(c.citation, {
         citation: c.citation,
         url: c.url,
+        section: c.section ?? null,
         sourceObjectKey: c.source_object_key ?? null,
         lastScrapedAt: c.last_scraped_at ?? null,
         occurrences: [{ index: i, excerpt: c.excerpt }],
@@ -166,6 +181,9 @@ export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
                     </span>
                   )}
                 </div>
+                {group.section && (
+                  <p className="mb-1.5 text-[11px] text-muted-foreground">{group.section}</p>
+                )}
                 {group.lastScrapedAt && (
                   <p className="mb-1.5 text-[10px] text-muted-foreground">
                     Refreshed {formatRefreshedDate(group.lastScrapedAt)}

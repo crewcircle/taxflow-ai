@@ -1,11 +1,20 @@
 "use client";
 
 import { Logo } from "@/components/Logo";
+import { HeaderNavLink } from "@/components/HeaderNavLink";
+import { AccountMenu } from "@/components/AccountMenu";
 import { OnboardingTour } from "@/components/OnboardingTour";
 import { DemoPersonaSwitcher } from "@/components/DemoPersonaSwitcher";
 import { NotificationBell } from "@/components/NotificationBell";
 
+interface NavItem {
+  href: string;
+  label: string;
+  icon: React.ReactNode;
+}
+
 interface DashboardHeaderProps {
+  navLinks: NavItem[];
   businessName: string;
   businessType: string;
   isDemo: boolean;
@@ -13,7 +22,13 @@ interface DashboardHeaderProps {
   demoDescription: string | null;
 }
 
+// The main nav (Ask TaxFlow / Workspace / Library) used to live in a
+// permanent left sidebar - moved here so the answer pane (already competing
+// with the conversation list and Sources panel for width) gets the space
+// back. Account-level actions (Settings, Sign out) are folded into one menu
+// at the far right instead of two standalone rows at the sidebar's bottom.
 export function DashboardHeader({
+  navLinks,
   businessName,
   businessType,
   isDemo,
@@ -21,10 +36,18 @@ export function DashboardHeader({
   demoDescription,
 }: DashboardHeaderProps) {
   return (
-    <header className="relative flex h-16 shrink-0 items-center justify-between border-b border-border px-4">
+    <header className="relative flex h-14 shrink-0 items-center gap-4 border-b border-border px-4">
       <Logo href="/dashboard" />
 
-      <div className="flex items-center gap-2 pr-16">
+      <nav className="flex items-center gap-1" data-tour="nav-sidebar">
+        {navLinks.map((link) => (
+          <HeaderNavLink key={link.href} href={link.href} icon={link.icon}>
+            {link.label}
+          </HeaderNavLink>
+        ))}
+      </nav>
+
+      <div className="ml-auto flex items-center gap-2 pr-10">
         <NotificationBell />
 
         {businessName && isDemo && (
@@ -39,6 +62,8 @@ export function DashboardHeader({
             <DemoPersonaSwitcher currentType={businessType} />
           </div>
         )}
+
+        <AccountMenu />
       </div>
 
       {isDemo && (
