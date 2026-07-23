@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Trash2 } from "lucide-react";
+import Link from "next/link";
+import { ChevronRight, Trash2, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -140,6 +141,23 @@ export default function SettingsPage() {
           Firm name, contact phone, and the writing style used to draft memos and letters in your voice.
         </p>
       </div>
+
+      <Link href="/dashboard/settings/staff">
+        <Card className="transition-colors hover:bg-muted/50">
+          <CardContent className="flex items-center justify-between py-4">
+            <div className="flex items-center gap-3">
+              <Users className="size-4 text-muted-foreground" />
+              <div>
+                <p className="text-sm font-medium">Team</p>
+                <p className="text-xs text-muted-foreground">
+                  Who has a login, and what they can do - Owner, Reviewer, Staff.
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="size-4 text-muted-foreground" />
+          </CardContent>
+        </Card>
+      </Link>
 
       <Card>
         <CardContent className="space-y-4">

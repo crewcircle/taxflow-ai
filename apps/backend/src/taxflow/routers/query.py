@@ -15,6 +15,7 @@ from taxflow.config import settings
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
 from taxflow.middleware.trial_gate import check_trial_gate, increment_usage
+from taxflow.rbac import has_permission
 from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
 from taxflow.services import answer_cache
 from taxflow.services.answer_cache import normalise_question
@@ -363,6 +364,7 @@ async def submit_query(
                 "status": "processing",
                 "session_id": body.session_id,
                 "client_ref": body.client_ref,
+                "created_by_user_id": client.get("user_id"),
             }
         )
         return row["id"]
@@ -538,6 +540,7 @@ def _persist_cached_query(
             "wall_time_ms": int((time.time() - start) * 1000),
             "completed_at": "now()",
             "trace": _build_final_trace(None, None, None),
+            "created_by_user_id": client.get("user_id"),
             **(extra or {}),
         }
     )
@@ -609,6 +612,7 @@ async def stream_query(
                 "client_ref": client_ref,
                 "session_id": session_id,
                 "engagement_id": engagement_id,
+                "created_by_user_id": client.get("user_id"),
                 **(extra or {}),
             }
         )
@@ -1077,6 +1081,9 @@ async def delete_query(
     owned = await asyncio.to_thread(db.queries.get_for_client, client["id"], query_id)
     if not owned:
         raise HTTPException(status_code=404, detail="Query not found")
+    is_own_work = owned.get("created_by_user_id") == client.get("user_id")
+    if not is_own_work and not has_permission(client.get("role", "owner"), "work.delete_any"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     await asyncio.to_thread(db.queries.delete, client["id"], query_id)
     question = owned.get("question")

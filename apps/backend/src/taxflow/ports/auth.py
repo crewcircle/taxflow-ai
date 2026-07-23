@@ -13,6 +13,9 @@ class AuthError(Exception):
 @dataclass
 class Identity:
     email: str
+    # The Supabase Auth user id (JWT `sub`) - the stable identity key for the
+    # `users` table. Never empty for a token that passed validate_token.
+    sub: str
     # Provider-supplied user metadata (e.g. OAuth full_name/name). Empty when the
     # backing auth provider exposes none. Used to auto-provision a client row for
     # users who authenticated via OAuth and never went through POST /api/signup.
@@ -33,4 +36,8 @@ class AuthPort(Protocol):
 
     def issue_demo_session(self, email: str) -> DemoSession:
         """Mint a demo session (access/refresh tokens) for the given email."""
+        ...
+
+    def invite_user(self, email: str) -> Identity:
+        """Invite ``email`` as a new Supabase Auth user and return their identity."""
         ...

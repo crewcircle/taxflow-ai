@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from taxflow.db import get_db
-from taxflow.middleware.auth import get_current_client
+from taxflow.middleware.auth import get_current_client, require_permission
+from taxflow.rbac import has_permission
 from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
 from taxflow.services.ato_correspondence.classifier import ATOLetterClassifier
 from taxflow.services.ato_correspondence.drafter import ATOResponseDrafter
@@ -86,6 +87,7 @@ async def upload_ato_letter(
             "ato_letter_type": classification["letter_type"],
             "client_ref": client_ref,
             "engagement_id": engagement_id,
+            "created_by_user_id": client.get("user_id"),
         },
     )
 
@@ -107,7 +109,9 @@ async def get_ato_response(document_id: str, client=Depends(get_current_client),
 
 
 @router.post("/{document_id}/approve")
-async def approve_ato_response(document_id: str, client=Depends(get_current_client), db=Depends(get_db)):
+async def approve_ato_response(
+    document_id: str, client=Depends(require_permission("ato_response.approve")), db=Depends(get_db)
+):
     # Ownership-scoped: only the owning client's document is updated.
     doc = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
     if not doc:
@@ -159,6 +163,9 @@ async def delete_ato_response(
     doc = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
     if not doc or doc.get("document_type") != "ato_response":
         raise HTTPException(status_code=404, detail="Correspondence not found")
+    is_own_work = doc.get("created_by_user_id") == client.get("user_id")
+    if not is_own_work and not has_permission(client.get("role", "owner"), "work.delete_any"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     try:
         await asyncio.to_thread(db.documents.delete, client["id"], document_id)

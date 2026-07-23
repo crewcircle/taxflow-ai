@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 
 from taxflow import providers
-from taxflow.middleware.auth import get_current_client
+from taxflow.middleware.auth import get_current_client, require_permission
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -56,7 +56,9 @@ class CheckoutRequest(BaseModel):
 
 
 @router.post("/checkout-session")
-async def create_checkout_session(body: CheckoutRequest, client=Depends(get_current_client)):
+async def create_checkout_session(
+    body: CheckoutRequest, client=Depends(require_permission("billing.manage"))
+):
     """Create a Stripe Checkout session for trial-to-paid conversion.
     The checkout.session.completed webhook flips subscription_status to active."""
     if client.get("is_demo"):

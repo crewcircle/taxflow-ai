@@ -200,7 +200,7 @@ def test_authenticated_access_record_includes_client_id(client, caplog):
             "taxflow.middleware.auth.providers.get_auth_port", return_value=auth_port
         ), patch(
             "taxflow.middleware.auth._get_or_provision_client",
-            return_value={"id": "client-xyz"},
+            return_value={"id": "client-xyz", "user_id": "user-xyz"},
         ):
             with caplog.at_level(
                 logging.INFO, logger="taxflow.middleware.request_logging"

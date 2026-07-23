@@ -7,7 +7,8 @@ from pydantic import BaseModel
 
 from taxflow.config import settings
 from taxflow.db import get_db
-from taxflow.middleware.auth import get_current_client
+from taxflow.middleware.auth import get_current_client, require_permission
+from taxflow.rbac import has_permission
 from taxflow.providers import get_document_renderer
 from taxflow.routers._shared import ensure_engagement_owned, register_firm_client
 from taxflow.services.agents.document_graph import document_graph
@@ -114,6 +115,7 @@ async def generate_document(
             "content_md": content_md,
             "client_ref": body.client_ref,
             "engagement_id": body.engagement_id,
+            "created_by_user_id": client.get("user_id"),
         },
     )
 
@@ -167,13 +169,12 @@ async def generate_document(
 async def approve_document(
     document_id: str,
     body: ApproveDocumentRequest,
-    client=Depends(get_current_client),
+    client=Depends(require_permission("documents.approve")),
     db=Depends(get_db),
 ):
-    """Good-faith sign-off, not a security control - `approved_by` is a name the
-    caller picked from the firm's own staff_directory (Settings), not tied to a
-    per-person login (the product has no multi-user auth to hang that off yet).
-    """
+    """`approved_by` is still a free-text name from the firm's staff_directory
+    (Settings), not the caller's own account - kept for historical display,
+    but the ability to approve at all is now gated by role (Owner/Reviewer)."""
     doc = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -251,6 +252,9 @@ async def delete_document(
     doc = await asyncio.to_thread(db.documents.get_for_client, client["id"], document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+    is_own_work = doc.get("created_by_user_id") == client.get("user_id")
+    if not is_own_work and not has_permission(client.get("role", "owner"), "work.delete_any"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     try:
         await asyncio.to_thread(db.documents.delete, client["id"], document_id)

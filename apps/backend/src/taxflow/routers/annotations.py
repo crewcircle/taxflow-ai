@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from taxflow.db import get_db
 from taxflow.middleware.auth import get_current_client
+from taxflow.rbac import has_permission
 
 router = APIRouter(prefix="/annotations", tags=["annotations"])
 
@@ -153,6 +154,9 @@ async def update_annotation(
     owned = await asyncio.to_thread(db.annotations.get_for_client, client["id"], annotation_id)
     if not owned:
         raise HTTPException(status_code=404, detail="Annotation not found")
+
+    if body.resolved and not has_permission(client.get("role", "owner"), "verification.resolve"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     fields: dict = {}
     if body.body is not None:
