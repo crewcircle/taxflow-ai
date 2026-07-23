@@ -1448,6 +1448,28 @@ class QuerySessionsRepo:
             (client_id,),
         )
 
+    def get_or_create(
+        self,
+        client_id: str,
+        session_id: str,
+        engagement_id: str | None,
+        firm_client_id: str | None,
+    ) -> None:
+        """Eagerly create the conversation-thread row on the FIRST query of a
+        session (Phase 3), instead of the old lazy-on-rename behaviour that
+        left most sessions with no row at all. ``ON CONFLICT DO NOTHING`` so a
+        later turn in the same session (or a session that was already
+        renamed, giving it a row with a real label) never overwrites the
+        existing row's label/attribution."""
+        _execute(
+            """
+            INSERT INTO query_sessions (session_id, client_id, engagement_id, firm_client_id)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (session_id) DO NOTHING
+            """,
+            (session_id, client_id, engagement_id, firm_client_id),
+        )
+
     def upsert_label(self, client_id: str, session_id: str, label: str) -> dict:
         return _execute(
             """
@@ -1459,6 +1481,24 @@ class QuerySessionsRepo:
             """,
             (session_id, client_id, label),
             returning=True,
+        )
+
+    def distinct_sessions_missing_row(self) -> list[dict]:
+        """One row per distinct ``queries.session_id`` with no matching
+        ``query_sessions`` row yet (scripts/backfill_query_sessions.py) -
+        every session created before Phase 3's eager-creation change, or any
+        that was never renamed under the old lazy-on-rename behaviour.
+        Attribution is taken from that session's MOST RECENT query (a single
+        deterministic representative, not a merge across turns)."""
+        return _fetchall(
+            """
+            SELECT DISTINCT ON (q.session_id)
+                q.session_id, q.client_id, q.engagement_id, q.firm_client_id
+            FROM queries q
+            LEFT JOIN query_sessions qs ON qs.session_id = q.session_id
+            WHERE q.session_id IS NOT NULL AND qs.session_id IS NULL
+            ORDER BY q.session_id, q.created_at DESC
+            """
         )
 
 

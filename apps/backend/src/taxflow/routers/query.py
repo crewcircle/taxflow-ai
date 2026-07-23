@@ -319,6 +319,19 @@ async def submit_query(
     # tenant's "Unattributed" bucket so this row is never left orphaned.
     resolved = await resolve_or_default_engagement(db, client["id"], None)
 
+    # Phase 3: eagerly create the conversation-thread row on the FIRST query
+    # of a session (idempotent - a no-op on later turns or an already-named
+    # session), instead of the old lazy-on-rename behaviour that left most
+    # sessions with no query_sessions row at all.
+    if body.session_id:
+        await asyncio.to_thread(
+            db.query_sessions.get_or_create,
+            client["id"],
+            body.session_id,
+            resolved["engagement_id"],
+            resolved["firm_client_id"],
+        )
+
     # Task B3: check the per-client DB-backed answer cache before running the
     # pipeline. A hit skips OpenAI embed + Anthropic generation entirely. The key
     # includes the client_id and knowledge_version, so an ingest invalidates and
@@ -610,6 +623,19 @@ async def stream_query(
     # query is never left orphaned (audit finding: no client_ref + no
     # engagement_id used to be a normal, permitted state).
     resolved = await resolve_or_default_engagement(db, client["id"], engagement_id)
+
+    # Phase 3: eagerly create the conversation-thread row on the FIRST query
+    # of a session (idempotent - a no-op on later turns or an already-named
+    # session), instead of the old lazy-on-rename behaviour that left most
+    # sessions with no query_sessions row at all.
+    if session_id:
+        await asyncio.to_thread(
+            db.query_sessions.get_or_create,
+            client["id"],
+            session_id,
+            resolved["engagement_id"],
+            resolved["firm_client_id"],
+        )
 
     # Client register (Settings audit follow-up): grows organically from real
     # use rather than requiring firms to pre-seed a client list. Upsert is a
