@@ -316,7 +316,7 @@ class QueriesRepo:
                    q.session_id, q.re_research_status, {edited_at},
                    q.created_at, q.engagement_id,
                    e.engagement_number, e.description AS engagement_description,
-                   fc.name AS firm_client_name
+                   fc.id AS firm_client_id, fc.name AS firm_client_name
             FROM queries q
             LEFT JOIN engagements e ON e.id = q.engagement_id
             LEFT JOIN firm_clients fc ON fc.id = e.firm_client_id
@@ -1131,6 +1131,13 @@ class EngagementsRepo:
                 e.id, e.engagement_number, e.description, e.status, e.created_at,
                 fc.id AS firm_client_id, fc.name AS firm_client_name,
                 (SELECT count(*) FROM queries q WHERE q.engagement_id = e.id) AS query_count,
+                (
+                    -- Conversations, not questions: a session_id groups a
+                    -- thread's turns into one; a query with no session_id
+                    -- (predates D3) is its own single-turn conversation.
+                    SELECT count(DISTINCT COALESCE(q.session_id::text, q.id::text))
+                    FROM queries q WHERE q.engagement_id = e.id
+                ) AS conversation_count,
                 (SELECT count(*) FROM documents d WHERE d.engagement_id = e.id) AS document_count,
                 (
                     SELECT count(*) FROM annotations a
@@ -1146,6 +1153,14 @@ class EngagementsRepo:
                     WHERE q.engagement_id = e.id AND q.re_research_status = 'pending'
                 ) AS pending_re_research_count,
                 (SELECT max(created_at) FROM queries q WHERE q.engagement_id = e.id) AS last_question_at,
+                (
+                    -- Lets the Workspace Clients table deep-link straight into
+                    -- this engagement's most recent conversation on Ask
+                    -- TaxFlow (loadConversation there also re-selects the
+                    -- engagement/conversation in the top bar from this row).
+                    SELECT id FROM queries q
+                    WHERE q.engagement_id = e.id ORDER BY q.created_at DESC LIMIT 1
+                ) AS last_question_id,
                 (SELECT max(created_at) FROM documents d WHERE d.engagement_id = e.id) AS last_document_at,
                 (
                     SELECT max(a.created_at) FROM annotations a
