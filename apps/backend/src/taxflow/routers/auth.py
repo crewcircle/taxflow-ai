@@ -77,13 +77,23 @@ async def create_checkout_session(
     return {"checkout_url": session.url, "session_id": session.id}
 
 
+DEMO_ROLES = {"owner", "reviewer", "staff"}
+
+
 @router.post("/demo-login")
-async def demo_login(request: Request, persona: str | None = None):
+async def demo_login(request: Request, persona: str | None = None, role: str = "owner"):
     """Log a visitor into a demo persona - no email, no signup. `persona`
     (a business_type, e.g. "dental") targets a specific one for the persona
-    switcher; omitted, one is chosen at random. Server-side generates and
-    immediately verifies a Supabase magic link and hands back the resulting
-    session tokens directly."""
+    switcher; omitted, one is chosen at random. `role` (owner/reviewer/staff,
+    the RBAC role switcher) picks which of that persona's logins to use;
+    omitted, defaults to owner (unchanged pre-RBAC behaviour). Server-side
+    generates and immediately verifies a Supabase magic link and hands back
+    the resulting session tokens directly - works for an `invited` (not yet
+    accepted) demo Reviewer/Staff account exactly as well as an active one,
+    since the magic-link mechanism never touches a password."""
+    if role not in DEMO_ROLES:
+        raise HTTPException(status_code=422, detail=f"Unknown role: {role}")
+
     ip = request.client.host if request.client else "unknown"
     now = time.time()
     hits = [t for t in _demo_login_hits.get(ip, []) if now - t < DEMO_LOGIN_WINDOW_SECONDS]
@@ -92,9 +102,14 @@ async def demo_login(request: Request, persona: str | None = None):
     hits.append(now)
     _demo_login_hits[ip] = hits
 
-    demo_emails = await asyncio.to_thread(
-        providers.get_relational_data().clients.find_demo_emails, persona
-    )
+    db = providers.get_relational_data()
+    demo_emails = await asyncio.to_thread(db.users.find_demo_emails, persona, role)
+    if not demo_emails and persona:
+        # This persona doesn't have a seeded login for the requested role yet
+        # (e.g. rate-limited mid-rollout) - fall back to ANY demo persona that
+        # does, so the role switcher stays usable rather than dead-ending on
+        # one specific firm.
+        demo_emails = await asyncio.to_thread(db.users.find_demo_emails, None, role)
     if not demo_emails:
         raise HTTPException(status_code=503, detail="Demo account not configured")
     demo_email = random.choice(demo_emails)

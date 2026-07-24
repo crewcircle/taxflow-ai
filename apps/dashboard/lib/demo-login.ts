@@ -4,10 +4,15 @@ import { createClient } from "@/lib/supabase/client";
 // the backend generates+verifies a Supabase magic link server-side and hands
 // back real session tokens, which we apply directly via setSession().
 export async function startDemoLogin(
-  persona?: string
+  persona?: string,
+  role?: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
-    const url = persona ? `/api/demo-login?persona=${encodeURIComponent(persona)}` : "/api/demo-login";
+    const params = new URLSearchParams();
+    if (persona) params.set("persona", persona);
+    if (role) params.set("role", role);
+    const query = params.toString();
+    const url = query ? `/api/demo-login?${query}` : "/api/demo-login";
     const response = await fetch(url, { method: "POST" });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));

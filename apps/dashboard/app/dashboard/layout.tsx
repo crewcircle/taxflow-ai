@@ -51,6 +51,7 @@ export default async function DashboardLayout({
   let businessType = "";
   let demoTagline: string | null = null;
   let demoDescription: string | null = null;
+  let role: "owner" | "reviewer" | "staff" = "owner";
   if (session) {
     try {
       const meResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/settings/me`, {
@@ -63,6 +64,7 @@ export default async function DashboardLayout({
         businessType = me.client?.business_type ?? "";
         demoTagline = me.client?.demo_tagline ?? null;
         demoDescription = me.client?.demo_description ?? null;
+        role = me.client?.role ?? "owner";
       }
     } catch {
       // Non-fatal - header just won't show client data.
@@ -95,6 +97,7 @@ export default async function DashboardLayout({
           isDemo={isDemo}
           demoTagline={demoTagline}
           demoDescription={demoDescription}
+          role={role}
         />
         <main className="min-w-0 flex-1 overflow-y-auto p-6">{children}</main>
       </div>

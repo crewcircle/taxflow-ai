@@ -20,6 +20,7 @@ interface DashboardHeaderProps {
   isDemo: boolean;
   demoTagline: string | null;
   demoDescription: string | null;
+  role: "owner" | "reviewer" | "staff";
 }
 
 // The main nav (Ask TaxFlow / Workspace / Library) used to live in a
@@ -34,6 +35,7 @@ export function DashboardHeader({
   isDemo,
   demoTagline,
   demoDescription,
+  role,
 }: DashboardHeaderProps) {
   return (
     <header className="relative flex h-14 shrink-0 items-center gap-4 border-b border-border px-4">
@@ -67,7 +69,7 @@ export function DashboardHeader({
 
         {businessName && isDemo && (
           <div data-tour="identity-strip">
-            <DemoPersonaSwitcher currentType={businessType} />
+            <DemoPersonaSwitcher currentType={businessType} currentRole={role} />
           </div>
         )}
       </div>

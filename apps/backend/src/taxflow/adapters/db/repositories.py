@@ -345,6 +345,31 @@ class UsersRepo:
             (client_id,),
         )
 
+    def find_demo_emails(self, persona: str | None = None, role: str = "owner") -> list[str]:
+        """Demo-login role switcher: which login(s) exist for a given demo
+        persona (business_type) + role. Mirrors ClientsRepo.find_demo_emails'
+        shape, but joins through users so a persona's Reviewer/Staff logins
+        (not just its original Owner) are reachable. ``status != 'removed'``
+        so a removed demo account is never handed out."""
+        if persona:
+            return _fetchcol(
+                """
+                SELECT u.email FROM users u
+                JOIN clients c ON c.id = u.client_id
+                WHERE c.is_demo = true AND c.business_type = %s
+                  AND u.role = %s AND u.status != 'removed'
+                """,
+                (persona, role),
+            )
+        return _fetchcol(
+            """
+            SELECT u.email FROM users u
+            JOIN clients c ON c.id = u.client_id
+            WHERE c.is_demo = true AND u.role = %s AND u.status != 'removed'
+            """,
+            (role,),
+        )
+
 
 # --- trials ------------------------------------------------------------------
 class TrialsRepo:
