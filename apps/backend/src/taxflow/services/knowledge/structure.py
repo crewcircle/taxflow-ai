@@ -141,8 +141,12 @@ def parse_structure(text: str, source_type: str | None) -> list[Unit]:
     markers = _markers_for(source_type)
     lines = text.splitlines()
 
-    # Breadcrumb state for legislation container levels.
+    # Breadcrumb state for legislation container levels. ``breadcrumb_title``
+    # mirrors ``breadcrumb`` with each level's own heading text (e.g. "Rate of
+    # R&D tax offset"), so the leaf of a path can render as
+    # ``s 355-30 (Rate of R&D tax offset)`` instead of just ``s 355-30``.
     breadcrumb: dict[str, str] = {}
+    breadcrumb_title: dict[str, str] = {}
     units: list[Unit] = []
     current: Unit | None = None
     preamble: list[str] = []
@@ -150,10 +154,18 @@ def parse_structure(text: str, source_type: str | None) -> list[Unit]:
     # its leaf marker as ``s 8-1(1)``.
     current_section_num: str | None = None
 
-    def _heading_path(leaf: str) -> str:
-        parts = [breadcrumb[lvl] for lvl in _LEVEL_ORDER if lvl in breadcrumb and breadcrumb[lvl] != leaf]
+    def _with_title(lvl: str, label: str) -> str:
+        title = breadcrumb_title.get(lvl)
+        return f"{label} ({title})" if title else label
+
+    def _heading_path(leaf: str, leaf_level: str | None = None) -> str:
+        parts = [
+            _with_title(lvl, breadcrumb[lvl])
+            for lvl in _LEVEL_ORDER
+            if lvl in breadcrumb and breadcrumb[lvl] != leaf
+        ]
         if leaf:
-            parts.append(leaf)
+            parts.append(_with_title(leaf_level, leaf) if leaf_level else leaf)
         return " > ".join(parts)
 
     for line in lines:
@@ -174,24 +186,29 @@ def parse_structure(text: str, source_type: str | None) -> list[Unit]:
             # Subsections compose with the enclosing section: heading shows the
             # section leaf, section_ref becomes ``s 8-1(1)``.
             breadcrumb.pop("subsection", None)
-            heading = _heading_path(breadcrumb.get("section", ""))
+            breadcrumb_title.pop("subsection", None)
+            heading = _heading_path(breadcrumb.get("section", ""), leaf_level="section")
         elif level in _LEVEL_ORDER:
             idx = _LEVEL_ORDER.index(level)
             for lower in _LEVEL_ORDER[idx:]:
                 breadcrumb.pop(lower, None)
+                breadcrumb_title.pop(lower, None)
             breadcrumb[level] = leaf_label
-            heading = _heading_path(leaf_label)
+            breadcrumb_title[level] = heading_text
+            heading = _heading_path(leaf_label, leaf_level=level)
             if level == "section":
                 current_section_num = ref_number
         elif level == "section_bare":
             leaf_label = f"Section {ref_number}"
             breadcrumb.pop("subsection", None)
+            breadcrumb_title.pop("subsection", None)
             breadcrumb["section"] = leaf_label
-            heading = _heading_path(leaf_label)
+            breadcrumb_title["section"] = heading_text
+            heading = _heading_path(leaf_label, leaf_level="section")
             current_section_num = ref_number
         else:
             # Ruling paragraphs: flat sequence, no container nesting.
-            heading = leaf_label
+            heading = f"{leaf_label} ({heading_text})" if heading_text else leaf_label
 
         section_ref = _section_ref(label, level, ref_number, current_section_num)
         # Start a new unit; its body begins with the heading line's own text.

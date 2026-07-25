@@ -22,6 +22,7 @@ interface DashboardHeaderProps {
   demoTagline: string | null;
   demoDescription: string | null;
   role: "owner" | "reviewer" | "staff";
+  email: string | null;
 }
 
 // The main nav (Ask TaxFlow / Workspace / Library) used to live in a
@@ -37,6 +38,7 @@ export function DashboardHeader({
   demoTagline,
   demoDescription,
   role,
+  email,
 }: DashboardHeaderProps) {
   return (
     // A 3-column grid, not absolute-positioned nav over a flex row - the nav
@@ -89,7 +91,7 @@ export function DashboardHeader({
       <div className="flex min-w-0 items-center justify-end gap-2">
         <GlobalSearch />
         <NotificationBell />
-        <AccountMenu />
+        <AccountMenu businessName={businessName} role={role} email={email} />
       </div>
     </header>
   );

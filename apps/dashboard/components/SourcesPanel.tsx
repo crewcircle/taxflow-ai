@@ -182,21 +182,30 @@ export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
                   </p>
                 )}
                 <div className="mb-2 space-y-2">
-                  {group.occurrences.map((occ) => (
-                    <div key={occ.index} id={`source-${occ.index + 1}`} className="scroll-mt-4">
-                      {/* Each occurrence's own section/heading, not one shared
-                          per citation name - two occurrences of "GST Act" can
-                          come from two different sections, and this must
-                          match exactly what that occurrence's superscript
-                          tooltip shows (MarkdownDocument's citationReference). */}
-                      {occ.section && (
-                        <p className="text-[11px] font-medium text-foreground">
-                          {group.citation}, {occ.section}
-                        </p>
-                      )}
-                      <p className="text-muted-foreground">{occ.excerpt}</p>
-                    </div>
-                  ))}
+                  {group.occurrences.map((occ) => {
+                    // Each occurrence gets its OWN color keyed to its own [N]
+                    // number, not the group's - two occurrences of "GST Act"
+                    // (e.g. [1] and [4]) are different superscripts with
+                    // different colors, and the excerpt text here must match
+                    // whichever superscript a reader is currently tracing,
+                    // not just the citation name at the top of the card.
+                    const occColor = citationColor(occ.index + 1);
+                    return (
+                      <div key={occ.index} id={`source-${occ.index + 1}`} className="scroll-mt-4">
+                        {/* Each occurrence's own section/heading, not one shared
+                            per citation name - two occurrences of "GST Act" can
+                            come from two different sections, and this must
+                            match exactly what that occurrence's superscript
+                            tooltip shows (MarkdownDocument's citationReference). */}
+                        {occ.section && (
+                          <p className={cn("text-[11px] font-medium", occColor.text)}>
+                            {group.citation}, {occ.section}
+                          </p>
+                        )}
+                        <p className={cn(occColor.text, "opacity-90")}>{occ.excerpt}</p>
+                      </div>
+                    );
+                  })}
                 </div>
                 {group.url && (
                   <div className="flex flex-wrap gap-3">

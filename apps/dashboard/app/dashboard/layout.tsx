@@ -98,6 +98,7 @@ export default async function DashboardLayout({
           demoTagline={demoTagline}
           demoDescription={demoDescription}
           role={role}
+          email={user.email ?? null}
         />
         <main className="min-w-0 flex-1 overflow-y-auto p-6">{children}</main>
       </div>

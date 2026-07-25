@@ -64,10 +64,12 @@ def test_parse_structure_legislation_two_sections():
     assert len(section_units) == 2
     refs = {u.section_ref for u in section_units}
     assert refs == {"s 8-1", "s 8-5"}
-    # Breadcrumb carries the enclosing Division.
+    # Breadcrumb carries the enclosing Division, and the leaf section carries
+    # its own heading title (e.g. "General deductions") so the UI can render
+    # a full reference like "s 8-1 (General deductions)".
     for u in section_units:
         assert u.heading_path.startswith("Division 8")
-        assert u.heading_path.endswith(u.section_ref.replace("s ", "Section "))
+        assert u.section_ref.replace("s ", "Section ") in u.heading_path
 
 
 def test_parse_structure_ruling_numbered_paragraphs():

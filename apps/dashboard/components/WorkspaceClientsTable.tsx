@@ -69,8 +69,8 @@ function groupByClient(engagements: DirectoryEngagement[]): ClientRow[] {
       firm_client_id,
       firm_client_name: list[0].firm_client_name,
       engagementCount: list.length,
-      conversationCount: list.reduce((sum, e) => sum + e.conversation_count, 0),
-      documentCount: list.reduce((sum, e) => sum + e.document_count, 0),
+      conversationCount: list.reduce((sum, e) => sum + (Number(e.conversation_count) || 0), 0),
+      documentCount: list.reduce((sum, e) => sum + (Number(e.document_count) || 0), 0),
       lastActivity,
       mostRecentQueryId: mostRecent?.last_question_id ?? null,
     });
