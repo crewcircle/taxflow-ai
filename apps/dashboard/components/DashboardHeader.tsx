@@ -38,38 +38,31 @@ export function DashboardHeader({
   role,
 }: DashboardHeaderProps) {
   return (
-    <header className="relative flex h-14 shrink-0 items-center gap-4 border-b border-border px-4">
-      <Logo href="/dashboard" />
+    // A 3-column grid, not absolute-positioned nav over a flex row - the nav
+    // previously stayed mathematically centered regardless of how wide its
+    // siblings got, so a wide demo cluster could visually overlap it as the
+    // viewport narrowed. Grid tracks can't overlap: the left and right
+    // columns each get an equal share (1fr) of whatever space the center
+    // column's actual content doesn't use, so growing/shrinking content on
+    // either side can now only push into ITS OWN column, never the nav's.
+    <header className="grid h-14 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b border-border px-4">
+      <div className="flex min-w-0 items-center gap-2">
+        <Logo href="/dashboard" />
 
-      <nav
-        className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1"
-        data-tour="nav-sidebar"
-      >
-        {navLinks.map((link) => (
-          <HeaderNavLink key={link.href} href={link.href} icon={link.icon}>
-            {link.label}
-          </HeaderNavLink>
-        ))}
-      </nav>
-
-      <div className="ml-auto flex items-center gap-3">
-        <div className="flex items-center gap-2">
-          <NotificationBell />
-          <AccountMenu />
-        </div>
-
-        {/* Everything demo-only lives in one clearly-marked cluster, set apart
-            from the real account controls (Notifications/Settings/Sign out)
-            above - previously a decorative corner ribbon was disconnected
-            from the tour button and persona/role switcher, so "am I looking
-            at demo controls or my own account" wasn't answerable at a
-            glance. */}
+        {/* Everything demo-only lives in one clearly-marked cluster right
+            after the logo, set apart from the real account controls
+            (Notifications/Settings/Sign out) on the far right - previously a
+            decorative corner ribbon was disconnected from the tour button
+            and persona/role switcher, so "am I looking at demo controls or
+            my own account" wasn't answerable at a glance. Shrinks its own
+            controls (icon-only tour button, narrower selects) below `lg`
+            instead of overflowing its grid column. */}
         {businessName && isDemo && (
           <div
-            className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 py-1 pl-2 pr-1.5"
+            className="flex min-w-0 items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/5 py-1 pl-2 pr-1.5 sm:gap-2"
             data-tour="identity-strip"
           >
-            <span className="rounded-full bg-accent px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white">
+            <span className="shrink-0 rounded-full bg-accent px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white">
               Demo
             </span>
             <OnboardingTour
@@ -82,6 +75,19 @@ export function DashboardHeader({
             <DemoPersonaSwitcher currentType={businessType} currentRole={role} />
           </div>
         )}
+      </div>
+
+      <nav className="flex items-center gap-1" data-tour="nav-sidebar">
+        {navLinks.map((link) => (
+          <HeaderNavLink key={link.href} href={link.href} icon={link.icon}>
+            {link.label}
+          </HeaderNavLink>
+        ))}
+      </nav>
+
+      <div className="flex min-w-0 items-center justify-end gap-2">
+        <NotificationBell />
+        <AccountMenu />
       </div>
     </header>
   );

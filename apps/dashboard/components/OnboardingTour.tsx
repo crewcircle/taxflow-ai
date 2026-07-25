@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight } from "lucide-react";
+import { ArrowLeft, ArrowRight, Compass } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useLastQueryWalkthrough } from "@/lib/useLastQueryWalkthrough";
 
@@ -244,8 +244,9 @@ export function OnboardingTour({
 
   return (
     <>
-      <Button variant="outline" size="sm" onClick={openManually}>
-        Take the tour
+      <Button variant="outline" size="sm" onClick={openManually} className="shrink-0 gap-1.5 px-2 sm:px-3">
+        <Compass className="size-3.5 shrink-0" />
+        <span className="hidden lg:inline">Take the tour</span>
       </Button>
 
       {open && (

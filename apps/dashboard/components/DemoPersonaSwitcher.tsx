@@ -46,9 +46,9 @@ export function DemoPersonaSwitcher({
   }
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex min-w-0 items-center gap-1.5">
       <Select value={currentType} onValueChange={(v) => handleChange(v, currentRole)} disabled={switching}>
-        <SelectTrigger size="sm" className="h-7 w-[190px] text-xs">
+        <SelectTrigger size="sm" className="h-7 w-[110px] text-xs sm:w-[140px] lg:w-[190px]">
           <SelectValue />
         </SelectTrigger>
         <SelectContent align="end">
@@ -60,7 +60,7 @@ export function DemoPersonaSwitcher({
         </SelectContent>
       </Select>
       <Select value={currentRole} onValueChange={(v) => handleChange(currentType, v)} disabled={switching}>
-        <SelectTrigger size="sm" className="h-7 w-[100px] text-xs">
+        <SelectTrigger size="sm" className="h-7 w-[68px] shrink-0 text-xs sm:w-[100px]">
           <SelectValue />
         </SelectTrigger>
         <SelectContent align="end">
