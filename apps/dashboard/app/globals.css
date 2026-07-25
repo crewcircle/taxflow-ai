@@ -150,3 +150,20 @@ body {
     @apply font-sans;
   }
 }
+
+/* Brief highlight flash for "jump to this flagged claim" (AnnotatableMarkdown's
+   focusNextFlag) - a quick pulse of the flag color that fades out, distinct
+   from the permanent underline every flagged claim already has. */
+@keyframes flag-flash {
+  0%,
+  40% {
+    background-color: color-mix(in oklch, var(--color-amber-300) 60%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.flag-flash {
+  animation: flag-flash 1.2s ease-out;
+  border-radius: 0.25rem;
+}

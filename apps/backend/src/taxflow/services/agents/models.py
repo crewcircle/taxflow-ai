@@ -48,7 +48,11 @@ class VerificationIssue(BaseModel):
     claim: str
     issue: str
     severity: Literal["critical", "warning", "note"]
-    source_says: str
+    # Optional (SYSTEM_PROMPT now tells the model to omit it when it would
+    # just restate `issue`) - required before, which would have made the
+    # model's own model omit-when-redundant instruction a guaranteed parse
+    # failure the moment it followed it.
+    source_says: str | None = None
     suggested_correction: str
 
 

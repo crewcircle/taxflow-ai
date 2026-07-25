@@ -7,13 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Annotorious, useAnnotator, useSelection } from "@annotorious/react";
 import { TextAnnotator, TextAnnotationPopup } from "@recogito/react-text-annotator";
 import type { TextAnnotation, RecogitoTextAnnotator, HighlightStyle } from "@recogito/react-text-annotator";
@@ -152,9 +145,6 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState("");
 
-  // Which flagged claim's detail is open (click on an inline verify-mark).
-  const [activeVerifyIssue, setActiveVerifyIssue] = useState<VerificationFlag | null>(null);
-
   const isEmpty = sourceMarkdown.trim().length === 0;
 
   // Lifted out of RecogitoLayer (rather than computed there) so this
@@ -198,6 +188,12 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
   }, [verificationIssues, sourceMarkdown]);
 
   const flagCursorRef = useRef(0);
+  // RecogitoLayer registers its `anno` instance here once mounted (it's the
+  // only place `useAnnotator()` can be called, inside the Annotorious tree) -
+  // lets focusNextFlag select the flagged annotation programmatically so the
+  // SAME inline TextAnnotationPopup used for comments also shows the verify
+  // detail, anchored right at the flagged text, instead of a separate dialog.
+  const annoRef = useRef<RecogitoTextAnnotator | null>(null);
 
   useImperativeHandle(
     ref,
@@ -211,7 +207,14 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
         flagCursorRef.current += 1;
         const el = findElementAtTextOffset(container, target.anchor.startOffset);
         el?.scrollIntoView({ behavior: "smooth", block: "center" });
-        setActiveVerifyIssue(target.issue);
+        // Brief flash so "here it is" reads even after the smooth-scroll
+        // already lands it in the middle of the viewport, underlined the
+        // same as every other flagged claim.
+        if (el) {
+          el.classList.add("flag-flash");
+          setTimeout(() => el.classList.remove("flag-flash"), 1200);
+        }
+        annoRef.current?.setSelected(target.id);
       },
     }),
     [verifyAnchors]
@@ -376,7 +379,9 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
               activeThreadId={activeThreadId}
               onCreateAnnotation={createAnnotation}
               onClickThread={setActiveThreadId}
-              onClickVerify={setActiveVerifyIssue}
+              onAnnotatorReady={(a) => {
+                annoRef.current = a;
+              }}
             />
           </Annotorious>
         )}
@@ -576,58 +581,6 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
       </aside>
       )}
 
-      {/* verification-flag detail — opened by clicking an inline flagged claim */}
-      <Dialog open={activeVerifyIssue != null} onOpenChange={(open) => !open && setActiveVerifyIssue(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle
-                className={cn(
-                  "size-4",
-                  activeVerifyIssue?.severity === "critical" ? "text-destructive" : "text-amber-600"
-                )}
-              />
-              {activeVerifyIssue?.severity === "critical"
-                ? "Needs review before relying on this"
-                : activeVerifyIssue?.severity === "warning"
-                  ? "Worth a second look"
-                  : "Note"}
-            </DialogTitle>
-          </DialogHeader>
-          {activeVerifyIssue && (
-            <div className="space-y-3 text-sm">
-              <div className="rounded-lg bg-muted px-3 py-2">
-                <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Flagged text
-                </span>
-                &ldquo;{activeVerifyIssue.claim}&rdquo;
-              </div>
-              <p className="text-foreground">{activeVerifyIssue.issue}</p>
-              {activeVerifyIssue.source_says && (
-                <div>
-                  <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    What the source actually says
-                  </span>
-                  <p className="text-muted-foreground">{activeVerifyIssue.source_says}</p>
-                </div>
-              )}
-              {activeVerifyIssue.suggested_correction && (
-                <div>
-                  <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Suggested correction
-                  </span>
-                  <p className="text-muted-foreground">{activeVerifyIssue.suggested_correction}</p>
-                </div>
-              )}
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setActiveVerifyIssue(null)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 });
@@ -650,7 +603,7 @@ function RecogitoLayer({
   activeThreadId,
   onCreateAnnotation,
   onClickThread,
-  onClickVerify,
+  onAnnotatorReady,
 }: {
   sourceMarkdown: string;
   citations?: SourceCitation[];
@@ -659,10 +612,15 @@ function RecogitoLayer({
   activeThreadId: string | null;
   onCreateAnnotation: (anchor: AnchorOffsets, kind: AuthorKind, body: string) => Promise<boolean>;
   onClickThread: (id: string) => void;
-  onClickVerify: (issue: VerificationFlag) => void;
+  onAnnotatorReady: (anno: RecogitoTextAnnotator) => void;
 }) {
   const anno = useAnnotator<RecogitoTextAnnotator>();
   const { selected } = useSelection<TextAnnotation>();
+
+  useEffect(() => {
+    if (anno) onAnnotatorReady(anno);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anno]);
 
   const threadByRootId = useMemo(() => {
     const map = new Map<string, Thread>();
@@ -706,24 +664,18 @@ function RecogitoLayer({
     anno.setAnnotations([...threadAnnotations, ...verifyAnnotations], true);
   }, [anno, threads, verifyAnchors]);
 
-  // A selection resolves to one of two things: a click on an already-known
-  // thread highlight (open its gutter card) or a click on a verify-flag
-  // highlight (open its detail dialog) - both resolved instantly, so we
-  // cancel Recogito's own "selected" state right away (the backend list via
-  // the effect above is the single source of truth for what's persisted and
-  // highlighted). A brand-new drag-selection with no matching id is NOT
-  // cancelled here - it's left selected so TextAnnotationPopup below can
-  // anchor the inline compose popup to it; that popup cancels the selection
-  // itself once the user submits or dismisses it.
+  // A click on an already-known THREAD highlight opens its gutter card and is
+  // resolved instantly, so that one still auto-cancels the selection (the
+  // gutter, not a popup, is the source of truth for thread detail/reply).
+  // Verify-flag clicks and brand-new drag-selections are deliberately left
+  // selected - both get an inline TextAnnotationPopup below (verify detail /
+  // compose form respectively), which cancels the selection itself once the
+  // user closes it.
   useEffect(() => {
     if (!anno || selected.length === 0) return;
     for (const { annotation } of selected) {
       if (threadByRootId.has(annotation.id)) {
         onClickThread(annotation.id);
-        anno.cancelSelected();
-      } else if (verifyIssueById.has(annotation.id)) {
-        const issue = verifyIssueById.get(annotation.id);
-        if (issue) onClickVerify(issue);
         anno.cancelSelected();
       }
     }
@@ -761,12 +713,23 @@ function RecogitoLayer({
     <TextAnnotator className={RECOGITO_CONTAINER_CLASS} style={style}>
       <MarkdownDocument text={sourceMarkdown} citations={citations} />
       <TextAnnotationPopup
+        // Dismissing any other way (click outside, etc.) must clear both
+        // Recogito's selection AND the native browser text selection - same
+        // reasoning as ComposerPopup's own onDone below, just for the paths
+        // that don't go through that callback.
+        onClose={() => {
+          anno?.cancelSelected();
+          window.getSelection()?.removeAllRanges();
+        }}
         popup={({ annotation }) => {
-          // Only a brand-new selection gets the compose popup - clicks on an
-          // existing thread/verify highlight are already routed elsewhere
-          // (gutter card / detail dialog) and cancelled by the effect above
-          // before this would ever render for them.
-          if (threadByRootId.has(annotation.id) || verifyIssueById.has(annotation.id)) return null;
+          // A click on an existing thread highlight is already routed to the
+          // gutter and cancelled by the effect above before this would ever
+          // render for it.
+          if (threadByRootId.has(annotation.id)) return null;
+          const verifyIssue = verifyIssueById.get(annotation.id);
+          if (verifyIssue) {
+            return <VerifyDetailPopup issue={verifyIssue} onDone={() => anno?.cancelSelected()} />;
+          }
           const sel = annotation.target?.selector?.[0];
           const quote = sel?.quote?.trim();
           if (!sel || !quote) return null;
@@ -774,12 +737,60 @@ function RecogitoLayer({
             <ComposerPopup
               anchor={{ startOffset: sel.start, endOffset: sel.end, quotedText: quote }}
               onCreateAnnotation={onCreateAnnotation}
-              onDone={() => anno?.cancelSelected()}
+              onDone={() => {
+                anno?.cancelSelected();
+                // Recogito clears its own selection state above, but the
+                // native browser text selection (blue highlight) that
+                // triggered this popup in the first place can survive that -
+                // clear it too so cancelling actually reverts to plain,
+                // unhighlighted text instead of leaving it looking selected.
+                window.getSelection()?.removeAllRanges();
+              }}
             />
           );
         }}
       />
     </TextAnnotator>
+  );
+}
+
+// Inline detail for a flagged claim, positioned right at the underlined text
+// by TextAnnotationPopup - replaces what used to be a centered Dialog.
+// "What's wrong" merges the issue description and what the source actually
+// says into one crisp line (they were two separate, often-overlapping
+// paragraphs before) - the point a reader needs is "this claim doesn't match
+// the source, here's why," not two takes on the same fact.
+function VerifyDetailPopup({ issue, onDone }: { issue: VerificationFlag; onDone: () => void }) {
+  const whatsWrong = issue.source_says ? `${issue.issue} Source says: ${issue.source_says}` : issue.issue;
+  return (
+    <div className="w-80 space-y-2.5 rounded-lg border border-border bg-popover p-3 text-sm text-popover-foreground shadow-xl">
+      <div className="flex items-center gap-2">
+        <AlertTriangle
+          className={cn("size-4 shrink-0", issue.severity === "critical" ? "text-destructive" : "text-amber-600")}
+        />
+        <span className="text-xs font-semibold">
+          {issue.severity === "critical"
+            ? "Needs review before relying on this"
+            : issue.severity === "warning"
+              ? "Worth a second look"
+              : "Note"}
+        </span>
+      </div>
+      <p className="text-foreground">{whatsWrong}</p>
+      {issue.suggested_correction && (
+        <div>
+          <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Suggested correction
+          </span>
+          <p className="text-muted-foreground">{issue.suggested_correction}</p>
+        </div>
+      )}
+      <div className="flex justify-end">
+        <Button size="sm" variant="ghost" onClick={onDone}>
+          Close
+        </Button>
+      </div>
+    </div>
   );
 }
 

@@ -157,9 +157,8 @@ export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
                               citation: group.citation,
                             })
                           }
-                          className="flex items-center gap-1.5 text-left font-medium text-foreground hover:underline"
+                          className={cn("flex items-center gap-1.5 text-left font-medium hover:underline", color.text)}
                         >
-                          <span className={cn("inline-block size-2 shrink-0 rounded-full", color.dot)} />
                           {group.citation}
                           <FileSearch className="size-3 shrink-0 text-muted-foreground" />
                         </button>
@@ -169,10 +168,7 @@ export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
                       </TooltipContent>
                     </Tooltip>
                   ) : (
-                    <p className="flex items-center gap-1.5 font-medium text-foreground">
-                      <span className={cn("inline-block size-2 shrink-0 rounded-full", color.dot)} />
-                      {group.citation}
-                    </p>
+                    <p className={cn("flex items-center gap-1.5 font-medium", color.text)}>{group.citation}</p>
                   )}
                   {group.occurrences.length > 1 && (
                     <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">

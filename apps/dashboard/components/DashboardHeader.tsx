@@ -52,35 +52,37 @@ export function DashboardHeader({
         ))}
       </nav>
 
-      <div className="ml-auto flex items-center gap-2 pr-10">
-        <NotificationBell />
+      <div className="ml-auto flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          <NotificationBell />
+          <AccountMenu />
+        </div>
 
-        {isDemo && (
-          <OnboardingTour
-            businessName={businessName}
-            businessType={businessType}
-            demoTagline={demoTagline}
-            demoDescription={demoDescription}
-            isDemo={isDemo}
-          />
-        )}
-
-        <AccountMenu />
-
+        {/* Everything demo-only lives in one clearly-marked cluster, set apart
+            from the real account controls (Notifications/Settings/Sign out)
+            above - previously a decorative corner ribbon was disconnected
+            from the tour button and persona/role switcher, so "am I looking
+            at demo controls or my own account" wasn't answerable at a
+            glance. */}
         {businessName && isDemo && (
-          <div data-tour="identity-strip">
+          <div
+            className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/5 py-1 pl-2 pr-1.5"
+            data-tour="identity-strip"
+          >
+            <span className="rounded-full bg-accent px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white">
+              Demo
+            </span>
+            <OnboardingTour
+              businessName={businessName}
+              businessType={businessType}
+              demoTagline={demoTagline}
+              demoDescription={demoDescription}
+              isDemo={isDemo}
+            />
             <DemoPersonaSwitcher currentType={businessType} currentRole={role} />
           </div>
         )}
       </div>
-
-      {isDemo && (
-        <div className="pointer-events-none absolute right-0 top-0 h-20 w-20 overflow-hidden">
-          <div className="absolute right-[-32px] top-[16px] w-[130px] rotate-45 bg-accent py-1 text-center text-[10px] font-bold uppercase tracking-wider text-white shadow-sm">
-            Demo
-          </div>
-        </div>
-      )}
     </header>
   );
 }
