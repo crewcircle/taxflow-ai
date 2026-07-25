@@ -18,12 +18,14 @@ Run: doppler run --project taxflow --config prd -- \
 import asyncio
 import os
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from supabase import create_client  # noqa: E402
 
+from taxflow import providers  # noqa: E402
 from taxflow.services.agents.draft import DraftAgent  # noqa: E402
 from taxflow.services.agents.research import ResearchAgent  # noqa: E402
 from taxflow.services.agents.verify import VerifyAgent  # noqa: E402
@@ -60,6 +62,7 @@ PERSONAS = [
                 "days_ago": 18,
                 "client_ref": "Smile Bay Dental",
                 "topic_tag": "Equipment finance",
+                "engagement_desc": "CBCT Scanner - Instant Asset Write-Off",
                 "context_note": (
                     "Client bought a $180k scanner before EOFY - write-off confirmed and "
                     "included in this year's return."
@@ -74,6 +77,7 @@ PERSONAS = [
                 "days_ago": 11,
                 "client_ref": "Coastal Family Dentistry",
                 "topic_tag": "FBT car benefits",
+                "engagement_desc": "Practice Manager Vehicle - FBT Car Benefit",
                 "context_note": (
                     "FBT return due this quarter - taxable value confirmed and included "
                     "in the lodged return."
@@ -89,6 +93,7 @@ PERSONAS = [
                 "days_ago": 3,
                 "client_ref": "Smile Bay Dental",
                 "topic_tag": "Division 7A",
+                "engagement_desc": "Chair-Side Fit-Out Loan - Division 7A",
                 "context_note": (
                     "Holding-entity loan flagged in the compliance review - drafting a "
                     "complying Div 7A agreement before lodgment day."
@@ -157,6 +162,7 @@ PERSONAS = [
                 "days_ago": 18,
                 "client_ref": "Meridian Developments",
                 "topic_tag": "GST margin scheme",
+                "engagement_desc": "Commercial Site Sale - GST Margin Scheme",
                 "context_note": (
                     "Site sale settling this quarter - margin confirmed and included "
                     "in the BAS."
@@ -171,6 +177,7 @@ PERSONAS = [
                 "days_ago": 11,
                 "client_ref": "Southbank Construction Group",
                 "topic_tag": "Thin capitalisation",
+                "engagement_desc": "Offshore-Funded Development Loan - Thin Cap Review",
                 "context_note": (
                     "Year-end review of the offshore-funded loan - confirmed within "
                     "safe harbour, no action needed."
@@ -186,6 +193,7 @@ PERSONAS = [
                 "days_ago": 3,
                 "client_ref": "Ashfield Property Holdings",
                 "topic_tag": "CGT concessions",
+                "engagement_desc": "Partner Interest Sale - CGT Concessions",
                 "context_note": (
                     "Partner considering selling their interest - confirming discount "
                     "eligibility before the sale contract is signed."
@@ -256,6 +264,7 @@ PERSONAS = [
                 "days_ago": 18,
                 "client_ref": "Priya Kapoor",
                 "topic_tag": "Work-from-home deductions",
+                "engagement_desc": "WFH Deduction - Fixed Rate Method",
                 "context_note": "Client lodging their return this month - rate confirmed and applied.",
             },
             {
@@ -268,6 +277,7 @@ PERSONAS = [
                 "days_ago": 11,
                 "client_ref": "Whitfield Family Trust",
                 "topic_tag": "Trust distributions",
+                "engagement_desc": "Family Trust Distribution - s100A Review",
                 "context_note": (
                     "Trustee flagged an unusual distribution before resolutions were "
                     "finalised - confirmed no reimbursement agreement, resolution can "
@@ -284,6 +294,7 @@ PERSONAS = [
                 "days_ago": 3,
                 "client_ref": "Vantage Software Pty Ltd",
                 "topic_tag": "R&D tax incentive",
+                "engagement_desc": "R&D Tax Incentive Claim - FY Offset",
                 "context_note": (
                     "Software client's R&D claim due before the AusIndustry deadline - "
                     "confirming offset rate and required records before lodging."
@@ -353,6 +364,7 @@ PERSONAS = [
                 "days_ago": 18,
                 "client_ref": "The Local Kitchen",
                 "topic_tag": "Equipment finance",
+                "engagement_desc": "Kitchen Renovation - Instant Asset Write-Off",
                 "context_note": (
                     "Renovation invoices coming through this month - write-off "
                     "eligibility confirmed for the owned items before the return is "
@@ -367,7 +379,8 @@ PERSONAS = [
                 ),
                 "days_ago": 11,
                 "client_ref": "Harbourside Bistro",
-                "topic_tag": "FBT car benefits",
+                "topic_tag": "FBT staff meals",
+                "engagement_desc": "Friday Staff Dinner - FBT Minor Benefits Exemption",
                 "context_note": (
                     "FBT return being prepared this quarter - exemption basis "
                     "confirmed and documented."
@@ -382,6 +395,7 @@ PERSONAS = [
                 "days_ago": 3,
                 "client_ref": "Enmore Roasters",
                 "topic_tag": "GST",
+                "engagement_desc": "New Menu Items - GST Food Classification",
                 "context_note": (
                     "New menu launching next week - GST treatment confirmed per item "
                     "before pricing is finalised."
@@ -454,6 +468,7 @@ PERSONAS = [
                 "days_ago": 18,
                 "client_ref": "Western Build Co",
                 "topic_tag": "Division 7A",
+                "engagement_desc": "Director Home Deposit Advance - Division 7A",
                 "context_note": (
                     "Advance made mid-year - complying loan agreement being drafted "
                     "before lodgment day."
@@ -469,6 +484,7 @@ PERSONAS = [
                 "days_ago": 11,
                 "client_ref": "Hawkesbury Trade Services",
                 "topic_tag": "Superannuation",
+                "engagement_desc": "Subcontractor Classification - Super Guarantee Review",
                 "context_note": (
                     "Contractor arrangements reviewed ahead of the super guarantee "
                     "due date - classification confirmed as genuine contractors."
@@ -484,6 +500,7 @@ PERSONAS = [
                 "days_ago": 3,
                 "client_ref": "Nepean Constructions Pty Ltd",
                 "topic_tag": "GST margin scheme",
+                "engagement_desc": "3-Lot Subdivision Sale - GST Margin Scheme",
                 "context_note": (
                     "First townhouse settling next month - margin scheme eligibility "
                     "and valuation confirmed before the BAS is lodged."
@@ -582,16 +599,35 @@ def _days_ago(n: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=n)).isoformat()
 
 
+def _attribute_matter(db, client_id: str, client_ref: str, engagement_desc: str) -> dict:
+    """Real firm_client + engagement for one seeded matter, instead of the old
+    client_ref-only free-text field - mirrors what resolve_or_default_engagement
+    does for real traffic, so seeded demo data groups under a proper named
+    engagement (not the generic "Unattributed" bucket) in the Clients &
+    Engagements UI. Each distinct (client_ref, engagement_desc) pair - a "Smile
+    Bay Dental" client can have more than one matter - gets its own engagement."""
+    firm_client = db.firm_clients.create(client_id, client_ref)
+    engagement = db.engagements.get_by_firm_client_and_description(
+        client_id, firm_client["id"], engagement_desc
+    )
+    if not engagement:
+        engagement = db.engagements.create(client_id, firm_client["id"], engagement_desc)
+    return {"engagement_id": engagement["id"], "firm_client_id": firm_client["id"]}
+
+
 async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
     research = ResearchAgent()
     drafter = DraftAgent()
     verifier = VerifyAgent()
+    db = providers.get_relational_data()
     email = persona["email"]
 
     first_query_id = None
     first_days_ago = None
     first_answer = None
     first_citations = None
+    first_attribution = None
+    ato_attribution = None
     for item in persona["questions"]:
         question = item["question"]
         print(f"    researching: {question[:60]}...")
@@ -603,6 +639,17 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
         verification = await verifier.run(
             draft=final_answer, citations=result["citations"], question=question
         )
+
+        # Real engagement attribution (Phase 2/3) instead of leaving these
+        # unattributed - each seeded question is also its own conversation
+        # thread (a session_id + a named query_sessions row), so the sidebar
+        # shows a real matter/conversation name rather than "General".
+        attribution = _attribute_matter(db, client_id, item["client_ref"], item["engagement_desc"])
+        session_id = str(uuid.uuid4())
+        db.query_sessions.get_or_create(
+            client_id, session_id, attribution["engagement_id"], attribution["firm_client_id"]
+        )
+        db.query_sessions.upsert_label(client_id, session_id, item["engagement_desc"])
 
         timestamp = _days_ago(item["days_ago"])
         row = (
@@ -622,6 +669,9 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
                     "client_ref": item["client_ref"],
                     "topic_tag": item["topic_tag"],
                     "context_note": item["context_note"],
+                    "engagement_id": attribution["engagement_id"],
+                    "firm_client_id": attribution["firm_client_id"],
+                    "session_id": session_id,
                     "created_at": timestamp,
                     "completed_at": timestamp,
                 }
@@ -633,6 +683,9 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
             first_days_ago = item["days_ago"]
             first_answer = final_answer
             first_citations = result["citations"]
+            first_attribution = attribution
+        if item["client_ref"] == persona["ato_client_ref"]:
+            ato_attribution = attribution
         print(f"      -> {verification.get('overall_status')}, {len(result['citations'])} citations")
 
     # One generated document: the first seeded question's answer, reformatted
@@ -656,11 +709,17 @@ async def seed_queries_and_document(sb, client_id: str, persona: dict) -> None:
             "content_md": draft_result["draft"],
             "client_ref": persona["questions"][0]["client_ref"],
             "context_note": persona["document_context_note"],
+            "engagement_id": first_attribution["engagement_id"],
+            "firm_client_id": first_attribution["firm_client_id"],
             "status": "draft",
             "created_at": _days_ago(max(first_days_ago - 1, 0)),
         }
     ).execute()
     print("    seeded 1 document")
+    # Stash the matching matter's attribution for seed_ato_response, which
+    # runs separately (and may run on a later re-invocation) - persisted onto
+    # the persona dict since seed_persona calls both against the same object.
+    persona["_ato_attribution"] = ato_attribution
 
 
 async def seed_firm_knowledge(sb, client_id: str, persona: dict) -> None:
@@ -678,7 +737,17 @@ async def seed_firm_knowledge(sb, client_id: str, persona: dict) -> None:
     print("    seeded 1 firm knowledge document")
 
 
-def seed_ato_response(sb, client_id: str, persona: dict) -> None:
+def seed_ato_response(db, sb, client_id: str, persona: dict) -> None:
+    # _ato_attribution is only set when seed_queries_and_document ran in this
+    # same invocation - on a re-run where queries already exist but the ATO
+    # doc doesn't yet, re-derive it the same way (get-or-create, never
+    # duplicates the engagement seed_queries_and_document already made).
+    attribution = persona.get("_ato_attribution")
+    if attribution is None:
+        matching = next(
+            q for q in persona["questions"] if q["client_ref"] == persona["ato_client_ref"]
+        )
+        attribution = _attribute_matter(db, client_id, matching["client_ref"], matching["engagement_desc"])
     sb.table("documents").insert(
         {
             "client_id": client_id,
@@ -687,6 +756,8 @@ def seed_ato_response(sb, client_id: str, persona: dict) -> None:
             "content_md": persona["ato_response_md"],
             "client_ref": persona["ato_client_ref"],
             "context_note": persona["ato_context_note"],
+            "engagement_id": attribution["engagement_id"],
+            "firm_client_id": attribution["firm_client_id"],
             "status": "draft",
             "created_at": _days_ago(6),
         }
@@ -696,6 +767,7 @@ def seed_ato_response(sb, client_id: str, persona: dict) -> None:
 
 async def seed_persona(sb, persona: dict) -> None:
     print(f"{persona['business_name']} ({persona['email']}):")
+    db = providers.get_relational_data()
     client_id = ensure_demo_client(sb, persona)
 
     existing_queries = sb.table("queries").select("id").eq("client_id", client_id).limit(1).execute()
@@ -717,7 +789,7 @@ async def seed_persona(sb, persona: dict) -> None:
     if existing_ato.data:
         print("  already has ATO correspondence - skipping (idempotent).")
     else:
-        seed_ato_response(sb, client_id, persona)
+        seed_ato_response(db, sb, client_id, persona)
 
 
 async def main() -> None:
