@@ -14,10 +14,15 @@ Return a JSON object with this exact schema:
   "issues": [
     {
       "claim": "exact text from draft",
-      "issue": "description of problem",
+      "issue": "ONE crisp sentence: what's wrong AND what the source actually says instead - a
+                reader should understand the whole problem from this sentence alone, without
+                needing a separate explanation",
       "severity": "critical" | "warning" | "note",
-      "source_says": "what the source actually says",
-      "suggested_correction": "how to fix it"
+      "source_says": "OMIT this field entirely if it would just restate what you already said in
+                      \"issue\" - only include it for a direct quote/figure from the source that
+                      is too specific or important to paraphrase into \"issue\"",
+      "suggested_correction": "ONE crisp sentence - the corrected claim itself, not a description
+                               of how to correct it"
     }
   ],
   "unsupported_claims": ["list of claims with no citation"],
