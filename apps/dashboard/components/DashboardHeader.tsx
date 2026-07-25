@@ -6,6 +6,7 @@ import { AccountMenu } from "@/components/AccountMenu";
 import { OnboardingTour } from "@/components/OnboardingTour";
 import { DemoPersonaSwitcher } from "@/components/DemoPersonaSwitcher";
 import { NotificationBell } from "@/components/NotificationBell";
+import { GlobalSearch } from "@/components/GlobalSearch";
 
 interface NavItem {
   href: string;
@@ -86,6 +87,7 @@ export function DashboardHeader({
       </nav>
 
       <div className="flex min-w-0 items-center justify-end gap-2">
+        <GlobalSearch />
         <NotificationBell />
         <AccountMenu />
       </div>

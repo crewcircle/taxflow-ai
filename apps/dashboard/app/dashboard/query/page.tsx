@@ -1082,6 +1082,20 @@ export default function QueryPage() {
   // case jump to and highlight the newest question carrying that tag instead.
   useEffect(() => {
     if (hasAutoLoaded.current || history.length === 0) return;
+
+    // The global search palette's "New conversation" action deep-links here
+    // with ?new=1 - starts a fresh thread instead of resuming the most
+    // recent one, same as clicking it in the top bar would. Deliberately
+    // does NOT set hasAutoLoaded, so a genuinely fresh page load (no
+    // history yet) still gets the normal auto-resume behavior below once
+    // history arrives - this only short-circuits when there's something to
+    // resume that the user explicitly asked to skip.
+    if (new URLSearchParams(window.location.search).get("new") === "1") {
+      window.history.replaceState(null, "", window.location.pathname);
+      hasAutoLoaded.current = true;
+      handleNewConversation();
+      return;
+    }
     hasAutoLoaded.current = true;
 
     const tag = new URLSearchParams(window.location.search).get("tag");
