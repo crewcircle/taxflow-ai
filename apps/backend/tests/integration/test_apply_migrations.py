@@ -215,7 +215,7 @@ def test_bootstrap_through_040_then_applies_only_041():
     #    after that applied yet. (Applying everything in step 1 was only to
     #    satisfy the bootstrap preflight that the ≤040 objects exist.) 042 is a
     #    pure idempotent data backfill (no DDL), so only 041's, 043's, 044's,
-    #    045's and 046's schema objects need dropping here.
+    #    045's, 046's and 047's schema objects need dropping here.
     conn = psycopg2.connect(_MIGRATION_URL)
     try:
         conn.autocommit = True
@@ -232,6 +232,9 @@ def test_bootstrap_through_040_then_applies_only_041():
             cur.execute("ALTER TABLE queries DROP CONSTRAINT IF EXISTS queries_session_id_fkey;")
             cur.execute("ALTER TABLE query_sessions DROP COLUMN IF EXISTS engagement_id;")
             cur.execute("ALTER TABLE query_sessions DROP COLUMN IF EXISTS firm_client_id;")
+            cur.execute("ALTER TABLE annotations DROP COLUMN IF EXISTS author_user_id;")
+            cur.execute("ALTER TABLE annotations DROP COLUMN IF EXISTS mentioned_user_ids;")
+            cur.execute("ALTER TABLE notifications DROP COLUMN IF EXISTS recipient_user_id;")
     finally:
         conn.close()
 

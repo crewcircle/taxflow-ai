@@ -802,8 +802,8 @@ class AnnotationsRepo:
 
     _COLS = (
         "id, client_id, target_type, target_id, target_version, block_index, "
-        "start_offset, end_offset, quoted_text, author_kind, author_name, body, "
-        "parent_id, resolved_at, created_at"
+        "start_offset, end_offset, quoted_text, author_kind, author_name, "
+        "author_user_id, mentioned_user_ids, body, parent_id, resolved_at, created_at"
     )
 
     def list_for_target(self, client_id: str, target_type: str, target_id: str) -> list[dict]:
@@ -2226,16 +2226,22 @@ class NotificationsRepo:
             returning=True,
         )
 
-    def list_for_client(self, client_id: str, limit: int = 50) -> list[dict]:
+    def list_for_client(self, client_id: str, user_id: str | None, limit: int = 50) -> list[dict]:
+        # recipient_user_id IS NULL -> firm-wide (answer_improved, regulatory
+        # alerts, etc - every existing notification kind keeps its current
+        # "whole firm sees it" behaviour). A mention (or any future
+        # "this needs a specific person" notification) sets recipient_user_id,
+        # so it's only ever returned to that person. user_id=None (caller has
+        # no resolved user row yet) sees only firm-wide notifications.
         return _fetchall(
             """
-            SELECT id, kind, query_id, title, body, read_at, created_at
+            SELECT id, kind, query_id, title, body, read_at, created_at, recipient_user_id
             FROM notifications
-            WHERE client_id = %s
+            WHERE client_id = %s AND (recipient_user_id IS NULL OR recipient_user_id = %s)
             ORDER BY created_at DESC
             LIMIT %s
             """,
-            (client_id, limit),
+            (client_id, user_id, limit),
         )
 
     def mark_read(self, client_id: str, notification_id: str) -> None:

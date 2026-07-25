@@ -276,3 +276,69 @@ def test_post_reply_accepts_same_target_parent(client):
         assert inserted["parent_id"] == "p1"
     finally:
         app.dependency_overrides.clear()
+
+
+# --- @mentions -----------------------------------------------------------
+
+
+def test_post_with_no_mention_skips_roster_lookup(client):
+    mock_db = MagicMock()
+    mock_db.documents.get_for_client.return_value = {"id": "doc-1", "content_md": "x"}
+    mock_db.annotations.insert.return_value = {"id": "a1"}
+    _override(CLIENT, mock_db)
+    try:
+        resp = client.post("/annotations", json=_valid_body())
+        assert resp.status_code == 201
+        mock_db.users.list_for_client.assert_not_called()
+        mock_db.notifications.insert.assert_not_called()
+        inserted = mock_db.annotations.insert.call_args[0][0]
+        assert inserted["mentioned_user_ids"] is None
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_post_with_valid_mention_notifies_and_stores(client):
+    mock_db = MagicMock()
+    mock_db.documents.get_for_client.return_value = {"id": "doc-1", "content_md": "x"}
+    mock_db.users.list_for_client.return_value = [
+        {"id": "11111111-1111-1111-1111-111111111111", "display_name": "Sarah"}
+    ]
+    mock_db.annotations.insert.return_value = {"id": "a1"}
+    _override(CLIENT, mock_db)
+    try:
+        resp = client.post(
+            "/annotations",
+            json=_valid_body(
+                body="Can you check this @[Sarah](11111111-1111-1111-1111-111111111111)?"
+            ),
+        )
+        assert resp.status_code == 201
+        mock_db.notifications.insert.assert_called_once()
+        notified = mock_db.notifications.insert.call_args[0][0]
+        assert notified["recipient_user_id"] == "11111111-1111-1111-1111-111111111111"
+        assert notified["kind"] == "mention"
+        inserted = mock_db.annotations.insert.call_args[0][0]
+        assert inserted["mentioned_user_ids"] == ["11111111-1111-1111-1111-111111111111"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_post_with_unknown_mention_id_is_dropped(client):
+    mock_db = MagicMock()
+    mock_db.documents.get_for_client.return_value = {"id": "doc-1", "content_md": "x"}
+    mock_db.users.list_for_client.return_value = []
+    mock_db.annotations.insert.return_value = {"id": "a1"}
+    _override(CLIENT, mock_db)
+    try:
+        resp = client.post(
+            "/annotations",
+            json=_valid_body(
+                body="ping @[Nobody](99999999-9999-9999-9999-999999999999)"
+            ),
+        )
+        assert resp.status_code == 201
+        mock_db.notifications.insert.assert_not_called()
+        inserted = mock_db.annotations.insert.call_args[0][0]
+        assert inserted["mentioned_user_ids"] is None
+    finally:
+        app.dependency_overrides.clear()

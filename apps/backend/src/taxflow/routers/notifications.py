@@ -17,8 +17,11 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 @router.get("")
 async def list_notifications(client=Depends(get_current_client), db=Depends(get_db)):
-    """Recent notifications for the requesting client, newest first."""
-    return await asyncio.to_thread(db.notifications.list_for_client, client["id"])
+    """Recent notifications for the requesting client, newest first - firm-wide
+    ones plus any addressed specifically to the caller (e.g. a mention)."""
+    return await asyncio.to_thread(
+        db.notifications.list_for_client, client["id"], client.get("user_id")
+    )
 
 
 @router.post("/{notification_id}/read")
