@@ -182,11 +182,12 @@ def test_notifications_insert_targets_table():
 def test_notifications_list_for_client_scoped_by_client():
     cur = _FakeCursor(fetchall=[])
     with _patch_conn(cur):
-        Repositories().notifications.list_for_client("client-1")
+        Repositories().notifications.list_for_client("client-1", "user-1")
     sql, params = cur.executed[0]
     assert "FROM notifications" in sql
     assert "WHERE client_id = %s" in sql
     assert params[0] == "client-1"
+    assert params[1] == "user-1"
 
 
 def test_notifications_mark_read_scoped_by_id_and_client():

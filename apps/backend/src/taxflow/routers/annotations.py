@@ -8,6 +8,7 @@ is ALWAYS forced from the auth context and never read from the request body.
 """
 import asyncio
 import hashlib
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -17,6 +18,56 @@ from taxflow.middleware.auth import get_current_client
 from taxflow.rbac import has_permission
 
 router = APIRouter(prefix="/annotations", tags=["annotations"])
+
+# @[Display Name](user-id) - inserted by the frontend's mention picker
+# (annotations.py never trusts the display name half; only the id is used,
+# and even that is re-validated against the firm's own roster below before
+# it's stored or notified).
+_MENTION_PATTERN = re.compile(r"@\[[^\]]*\]\(([0-9a-fA-F-]{36})\)")
+
+
+def _parse_mentions(body: str) -> list[str]:
+    seen: dict[str, None] = {}
+    for match in _MENTION_PATTERN.finditer(body):
+        seen.setdefault(match.group(1), None)
+    return list(seen)
+
+
+async def _notify_mentions(
+    db, client_id: str, author_name: str | None, mentioned_ids: list[str],
+    target_type: str, target_id: str, comment_body: str,
+) -> list[str]:
+    """Validate each mentioned id against the firm's own roster (never trust
+    a client-supplied id blindly - a stale/tampered token is silently
+    dropped, not stored or notified) and fire one notification per valid
+    mention. Returns the validated subset, which is what actually gets
+    persisted on the annotation."""
+    if not mentioned_ids:
+        return []
+    roster = await asyncio.to_thread(db.users.list_for_client, client_id)
+    valid_ids = {u["id"] for u in roster}
+    resolved = [uid for uid in mentioned_ids if uid in valid_ids]
+    if not resolved:
+        return resolved
+
+    snippet = comment_body if len(comment_body) <= 140 else comment_body[:137] + "..."
+    # notifications.query_id only links to a query - a mention on a document
+    # comment still notifies, just without a deep link (NotificationBell
+    # already handles a null query_id by simply closing the dropdown).
+    query_id = target_id if target_type == "query_answer" else None
+    for uid in resolved:
+        await asyncio.to_thread(
+            db.notifications.insert,
+            {
+                "client_id": client_id,
+                "recipient_user_id": uid,
+                "kind": "mention",
+                "query_id": query_id,
+                "title": f"{author_name or 'A teammate'} mentioned you",
+                "body": snippet,
+            },
+        )
+    return resolved
 
 # The allowed sets mirror the DB CHECK constraints in migration 038 exactly.
 TARGET_TYPES = {"query_answer", "document"}
@@ -123,10 +174,21 @@ async def create_annotation(
         ):
             raise HTTPException(status_code=404, detail="Parent annotation not found")
 
+    mentioned_ids = await _notify_mentions(
+        db,
+        client["id"],
+        body.author_name,
+        _parse_mentions(body.body),
+        body.target_type,
+        body.target_id,
+        body.body,
+    )
+
     row = await asyncio.to_thread(
         db.annotations.insert,
         {
-            # client_id is forced from the auth context, NEVER from the body.
+            # client_id/author_user_id are forced from the auth context,
+            # NEVER from the body.
             "client_id": client["id"],
             "target_type": body.target_type,
             "target_id": body.target_id,
@@ -137,6 +199,8 @@ async def create_annotation(
             "quoted_text": body.quoted_text,
             "author_kind": body.author_kind,
             "author_name": body.author_name,
+            "author_user_id": client.get("user_id"),
+            "mentioned_user_ids": mentioned_ids or None,
             "body": body.body,
             "parent_id": body.parent_id,
         },

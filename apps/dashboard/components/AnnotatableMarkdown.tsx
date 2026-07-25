@@ -5,12 +5,11 @@ import { toast } from "sonner";
 import { MessageSquare, Check, Reply, Pencil, Trash2, HelpCircle, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Annotorious, useAnnotator, useSelection } from "@annotorious/react";
 import { TextAnnotator, TextAnnotationPopup } from "@recogito/react-text-annotator";
 import type { TextAnnotation, RecogitoTextAnnotator, HighlightStyle } from "@recogito/react-text-annotator";
 import { MarkdownDocument } from "@/components/MarkdownDocument";
+import { MentionField, renderMentionBody } from "@/components/MentionField";
 import type { SourceCitation } from "@/components/SourcesPanel";
 import { cn } from "@/lib/utils";
 import { sourceHash, stripMarkdownEmphasis } from "@/lib/annotations/tokenizer";
@@ -475,9 +474,9 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
 
               {editingId === thread.root.id ? (
                 <div className="mb-2 space-y-1.5">
-                  <Textarea
+                  <MentionField
                     value={editBody}
-                    onChange={(e) => setEditBody(e.target.value)}
+                    onChange={setEditBody}
                     rows={3}
                     className="text-sm"
                   />
@@ -497,7 +496,7 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
                   </div>
                 </div>
               ) : (
-                <p className="mb-2 text-sm leading-relaxed">{thread.root.body}</p>
+                <p className="mb-2 text-sm leading-relaxed">{renderMentionBody(thread.root.body)}</p>
               )}
 
               {thread.replies.map((reply) => (
@@ -514,16 +513,17 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
                     <span className="text-xs font-semibold">{reply.author_name ?? "Anonymous"}</span>
                     <span className="ml-auto text-[11px] text-muted-foreground">{relativeTime(reply.created_at)}</span>
                   </div>
-                  <p className="text-sm leading-relaxed">{reply.body}</p>
+                  <p className="text-sm leading-relaxed">{renderMentionBody(reply.body)}</p>
                 </div>
               ))}
 
               {replyingTo === thread.root.id ? (
                 <div className="mt-2 flex gap-1.5">
-                  <Input
+                  <MentionField
+                    as="input"
                     value={replyBody}
-                    onChange={(e) => setReplyBody(e.target.value)}
-                    placeholder="Reply to this thread…"
+                    onChange={setReplyBody}
+                    placeholder="Reply to this thread… (type @ to tag someone)"
                     className="h-8 text-xs"
                     onKeyDown={(e) => {
                       if (e.key === "Enter") void submitReply(thread);
@@ -848,13 +848,17 @@ function ComposerPopup({
           <MessageSquare className="size-3.5" /> Comment
         </button>
       </div>
-      <Textarea
+      <MentionField
         value={body}
-        onChange={(e) => setBody(e.target.value)}
+        onChange={setBody}
         rows={3}
         autoFocus
         className="text-sm"
-        placeholder={kind === "user" ? "Ask a question about this passage…" : "Add a reviewer comment…"}
+        placeholder={
+          kind === "user"
+            ? "Ask a question about this passage… (type @ to tag someone)"
+            : "Add a reviewer comment… (type @ to tag someone)"
+        }
         onKeyDown={(e) => {
           if (e.key === "Escape") onDone();
         }}
