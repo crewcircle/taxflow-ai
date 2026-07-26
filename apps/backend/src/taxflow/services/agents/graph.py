@@ -498,7 +498,9 @@ def route_after_clarify(state: AgentState) -> str:
 
 
 def route_after_generate(state: AgentState) -> str:
-    if should_verify(state["confidence"], state["citations"], state["answer"]):
+    if should_verify(
+        state["confidence"], state["citations"], state["answer"], state.get("question", "")
+    ):
         return "verify"
     return END
 

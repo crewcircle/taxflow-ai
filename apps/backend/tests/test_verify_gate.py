@@ -33,6 +33,59 @@ def test_should_verify_fires_on_insufficient_phrase():
     assert verify_mod.should_verify(0.9, [{"citation": "x"}], ans) is True
 
 
+# --- topic-mismatch signal: RAG-quality audit fix -----------------------------
+# A confident, well-cited answer whose cited sources are topically unrelated to
+# the question (e.g. NSW payroll-tax rulings cited for a federal FBT question)
+# used to skip verification entirely, since confidence only counted citation
+# quantity. `_topic_mismatch` closes that gap.
+
+
+def test_should_verify_fires_on_topic_mismatch(monkeypatch):
+    monkeypatch.setattr(settings, "VERIFY_CONFIDENCE_THRESHOLD", 0.60)
+    monkeypatch.setattr(settings, "VERIFY_MIN_CITATIONS", 1)
+    question = "Is a car provided to our practice manager subject to fringe benefits tax?"
+    # Confident, well-cited by count - but the cited source is a payroll tax
+    # ruling, not FBT. Without the topic check this would skip verification.
+    citations = [{"citation": "NSW PTA010", "excerpt": "payroll tax grouping provisions apply"}]
+    assert verify_mod.should_verify(0.9, citations, "Answer [1]", question) is True
+
+
+def test_should_verify_skips_on_topic_match(monkeypatch):
+    monkeypatch.setattr(settings, "VERIFY_CONFIDENCE_THRESHOLD", 0.60)
+    monkeypatch.setattr(settings, "VERIFY_MIN_CITATIONS", 1)
+    question = "Is a car provided to our practice manager subject to fringe benefits tax?"
+    citations = [{"citation": "FBTAA 1986", "excerpt": "car benefit taxable value under FBT"}]
+    assert verify_mod.should_verify(0.9, citations, "Answer [1]", question) is False
+
+
+def test_should_verify_ignores_topic_signal_when_question_omitted(monkeypatch):
+    """Callers that don't pass `question` (the default "") get today's
+    unchanged behaviour - the topic-mismatch check simply never trips."""
+    monkeypatch.setattr(settings, "VERIFY_CONFIDENCE_THRESHOLD", 0.60)
+    monkeypatch.setattr(settings, "VERIFY_MIN_CITATIONS", 1)
+    citations = [{"citation": "NSW PTA010", "excerpt": "payroll tax grouping provisions apply"}]
+    assert verify_mod.should_verify(0.9, citations, "Answer [1]") is False
+
+
+def test_should_verify_skips_when_citations_unclassified(monkeypatch):
+    """Never trips on generic/unclassified cited content - only a confident
+    clash between two specific topics is treated as a mismatch."""
+    monkeypatch.setattr(settings, "VERIFY_CONFIDENCE_THRESHOLD", 0.60)
+    monkeypatch.setattr(settings, "VERIFY_MIN_CITATIONS", 1)
+    question = "Is a car provided to our practice manager subject to fringe benefits tax?"
+    citations = [{"citation": "TD 2019/6", "excerpt": "general guidance with no topic keywords"}]
+    assert verify_mod.should_verify(0.9, citations, "Answer [1]", question) is False
+
+
+def test_topic_mismatch_helper_directly():
+    from taxflow.services.agents.verify import _topic_mismatch
+
+    q = "What is the GST margin scheme treatment of this sale?"
+    assert _topic_mismatch(q, [{"citation": "NSW DUT045", "excerpt": "stamp duty transfer duty"}]) is True
+    assert _topic_mismatch(q, [{"citation": "GST Act", "excerpt": "margin scheme calculation"}]) is False
+    assert _topic_mismatch(q, []) is False
+
+
 def test_verify_model_defaults_to_haiku(monkeypatch):
     from taxflow import providers
 
