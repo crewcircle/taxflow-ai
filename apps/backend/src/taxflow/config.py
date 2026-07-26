@@ -36,9 +36,14 @@ class Settings(BaseSettings):
     # Division/Section/subsection, numbered ruling paragraphs) with heading
     # breadcrumbs, storing each child chunk alongside its full parent-unit text.
     # When on, retrieval may expand a retrieved child to its parent unit at
-    # answer time. Both flags default False = today's exact flat behaviour.
-    HIERARCHICAL_CHUNKING_ENABLED: bool = False
-    PARENT_EXPANSION_ENABLED: bool = False
+    # answer time. Enabled together (RAG-quality audit Fix 1): legislation's
+    # extraction is now DOM-class-aware (LegislationScraper._extract_text)
+    # so real section markers are reliably produced, and parent expansion is
+    # what makes retrieval actually surface a full cited section instead of a
+    # truncated flat-window fragment. Existing rows stay flat until
+    # re-ingested; only NEW ingests use hierarchical chunking from here.
+    HIERARCHICAL_CHUNKING_ENABLED: bool = True
+    PARENT_EXPANSION_ENABLED: bool = True
 
     # Postgres connection pool (per uvicorn worker; see db.py). maxconn is sized
     # so 2 workers (~2 x 8 = 16 connections) stay under Supabase's connection cap.

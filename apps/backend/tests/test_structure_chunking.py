@@ -20,14 +20,19 @@ from taxflow.services.knowledge.structure import (
 )
 
 # --- fixtures ----------------------------------------------------------------
-ACT_EXCERPT = """Division 8 Deductions
+# Legislation container/section markers require the sentinel prefixes that
+# LegislationScraper._extract_text stamps onto real DOM headings (see
+# structure.LEGISLATION_SENTINELS) - bare "Section 8-1 ..." text is what a
+# Table of Contents / "Table of sections" listing on legislation.gov.au also
+# looks like, so it's no longer treated as a marker on its own.
+ACT_EXCERPT = """§DIV§ 8 Deductions
 
-Section 8-1 General deductions
+§SEC§ 8-1 General deductions
 You can deduct from your assessable income any loss or outgoing to the extent
 that it is incurred in gaining or producing your assessable income. However,
 you cannot deduct a loss or outgoing that is of a capital nature.
 
-Section 8-5 Specific deductions
+§SEC§ 8-5 Specific deductions
 You can also deduct from your assessable income an amount that a provision of
 this Act allows you to deduct. Some provisions prevent you from deducting an
 amount that you could otherwise deduct, or limit the amount you can deduct.
@@ -45,7 +50,7 @@ product of services rendered. This includes salary, wages and commissions.
 under section 6-5 of the ITAA 1997.
 """
 
-SUBSECTION_EXCERPT = """Section 8-1 General deductions
+SUBSECTION_EXCERPT = """§SEC§ 8-1 General deductions
 
 (1) You can deduct from your assessable income any loss or outgoing to the
 extent that it is incurred in gaining or producing your assessable income.
@@ -60,7 +65,7 @@ def test_parse_structure_legislation_two_sections():
     units = parse_structure(ACT_EXCERPT, "legislation")
     # Division heading + its own two Sections = 3 marked units (Division block
     # may be body-less and dropped if empty; the two Sections must be present).
-    section_units = [u for u in units if u.level in ("section", "section_bare")]
+    section_units = [u for u in units if u.level == "section"]
     assert len(section_units) == 2
     refs = {u.section_ref for u in section_units}
     assert refs == {"s 8-1", "s 8-5"}
@@ -102,6 +107,27 @@ def test_hierarchical_chunk_subsection_section_ref():
     refs = {r.section_ref for r in records}
     assert "s 8-1(1)" in refs
     assert "s 8-1(2)" in refs
+
+
+def test_parse_structure_ignores_bare_text_toc_style_headings():
+    """Regression guard: legislation.gov.au's own Table of Contents / "Table
+    of sections" listings repeat every heading as plain, unstamped text ahead
+    of the real content - exactly what a bare "Section 8-1 ..." regex used to
+    match, opening an empty unit from the TOC entry instead of the real one.
+    Only the sentinel-stamped line (produced by LegislationScraper for real
+    DOM headings) should open a unit."""
+    text = (
+        "Section 8-1 General deductions\n"  # TOC-style plain text - must be ignored
+        "§SEC§ 8-1 General deductions\n"
+        "You can deduct any loss or outgoing incurred in gaining assessable income.\n"
+    )
+    units = parse_structure(text, "legislation")
+    section_units = [u for u in units if u.level == "section"]
+    assert len(section_units) == 1
+    # The bare TOC-style line never opened a unit - it fell into preamble,
+    # not into the real section's body.
+    assert "You can deduct" in section_units[0].body
+    assert "You can deduct" not in units[0].body
 
 
 def test_parse_structure_no_markers_falls_back_to_flat():
@@ -149,7 +175,7 @@ def test_hierarchical_chunk_heading_prepended_and_section_ref():
 def test_hierarchical_chunk_children_share_parent_key_and_content():
     # Force a small chunk size so the one section splits into multiple children.
     long_body = " ".join(f"Sentence number {i} about deductions." for i in range(200))
-    text = f"Section 8-1 General deductions\n{long_body}"
+    text = f"§SEC§ 8-1 General deductions\n{long_body}"
     meta = _meta()
     original = settings.CHUNK_SIZE_TOKENS
     try:
@@ -167,9 +193,10 @@ def test_hierarchical_chunk_children_share_parent_key_and_content():
 
 # --- flat-mode guard ---------------------------------------------------------
 @pytest.mark.asyncio
-async def test_flat_mode_matches_chunk_text():
+async def test_flat_mode_matches_chunk_text(monkeypatch):
     """Flag OFF: process_document chunk texts equal today's chunk_text(text)
     verbatim (guards the _pack_sentences extraction)."""
+    monkeypatch.setattr(settings, "HIERARCHICAL_CHUNKING_ENABLED", False)
     text = (
         "The first sentence explains the deduction rule. The second sentence "
         "gives an example of a capital outgoing. A third sentence clarifies "
@@ -190,7 +217,6 @@ async def test_flat_mode_matches_chunk_text():
         captured["rows"] = rows
         return len(rows)
 
-    assert settings.HIERARCHICAL_CHUNKING_ENABLED is False
     with patch(
         "taxflow.services.knowledge.pipeline.embed_batch",
         new=AsyncMock(side_effect=lambda chunks: [[0.0] for _ in chunks]),

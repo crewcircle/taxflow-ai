@@ -150,8 +150,8 @@ def test_dedupe_of_rendered_parent_survives_budget_fallback(agent, expansion_on)
 
 
 # --- (e) flag off: byte-for-byte current context + positional resolution ------
-def test_flag_off_matches_current_context_and_positional_citations(agent):
-    assert settings.PARENT_EXPANSION_ENABLED is False
+def test_flag_off_matches_current_context_and_positional_citations(agent, monkeypatch):
+    monkeypatch.setattr(settings, "PARENT_EXPANSION_ENABLED", False)
     chunks = [
         {"citation": "TR 2024/1", "source_url": "http://a", "content": "first source",
          "last_scraped_at": None},

@@ -59,17 +59,36 @@ class ChunkRecord:
 # marker matches at the start of a line. ``level`` is the breadcrumb component
 # name; ``ref`` is a short leaf marker (``s 8-1``, ``Division 7A``, ``para 15``).
 
-# Legislation markers (ITAA-style): Part, Division, Subdivision, Section,
-# subsection. Section numbers in the ITAA use a hyphenated form (e.g. 8-1).
+# Legislation markers (ITAA-style): Chapter, Part, Division, Subdivision,
+# Section, subsection. Section numbers in the ITAA use a hyphenated form
+# (e.g. 8-1). The container levels (chapter/part/division/subdivision/section)
+# are only matched via the sentinel prefixes that ``LegislationScraper``
+# stamps onto real DOM headings (see ``LEGISLATION_SENTINELS`` below) - legacy
+# bare-text patterns for these were dropped because legislation.gov.au's own
+# Table of Contents / "Table of sections" listings repeat every heading as
+# plain text ahead of the real content, and a bare-text regex can't tell the
+# two apart (it would open a unit from the TOC entry instead of the real one).
+# ``LegislationScraper`` is the only producer of ``source_type="legislation"``
+# documents, so it's safe to require its sentinel format here.
+LEGISLATION_SENTINELS: dict[str, str] = {
+    "chapter": "§CH§",
+    "part": "§PT§",
+    "division": "§DIV§",
+    "subdivision": "§SUBDIV§",
+    "section": "§SEC§",
+}
+
 _LEG_MARKERS: list[tuple[str, re.Pattern, str]] = [
-    ("Part", re.compile(r"^\s*Part\s+([0-9A-Za-z\-]+)\b(.*)$", re.IGNORECASE), "part"),
-    ("Division", re.compile(r"^\s*Division\s+([0-9A-Za-z\-]+)\b(.*)$", re.IGNORECASE), "division"),
-    ("Subdivision", re.compile(r"^\s*Subdivision\s+([0-9A-Za-z\-]+)\b(.*)$", re.IGNORECASE), "subdivision"),
-    ("Section", re.compile(r"^\s*Section\s+([0-9]+[0-9A-Za-z\-]*)\b(.*)$", re.IGNORECASE), "section"),
-    # Bare section-number heading, e.g. "8-1  General deductions".
-    ("Section", re.compile(r"^\s*([0-9]+\-[0-9A-Za-z]+)\s+(.*)$"), "section_bare"),
+    ("Chapter", re.compile(re.escape(LEGISLATION_SENTINELS["chapter"]) + r"\s+([0-9A-Za-z\-]+)\s*(.*)$"), "chapter"),
+    ("Part", re.compile(re.escape(LEGISLATION_SENTINELS["part"]) + r"\s+([0-9A-Za-z\-]+)\s*(.*)$"), "part"),
+    ("Division", re.compile(re.escape(LEGISLATION_SENTINELS["division"]) + r"\s+([0-9A-Za-z\-]+)\s*(.*)$"), "division"),
+    ("Subdivision", re.compile(re.escape(LEGISLATION_SENTINELS["subdivision"]) + r"\s+([0-9A-Za-z\-]+)\s*(.*)$"), "subdivision"),
+    ("Section", re.compile(re.escape(LEGISLATION_SENTINELS["section"]) + r"\s+([0-9]+[0-9A-Za-z\-]*)\s*(.*)$"), "section"),
     # Subsection, e.g. "(1)  You can deduct ..." — composes with the enclosing
-    # section so section_ref becomes ``s 8-1(1)``.
+    # section so section_ref becomes ``s 8-1(1)``. Unlike the container levels
+    # above, subsections have no distinguishing DOM class of their own (the
+    # same ``subsection`` CSS class is reused for ordinary indented body text),
+    # so this stays a bare-text match on the numbered-paragraph convention.
     ("Subsection", re.compile(r"^\s*\(([0-9]+[0-9A-Za-z]*)\)\s+(.*)$"), "subsection"),
 ]
 
@@ -96,8 +115,10 @@ def _markers_for(source_type: str | None) -> list[tuple[str, re.Pattern, str]]:
 
 # Which breadcrumb levels are "containers" (reset lower levels) for legislation.
 # ``subsection`` sits below ``section`` so a new section clears the previous
-# subsection.
-_LEVEL_ORDER = ["part", "division", "subdivision", "section", "subsection"]
+# subsection. ``chapter`` is the outermost container (ITAA 1997 groups Parts
+# under Chapters; not every Act has one, but the breadcrumb degrades fine when
+# it's absent since it's just never populated).
+_LEVEL_ORDER = ["chapter", "part", "division", "subdivision", "section", "subsection"]
 
 
 def _match_marker(
@@ -110,6 +131,10 @@ def _match_marker(
         if m:
             ref_number = m.group(1).strip()
             heading_text = (m.group(2) or "").strip() if m.lastindex and m.lastindex >= 2 else ""
+            # legislation.gov.au separates a ref number from its title with an
+            # em dash ("40 — Capital allowances"); strip any leftover leading
+            # dash/em-dash so heading_text is just the title.
+            heading_text = re.sub(r"^[—\-]\s*", "", heading_text)
             return label, ref_number, heading_text, level
     return None
 
@@ -119,7 +144,7 @@ def _section_ref(
 ) -> str:
     """Short leaf marker string, e.g. ``s 8-1``, ``s 8-1(1)``, ``Division 7A``,
     ``para 15``."""
-    if level in ("section", "section_bare"):
+    if level == "section":
         return f"s {ref_number}"
     if level == "subsection":
         # Compose with the enclosing section when known: ``s 8-1(1)``.
@@ -198,14 +223,6 @@ def parse_structure(text: str, source_type: str | None) -> list[Unit]:
             heading = _heading_path(leaf_label, leaf_level=level)
             if level == "section":
                 current_section_num = ref_number
-        elif level == "section_bare":
-            leaf_label = f"Section {ref_number}"
-            breadcrumb.pop("subsection", None)
-            breadcrumb_title.pop("subsection", None)
-            breadcrumb["section"] = leaf_label
-            breadcrumb_title["section"] = heading_text
-            heading = _heading_path(leaf_label, leaf_level="section")
-            current_section_num = ref_number
         else:
             # Ruling paragraphs: flat sequence, no container nesting.
             heading = f"{leaf_label} ({heading_text})" if heading_text else leaf_label
