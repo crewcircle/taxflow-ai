@@ -17,7 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Upload } from "lucide-react";
+import { AlertTriangle, Upload } from "lucide-react";
 import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
 import { ResourceRowActions } from "@/components/resource-actions/ResourceRowActions";
 import { ConfirmDialog } from "@/components/resource-actions/ConfirmDialog";
@@ -52,6 +52,8 @@ interface DocumentRow {
   approved_by: string | null;
   approved_at: string | null;
   edited_at?: string | null;
+  stale?: boolean;
+  stale_since?: string | null;
 }
 
 interface DocumentTemplate {
@@ -482,6 +484,25 @@ export default function DocumentsPage() {
                           Reviewed and approved by {doc.approved_by} ·{" "}
                           {new Date(doc.approved_at).toLocaleDateString("en-AU")}
                         </span>
+                      )}
+                      {doc.stale && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="mt-1 flex items-center gap-1 text-[11px] font-medium text-amber-700">
+                              <AlertTriangle className="size-3 shrink-0" />
+                              Answer updated since
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            The research answer this document came from was re-researched
+                            {doc.stale_since
+                              ? ` on ${new Date(doc.stale_since).toLocaleDateString("en-AU")}`
+                              : ""}
+                            , after this document was generated - the content on file may no
+                            longer match what TaxFlow would say today. Worth checking before
+                            relying on it again.
+                          </TooltipContent>
+                        </Tooltip>
                       )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">

@@ -339,6 +339,15 @@ class UsersRepo:
             returning=True,
         )
 
+    def mark_regulatory_alerts_seen(self, user_id: str) -> None:
+        """Server-side 'seen' cursor for the regulatory alert feed (048) - this
+        used to live in per-browser localStorage, the one notification kind
+        that didn't sync like every other one (notifications.read_at)."""
+        _execute(
+            "UPDATE users SET regulatory_alerts_seen_at = now() WHERE id = %s",
+            (user_id,),
+        )
+
     def count_active_owners(self, client_id: str) -> int:
         return _fetchval(
             "SELECT count(*) FROM users WHERE client_id = %s AND role = 'owner' AND status = 'active'",
@@ -847,33 +856,54 @@ class AnnotationsRepo:
 
 # --- documents ---------------------------------------------------------------
 class DocumentsRepo:
+    # A re-research overwrites queries.final_answer in place (no version
+    # history on that table) - re_research_jobs is what still remembers WHEN a
+    # given query was last successfully re-answered (status='done',
+    # updated_at). A document is stale when that happened AFTER the document
+    # was generated: the client-facing content on file no longer matches what
+    # TaxFlow would say today, and nothing else surfaces that mismatch (Task:
+    # business audit P0 - Persona 1).
+    _STALE_JOIN = """
+        LEFT JOIN LATERAL (
+            SELECT MAX(r.updated_at) AS stale_since
+            FROM re_research_jobs r
+            WHERE r.query_id = d.query_id AND r.status = 'done' AND r.updated_at > d.created_at
+        ) stale_check ON true
+    """
+
     def list_for_client(self, client_id: str, kind_filter: str | None = None) -> list[dict]:
         # Degrade gracefully when 040 (documents.edited_at) has not landed yet:
         # select edited_at only if present (else NULL AS edited_at) so a missing
         # column returns null instead of raising UndefinedColumn.
         edited_at = (
-            "edited_at"
+            "d.edited_at"
             if "edited_at" in _present_columns("documents", ("edited_at",))
             else "NULL AS edited_at"
         )
         if kind_filter:
             return _fetchall(
                 f"""
-                SELECT id, title, status, context_note, created_at,
-                       {edited_at}, approved_by, approved_at
-                FROM documents
-                WHERE client_id = %s AND document_type = %s
-                ORDER BY created_at DESC
+                SELECT d.id, d.title, d.status, d.context_note, d.created_at,
+                       {edited_at}, d.approved_by, d.approved_at,
+                       stale_check.stale_since IS NOT NULL AS stale,
+                       stale_check.stale_since
+                FROM documents d
+                {self._STALE_JOIN}
+                WHERE d.client_id = %s AND d.document_type = %s
+                ORDER BY d.created_at DESC
                 """,
                 (client_id, kind_filter),
             )
         return _fetchall(
             f"""
-            SELECT id, document_type, title, status, client_ref,
-                   context_note, created_at, {edited_at}, approved_by, approved_at
-            FROM documents
-            WHERE client_id = %s
-            ORDER BY created_at DESC
+            SELECT d.id, d.document_type, d.title, d.status, d.client_ref,
+                   d.context_note, d.created_at, {edited_at}, d.approved_by, d.approved_at,
+                   stale_check.stale_since IS NOT NULL AS stale,
+                   stale_check.stale_since
+            FROM documents d
+            {self._STALE_JOIN}
+            WHERE d.client_id = %s
+            ORDER BY d.created_at DESC
             """,
             (client_id,),
         )
@@ -886,7 +916,12 @@ class DocumentsRepo:
 
     def get_for_client(self, client_id: str, document_id: str) -> dict | None:
         return _fetchone(
-            "SELECT * FROM documents WHERE id = %s AND client_id = %s",
+            f"""
+            SELECT d.*, stale_check.stale_since IS NOT NULL AS stale, stale_check.stale_since
+            FROM documents d
+            {self._STALE_JOIN}
+            WHERE d.id = %s AND d.client_id = %s
+            """,
             (document_id, client_id),
         )
 
@@ -1639,7 +1674,8 @@ class KnowledgeSuggestionsRepo:
 
     _SELECT_COLS = (
         "id, source_query_id, source_document_id, title, content, "
-        "reason, status, decided_by, decided_at, firm_knowledge_id, created_at"
+        "reason, status, decided_by, decided_at, firm_knowledge_id, created_at, "
+        "assigned_to, assigned_by, assigned_at"
     )
 
     def insert(self, row: dict) -> dict:
@@ -1648,6 +1684,38 @@ class KnowledgeSuggestionsRepo:
             _insert_sql("knowledge_suggestions", cols),
             [row[c] for c in cols],
             returning=True,
+        )
+
+    def insert_or_get_pending(self, row: dict) -> dict:
+        """Insert a new PENDING suggestion, or return the already-pending one
+        for the same (client_id, source_query_id) if one exists.
+
+        Backs BOTH independent paths into a suggestion (automatic thumbs-up in
+        routers/query.py, manual "Suggest for Firm Knowledge" in this router) -
+        an application-level check-then-insert on either path alone still
+        races against the OTHER path's concurrent request, so the actual
+        de-dup guarantee is the partial unique index
+        idx_knowledge_suggestions_pending_dedup (048), enforced here via
+        ON CONFLICT ... DO NOTHING. A conflict means some other request just
+        won the race, so we fetch and return THAT row instead of raising.
+        """
+        cols = list(row.keys())
+        placeholders = ", ".join(["%s"] * len(cols))
+        col_sql = ", ".join(cols)
+        inserted = _execute(
+            f"INSERT INTO knowledge_suggestions ({col_sql}) VALUES ({placeholders}) "
+            "ON CONFLICT (client_id, source_query_id) "
+            "WHERE status = 'pending' AND source_query_id IS NOT NULL "
+            "DO NOTHING RETURNING *",
+            [row[c] for c in cols],
+            returning=True,
+        )
+        if inserted is not None:
+            return inserted
+        return _fetchone(
+            f"SELECT {self._SELECT_COLS} FROM knowledge_suggestions "
+            "WHERE client_id = %s AND source_query_id = %s AND status = 'pending'",
+            (row["client_id"], row.get("source_query_id")),
         )
 
     def list_for_client(self, client_id: str, status: str | None = None) -> list[dict]:
@@ -1743,6 +1811,21 @@ class KnowledgeSuggestionsRepo:
             conn.commit()
             cur.close()
             return dict(row) if row else None
+
+    def assign(
+        self, client_id: str, suggestion_id: str, assigned_to: str | None, assigned_by: str | None
+    ) -> dict | None:
+        """Set (or clear, when ``assigned_to`` is None) who owns deciding this
+        PENDING suggestion. Scoped by client_id; only a still-pending
+        suggestion can be (re)assigned - once decided, ownership is moot."""
+        return _execute(
+            f"UPDATE knowledge_suggestions SET assigned_to = %s, assigned_by = %s, "
+            f"assigned_at = CASE WHEN %s::uuid IS NULL THEN NULL ELSE now() END "
+            "WHERE id = %s AND client_id = %s AND status = 'pending' "
+            f"RETURNING {self._SELECT_COLS}",
+            (assigned_to, assigned_by, assigned_to, suggestion_id, client_id),
+            returning=True,
+        )
 
     def exists_for_query(self, client_id: str, query_id: str) -> bool:
         # De-dup guard: a second thumbs-up on the SAME query must not create a

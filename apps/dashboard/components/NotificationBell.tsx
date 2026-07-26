@@ -7,8 +7,6 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useNotifications } from "@/lib/useNotifications";
 
-const REGULATORY_LAST_SEEN_KEY = "taxflow_regulatory_last_seen";
-
 function relativeTime(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
   const mins = Math.round(diffMs / 60_000);
@@ -29,21 +27,28 @@ function useRegulatoryAlert() {
   const [alert, setAlert] = useState<{ detectedAt: string; isNew: boolean } | null>(null);
 
   useEffect(() => {
-    fetch("/api/regulatory-alerts")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((alerts: { detected_at: string }[]) => {
+    // The "seen" cursor is server-side per-user (users.regulatory_alerts_seen_at)
+    // now, not per-browser localStorage - it follows the user across devices,
+    // like every other notification kind already does.
+    Promise.all([
+      fetch("/api/regulatory-alerts").then((r) => (r.ok ? r.json() : [])),
+      fetch("/api/regulatory-alerts/seen").then((r) => (r.ok ? r.json() : { seen_at: null })),
+    ])
+      .then(([alerts, seen]: [{ detected_at: string }[], { seen_at: string | null }]) => {
         if (!alerts.length) return;
         const latest = alerts[0].detected_at;
-        const lastSeen = window.localStorage.getItem(REGULATORY_LAST_SEEN_KEY);
-        setAlert({ detectedAt: latest, isNew: !lastSeen || new Date(latest) > new Date(lastSeen) });
+        setAlert({
+          detectedAt: latest,
+          isNew: !seen.seen_at || new Date(latest) > new Date(seen.seen_at),
+        });
       })
       .catch(() => {});
   }, []);
 
   function markSeen() {
     if (!alert) return;
-    window.localStorage.setItem(REGULATORY_LAST_SEEN_KEY, new Date().toISOString());
     setAlert({ ...alert, isNew: false });
+    fetch("/api/regulatory-alerts/seen", { method: "POST" }).catch(() => {});
   }
 
   return { alert, markSeen };

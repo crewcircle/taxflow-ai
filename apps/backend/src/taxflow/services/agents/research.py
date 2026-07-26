@@ -1008,6 +1008,19 @@ class ResearchAgent:
                         "section": chunk.get("heading_path"),
                         "source_object_key": chunk.get("source_object_key"),
                         "last_scraped_at": last_scraped_at.isoformat() if last_scraped_at else None,
+                        # Reliance posture (business audit P1 - Persona 2 /
+                        # Reviewer 4): before this, only the trace panel's
+                        # detail toggle exposed is_historical - the same
+                        # citation could appear inline looking identical to a
+                        # current official source. is_engagement_memo detects
+                        # the firm's own past-engagement notes by the
+                        # "Engagement memo: ..." citation prefix the
+                        # vector-store engagement_search adapter gives them
+                        # (see _engagement_memos_used above) - not an official
+                        # published source, so it should read differently too.
+                        "is_historical": bool(chunk.get("is_historical")),
+                        "superseded_by": chunk.get("superseded_by") if chunk.get("is_historical") else None,
+                        "is_engagement_memo": entry["citation"].startswith("Engagement memo:"),
                     }
                 )
         return citations

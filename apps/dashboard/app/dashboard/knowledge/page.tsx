@@ -6,6 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ResourceRowActions } from "@/components/resource-actions/ResourceRowActions";
 import { ConfirmDialog } from "@/components/resource-actions/ConfirmDialog";
 import { ResourceEditDialog } from "@/components/resource-actions/ResourceEditDialog";
@@ -32,6 +39,14 @@ interface Suggestion {
   source_query_id: string | null;
   source_document_id: string | null;
   created_at: string;
+  assigned_to: string | null;
+}
+
+interface StaffMember {
+  id: string;
+  email: string;
+  role: "owner" | "reviewer" | "staff";
+  display_name: string | null;
 }
 
 // Human-readable label for where a suggestion came from (backend `reason` value).
@@ -58,6 +73,12 @@ export default function KnowledgePage() {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [expandedSuggestionId, setExpandedSuggestionId] = useState<string | null>(null);
   const [decidingId, setDecidingId] = useState<string | null>(null);
+  const [assigningId, setAssigningId] = useState<string | null>(null);
+  // Approve/reject is Owner-only, enforced server-side (rbac.py
+  // "knowledge.approve") - this just decides whether to show those buttons at
+  // all, not the actual security boundary.
+  const [currentRole, setCurrentRole] = useState<"owner" | "reviewer" | "staff" | null>(null);
+  const [owners, setOwners] = useState<StaffMember[]>([]);
 
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeRow | null>(null);
   const [editTarget, setEditTarget] = useState<
@@ -82,7 +103,17 @@ export default function KnowledgePage() {
   useEffect(() => {
     load();
     loadSuggestions();
+    fetch("/api/settings/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => setCurrentRole(data?.client?.role ?? null))
+      .catch(() => {});
+    fetch("/api/staff")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data: StaffMember[]) => setOwners(Array.isArray(data) ? data.filter((u) => u.role === "owner") : []))
+      .catch(() => {});
   }, []);
+
+  const canDecide = currentRole === "owner";
 
   async function decideSuggestion(id: string, action: "approve" | "reject") {
     setDecidingId(id);
@@ -97,6 +128,22 @@ export default function KnowledgePage() {
       if (action === "approve") load();
     } finally {
       setDecidingId(null);
+    }
+  }
+
+  async function assignSuggestion(id: string, userId: string | null) {
+    setAssigningId(id);
+    try {
+      const response = await fetch(`/api/firm-knowledge/suggestions/${id}/assign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId }),
+      });
+      if (!response.ok) return;
+      const updated = await response.json();
+      setSuggestions((prev) => prev.map((s) => (s.id === id ? { ...s, assigned_to: updated.assigned_to } : s)));
+    } finally {
+      setAssigningId(null);
     }
   }
 
@@ -221,35 +268,75 @@ export default function KnowledgePage() {
                       <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
                     )}
                   </button>
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex shrink-0 flex-col items-end gap-1.5">
+                    {/* Explicit ownership so a pending suggestion doesn't just
+                        sit there for "whoever notices the badge" - only
+                        Owners can ever approve/reject (rbac.py), so only
+                        Owners are assignable here. */}
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <Button
-                          size="sm"
-                          disabled={decidingId === suggestion.id}
-                          onClick={() => decideSuggestion(suggestion.id, "approve")}
-                        >
-                          Approve
-                        </Button>
+                        <div>
+                          <Select
+                            value={suggestion.assigned_to ?? "__unassigned"}
+                            disabled={assigningId === suggestion.id}
+                            onValueChange={(value) =>
+                              assignSuggestion(suggestion.id, value === "__unassigned" ? null : value)
+                            }
+                          >
+                            <SelectTrigger size="sm" className="h-7 w-[150px] text-xs">
+                              <SelectValue placeholder="Unassigned" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__unassigned">Unassigned</SelectItem>
+                              {owners.map((owner) => (
+                                <SelectItem key={owner.id} value={owner.id}>
+                                  {owner.display_name || owner.email}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
                       </TooltipTrigger>
-                      <TooltipContent>
-                        Adds this to Firm Knowledge so it is used in future research answers
-                      </TooltipContent>
+                      <TooltipContent>Who&apos;s reviewing this suggestion - only an Owner can be assigned, since only an Owner can decide it</TooltipContent>
                     </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="link"
-                          size="sm"
-                          className="text-destructive"
-                          disabled={decidingId === suggestion.id}
-                          onClick={() => decideSuggestion(suggestion.id, "reject")}
-                        >
-                          Reject
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>Dismisses this suggestion without saving it</TooltipContent>
-                    </Tooltip>
+                    <div className="flex items-center gap-2">
+                      {canDecide ? (
+                        <>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                disabled={decidingId === suggestion.id}
+                                onClick={() => decideSuggestion(suggestion.id, "approve")}
+                              >
+                                Approve
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              Adds this to Firm Knowledge so it is used in future research answers
+                            </TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="link"
+                                size="sm"
+                                className="text-destructive"
+                                disabled={decidingId === suggestion.id}
+                                onClick={() => decideSuggestion(suggestion.id, "reject")}
+                              >
+                                Reject
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Dismisses this suggestion without saving it</TooltipContent>
+                          </Tooltip>
+                        </>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                          Owner approval required
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                 </div>
                 {expandedSuggestionId === suggestion.id && (

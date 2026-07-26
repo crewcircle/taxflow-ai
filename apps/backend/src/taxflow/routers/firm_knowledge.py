@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from taxflow.db import get_db
-from taxflow.middleware.auth import get_current_client
+from taxflow.middleware.auth import get_current_client, require_permission
 from taxflow.services.knowledge.embedder import embed
 
 router = APIRouter(prefix="/firm-knowledge", tags=["firm-knowledge"])
@@ -25,6 +25,10 @@ class CreateSuggestionRequest(BaseModel):
     source_query_id: str | None = None
     source_document_id: str | None = None
     reason: str | None = None
+
+
+class AssignSuggestionRequest(BaseModel):
+    user_id: str | None = None
 
 
 @router.get("")
@@ -60,8 +64,13 @@ async def create_suggestion(
     written to the authoritative firm_knowledge store here — a partner must
     approve the suggestion first. Client-scoped via get_current_client. When a
     source_query_id is provided it must belong to the current client (404
-    otherwise), and a second promote for a query that already has a PENDING
-    suggestion is de-duped (the existing pending suggestion is returned).
+    otherwise).
+
+    De-dup: this is one of TWO independent paths into a suggestion (the other
+    is the automatic thumbs-up in routers/query.py) - both insert through
+    ``insert_or_get_pending``, which relies on a DB-level partial unique index
+    rather than a check-then-act read, so the two paths can't race each other
+    into creating two pending suggestions for the same answer.
     """
     title = body.title.strip()
     content = body.content.strip()
@@ -75,30 +84,8 @@ async def create_suggestion(
         if not owned:
             raise HTTPException(status_code=404, detail="Query not found")
 
-        already = await asyncio.to_thread(
-            db.knowledge_suggestions.exists_for_query,
-            client["id"],
-            body.source_query_id,
-        )
-        if already:
-            # De-dup: don't create a second pending suggestion for the same
-            # query. Return the existing pending suggestion(s).
-            pending = await asyncio.to_thread(
-                db.knowledge_suggestions.list_for_client, client["id"], "pending"
-            )
-            existing = next(
-                (
-                    s
-                    for s in pending
-                    if str(s.get("source_query_id")) == str(body.source_query_id)
-                ),
-                None,
-            )
-            if existing:
-                return existing
-
     result = await asyncio.to_thread(
-        db.knowledge_suggestions.insert,
+        db.knowledge_suggestions.insert_or_get_pending,
         {
             "client_id": client["id"],
             "source_query_id": body.source_query_id,
@@ -111,9 +98,50 @@ async def create_suggestion(
     return result
 
 
+@router.post("/suggestions/{suggestion_id}/assign")
+async def assign_suggestion(
+    suggestion_id: str,
+    body: AssignSuggestionRequest,
+    client=Depends(get_current_client),
+    db=Depends(get_db),
+):
+    """Route a pending suggestion to an explicit reviewer rather than leaving
+    it for "whoever notices the badge". ``user_id`` must be an active Owner on
+    this client's roster (the only role that can ever approve/reject - see
+    rbac.PERMISSIONS["knowledge.approve"]), so assignment can never point to
+    someone who isn't allowed to act on it. Pass ``user_id: null`` to
+    unassign. Client-scoped and pending-only, like approve/reject."""
+    if body.user_id:
+        roster = await asyncio.to_thread(db.users.list_for_client, client["id"])
+        assignee = next((u for u in roster if u["id"] == body.user_id), None)
+        if not assignee:
+            raise HTTPException(status_code=404, detail="User not found on this firm's roster")
+        if assignee["role"] != "owner":
+            raise HTTPException(
+                status_code=400,
+                detail="Suggestions can only be assigned to an Owner - only Owners can approve or reject them",
+            )
+
+    result = await asyncio.to_thread(
+        db.knowledge_suggestions.assign,
+        client["id"],
+        suggestion_id,
+        body.user_id,
+        client.get("user_id"),
+    )
+    if result is None:
+        existing = await asyncio.to_thread(
+            db.knowledge_suggestions.get_for_client, client["id"], suggestion_id
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=409, detail="Suggestion already decided")
+    return result
+
+
 @router.post("/suggestions/{suggestion_id}/approve")
 async def approve_suggestion(
-    suggestion_id: str, client=Depends(get_current_client), db=Depends(get_db)
+    suggestion_id: str, client=Depends(require_permission("knowledge.approve")), db=Depends(get_db)
 ):
     """Approve a PENDING suggestion into the authoritative firm_knowledge store:
     embed its content, then atomically claim the suggestion (pending→approved),
@@ -151,7 +179,7 @@ async def approve_suggestion(
 
 @router.post("/suggestions/{suggestion_id}/reject")
 async def reject_suggestion(
-    suggestion_id: str, client=Depends(get_current_client), db=Depends(get_db)
+    suggestion_id: str, client=Depends(require_permission("knowledge.approve")), db=Depends(get_db)
 ):
     """Reject a PENDING suggestion (status only — nothing is written to
     firm_knowledge). Client-scoped, pending-only and idempotent: rejecting an

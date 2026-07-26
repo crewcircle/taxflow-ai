@@ -65,6 +65,18 @@ export function buildMarkdownComponents(citations?: SourceCitation[]): Component
       const refreshedIso = citation?.last_scraped_at ?? null;
       const stale = refreshedIso ? daysSince(refreshedIso) > STALE_AFTER_DAYS : false;
       const color = citationColor(num);
+      // Reliance posture (business audit P1): a superseded/historical source
+      // or the firm's own engagement memo used to look identical to a
+      // current official source inline - only the trace panel's detail
+      // toggle told them apart. Historical gets a solid amber ring (can't
+      // miss it); an engagement memo gets a dashed outline instead of a
+      // solid fill (it's the firm's own note, not a published authority) -
+      // both distinguishable at a glance, not just on hover.
+      const badgeStyle = citation?.is_historical
+        ? cn(color.bg, color.text, "ring-2 ring-amber-500")
+        : citation?.is_engagement_memo
+          ? cn("border border-dashed bg-transparent", color.text, color.border)
+          : cn(color.bg, color.text);
       // Same color as this citation's card in SourcesPanel (see
       // citationColor) - a superscript badge rather than inline "[1]" text,
       // so which passage came from which source reads as a color match
@@ -76,8 +88,7 @@ export function buildMarkdownComponents(citations?: SourceCitation[]): Component
               href={href}
               className={cn(
                 "ml-0.5 inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 align-super text-[9px] font-bold no-underline",
-                color.bg,
-                color.text
+                badgeStyle
               )}
             >
               {num}
@@ -87,7 +98,18 @@ export function buildMarkdownComponents(citations?: SourceCitation[]): Component
             {citation ? (
               <>
                 <span className="block font-semibold">{citationReference(citation)}</span>
-                {stale && (
+                {citation.is_historical && (
+                  <span className="mt-1 block text-xs text-amber-300">
+                    Historical{citation.superseded_by ? ` — superseded by ${citation.superseded_by}` : ""} - do
+                    not treat as current law
+                  </span>
+                )}
+                {citation.is_engagement_memo && (
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    Your firm&apos;s own note from a past engagement, not an official published source
+                  </span>
+                )}
+                {stale && !citation.is_historical && (
                   <span className="mt-1 block text-xs text-amber-300">
                     Refreshed {refreshedIso ? formatRefreshedDate(refreshedIso) : "a while ago"} - check for a
                     newer version

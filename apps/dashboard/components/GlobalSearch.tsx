@@ -7,6 +7,7 @@ import {
   Briefcase,
   FileText,
   MessageSquareText,
+  Scale,
   Search,
   Settings,
   Sparkles,
@@ -41,13 +42,28 @@ interface DocumentResult {
   client_ref: string | null;
 }
 
+interface FirmKnowledgeResult {
+  id: string;
+  file_name: string;
+}
+
+interface RegulatoryAlertResult {
+  id: string;
+  title: string;
+  source: string;
+}
+
 // One entry point for "find anything" - clients/engagements, past
-// conversations, and documents (Library/regulatory content is deliberately
-// out of scope for now: that content needs a real backend search index,
-// client-side filtering over an already-loaded list doesn't work for a
-// 600+ source corpus), plus static navigation, cmdk/Linear-style. Data is
-// fetched lazily on first open, not on every page load - this needs to be
-// mounted once in the dashboard layout, not per-page.
+// conversations, documents, and now the Library (the firm's own uploaded
+// precedents + the regulatory alert feed). Client-side filtering over an
+// already-loaded list doesn't scale to the full published reference corpus
+// (600+ sources), so THAT stays out of scope - but firm_knowledge and
+// regulatory_alerts are both small, already-fetched-in-full lists (same
+// shape as engagements/conversations/documents below), so there's no reason
+// for Library to be the one content type this box silently excludes.
+// Static navigation, cmdk/Linear-style. Data is fetched lazily on first
+// open, not on every page load - this needs to be mounted once in the
+// dashboard layout, not per-page.
 export function GlobalSearch() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -55,6 +71,8 @@ export function GlobalSearch() {
   const [engagements, setEngagements] = useState<EngagementResult[]>([]);
   const [conversations, setConversations] = useState<ConversationResult[]>([]);
   const [documents, setDocuments] = useState<DocumentResult[]>([]);
+  const [firmKnowledge, setFirmKnowledge] = useState<FirmKnowledgeResult[]>([]);
+  const [regulatoryAlerts, setRegulatoryAlerts] = useState<RegulatoryAlertResult[]>([]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -77,11 +95,15 @@ export function GlobalSearch() {
         fetch("/api/engagements/directory").then((r) => (r.ok ? r.json() : [])),
         fetch("/api/query").then((r) => (r.ok ? r.json() : [])),
         fetch("/api/documents").then((r) => (r.ok ? r.json() : [])),
+        fetch("/api/firm-knowledge").then((r) => (r.ok ? r.json() : [])),
+        fetch("/api/regulatory-alerts").then((r) => (r.ok ? r.json() : [])),
       ])
-        .then(([engagementRows, queryRows, documentRows]) => {
+        .then(([engagementRows, queryRows, documentRows, firmKnowledgeRows, alertRows]) => {
           setEngagements(engagementRows);
           setConversations(queryRows);
           setDocuments(documentRows);
+          setFirmKnowledge(firmKnowledgeRows);
+          setRegulatoryAlerts(alertRows);
         })
         .catch(() => {});
     }, 0);
@@ -109,7 +131,7 @@ export function GlobalSearch() {
       </button>
 
       <CommandDialog open={open} onOpenChange={setOpen}>
-        <CommandInput placeholder="Search clients, conversations, documents…" />
+        <CommandInput placeholder="Search clients, conversations, documents, library…" />
         <CommandList>
           <CommandEmpty>{loaded ? "Nothing found." : "Loading…"}</CommandEmpty>
 
@@ -178,6 +200,36 @@ export function GlobalSearch() {
                 >
                   <FileText />
                   <span className="min-w-0 flex-1 truncate">{d.title}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          )}
+
+          {firmKnowledge.length > 0 && (
+            <CommandGroup heading="Library — your firm's precedents">
+              {firmKnowledge.map((k) => (
+                <CommandItem
+                  key={k.id}
+                  value={`${k.file_name} library precedent knowledge`}
+                  onSelect={() => go("/dashboard/library")}
+                >
+                  <BookOpen />
+                  <span className="min-w-0 flex-1 truncate">{k.file_name}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          )}
+
+          {regulatoryAlerts.length > 0 && (
+            <CommandGroup heading="Library — regulatory updates">
+              {regulatoryAlerts.map((a) => (
+                <CommandItem
+                  key={a.id}
+                  value={`${a.title} ${a.source} regulatory library`}
+                  onSelect={() => go("/dashboard/library?tab=reference")}
+                >
+                  <Scale />
+                  <span className="min-w-0 flex-1 truncate">{a.title}</span>
                 </CommandItem>
               ))}
             </CommandGroup>

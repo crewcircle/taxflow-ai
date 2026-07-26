@@ -106,6 +106,7 @@ def test_valid_token_and_client_row_returns_200(
             **trial_client_row,
             "role": "owner",
             "user_id": "auth-user-1",
+            "regulatory_alerts_seen_at": None,
         }
     finally:
         app.dependency_overrides.clear()

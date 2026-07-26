@@ -18,6 +18,13 @@ export interface SourceCitation {
   section?: string | null;
   source_object_key?: string | null;
   last_scraped_at?: string | null;
+  // Reliance posture: a superseded/historical source or the firm's own
+  // engagement memo reads very differently from a current official source -
+  // surfaced inline (superscript + this panel), not only behind the trace
+  // panel's detail toggle.
+  is_historical?: boolean;
+  superseded_by?: string | null;
+  is_engagement_memo?: boolean;
 }
 
 interface SourcesPanelProps {
@@ -30,7 +37,14 @@ interface CitationGroup {
   url: string;
   sourceObjectKey: string | null;
   lastScrapedAt: string | null;
-  occurrences: { index: number; excerpt: string; section: string | null }[];
+  occurrences: {
+    index: number;
+    excerpt: string;
+    section: string | null;
+    isHistorical: boolean;
+    supersededBy: string | null;
+    isEngagementMemo: boolean;
+  }[];
 }
 
 // One color per citation NUMBER (1-indexed, matching the [N] marker in the
@@ -65,7 +79,14 @@ function groupByCitation(citations: SourceCitation[]): CitationGroup[] {
   const groups = new Map<string, CitationGroup>();
   citations.forEach((c, i) => {
     const existing = groups.get(c.citation);
-    const occurrence = { index: i, excerpt: c.excerpt, section: c.section ?? null };
+    const occurrence = {
+      index: i,
+      excerpt: c.excerpt,
+      section: c.section ?? null,
+      isHistorical: c.is_historical ?? false,
+      supersededBy: c.superseded_by ?? null,
+      isEngagementMemo: c.is_engagement_memo ?? false,
+    };
     if (existing) {
       existing.occurrences.push(occurrence);
     } else {
@@ -197,11 +218,40 @@ export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
                             come from two different sections, and this must
                             match exactly what that occurrence's superscript
                             tooltip shows (MarkdownDocument's citationReference). */}
-                        {occ.section && (
-                          <p className={cn("text-[11px] font-medium", occColor.text)}>
-                            {group.citation}, {occ.section}
-                          </p>
-                        )}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {occ.section && (
+                            <p className={cn("text-[11px] font-medium", occColor.text)}>
+                              {group.citation}, {occ.section}
+                            </p>
+                          )}
+                          {/* Reliance posture, visible on the excerpt itself -
+                              not only behind the trace panel's detail toggle. */}
+                          {occ.isHistorical && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="rounded-full border border-amber-400 bg-amber-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-700">
+                                  Superseded
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                Historical{occ.supersededBy ? ` — superseded by ${occ.supersededBy}` : ""} - do not
+                                treat as current law
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                          {occ.isEngagementMemo && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="rounded-full border border-dashed border-muted-foreground/40 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  Firm note
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                Your firm&apos;s own note from a past engagement, not an official published source
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
                         <p className={cn(occColor.text, "opacity-90")}>{occ.excerpt}</p>
                       </div>
                     );

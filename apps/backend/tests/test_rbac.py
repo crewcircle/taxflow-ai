@@ -38,6 +38,7 @@ def _clear():
         ("documents.approve", {Role.OWNER, Role.REVIEWER}),
         ("ato_response.approve", {Role.OWNER, Role.REVIEWER}),
         ("verification.resolve", {Role.OWNER, Role.REVIEWER}),
+        ("knowledge.approve", {Role.OWNER}),
         ("work.delete_any", {Role.OWNER}),
         ("query.ask", {Role.OWNER, Role.REVIEWER, Role.STAFF}),
         ("documents.draft", {Role.OWNER, Role.REVIEWER, Role.STAFF}),

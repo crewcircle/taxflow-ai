@@ -35,18 +35,17 @@ def test_thumbs_up_creates_pending_suggestion(client):
         "final_answer": "It applies to loans [1].",
     }
     mock_db.query_feedback.insert.return_value = {"id": "fb1"}
-    mock_db.knowledge_suggestions.exists_for_query.return_value = False
+    mock_db.knowledge_suggestions.insert_or_get_pending.return_value = {
+        "id": "s1", "status": "pending"
+    }
 
     _override(fake_client, mock_db)
     try:
         resp = client.post("/query/q1/feedback", json={"rating": "up"})
         assert resp.status_code == 200
 
-        mock_db.knowledge_suggestions.exists_for_query.assert_called_once_with(
-            "client-1", "q1"
-        )
-        mock_db.knowledge_suggestions.insert.assert_called_once()
-        row = mock_db.knowledge_suggestions.insert.call_args.args[0]
+        mock_db.knowledge_suggestions.insert_or_get_pending.assert_called_once()
+        row = mock_db.knowledge_suggestions.insert_or_get_pending.call_args.args[0]
         assert row["client_id"] == "client-1"
         assert row["source_query_id"] == "q1"
         assert row["title"] == "How does Division 7A apply?"
@@ -57,6 +56,13 @@ def test_thumbs_up_creates_pending_suggestion(client):
 
 
 def test_second_thumbs_up_does_not_create_duplicate(client):
+    """insert_or_get_pending is the de-dup boundary now (DB-level partial
+    unique index, not an app-level check-then-act read) - a second thumbs-up
+    still calls it (that's what makes it race-safe against a concurrent
+    manual promote), but the repo method itself returns the existing pending
+    row instead of inserting a second one. This test locks in that the route
+    always delegates to insert_or_get_pending rather than re-introducing a
+    read-then-conditionally-insert check in the router."""
     from taxflow.main import app
 
     fake_client = {"id": "client-1", "email": "a@b.com.au"}
@@ -67,17 +73,15 @@ def test_second_thumbs_up_does_not_create_duplicate(client):
         "final_answer": "A [1].",
     }
     mock_db.query_feedback.insert.return_value = {"id": "fb2"}
-    # A pending suggestion already exists for this query.
-    mock_db.knowledge_suggestions.exists_for_query.return_value = True
+    mock_db.knowledge_suggestions.insert_or_get_pending.return_value = {
+        "id": "existing", "status": "pending"
+    }
 
     _override(fake_client, mock_db)
     try:
         resp = client.post("/query/q1/feedback", json={"rating": "up"})
         assert resp.status_code == 200
-        mock_db.knowledge_suggestions.exists_for_query.assert_called_once_with(
-            "client-1", "q1"
-        )
-        mock_db.knowledge_suggestions.insert.assert_not_called()
+        mock_db.knowledge_suggestions.insert_or_get_pending.assert_called_once()
     finally:
         app.dependency_overrides.clear()
 
@@ -292,8 +296,9 @@ def test_create_suggestion_creates_pending(client):
     fake_client = {"id": "client-1", "email": "a@b.com.au"}
     mock_db = MagicMock()
     mock_db.queries.get_for_client.return_value = {"id": "q1"}
-    mock_db.knowledge_suggestions.exists_for_query.return_value = False
-    mock_db.knowledge_suggestions.insert.return_value = {"id": "s1", "status": "pending"}
+    mock_db.knowledge_suggestions.insert_or_get_pending.return_value = {
+        "id": "s1", "status": "pending"
+    }
 
     _override(fake_client, mock_db)
     try:
@@ -303,7 +308,7 @@ def test_create_suggestion_creates_pending(client):
         )
         assert resp.status_code == 200
         assert resp.json()["id"] == "s1"
-        row = mock_db.knowledge_suggestions.insert.call_args.args[0]
+        row = mock_db.knowledge_suggestions.insert_or_get_pending.call_args.args[0]
         assert row["client_id"] == "client-1"
         assert row["title"] == "Promoted"
         assert row["content"] == "answer body"
@@ -318,7 +323,9 @@ def test_create_suggestion_without_query_id(client):
 
     fake_client = {"id": "client-1", "email": "a@b.com.au"}
     mock_db = MagicMock()
-    mock_db.knowledge_suggestions.insert.return_value = {"id": "s2", "status": "pending"}
+    mock_db.knowledge_suggestions.insert_or_get_pending.return_value = {
+        "id": "s2", "status": "pending"
+    }
 
     _override(fake_client, mock_db)
     try:
@@ -327,25 +334,26 @@ def test_create_suggestion_without_query_id(client):
             json={"title": "Note", "content": "free text"},
         )
         assert resp.status_code == 200
-        # No source_query_id → no ownership check, no dedupe query.
+        # No source_query_id → no ownership check.
         mock_db.queries.get_for_client.assert_not_called()
-        mock_db.knowledge_suggestions.exists_for_query.assert_not_called()
-        row = mock_db.knowledge_suggestions.insert.call_args.args[0]
+        row = mock_db.knowledge_suggestions.insert_or_get_pending.call_args.args[0]
         assert row["source_query_id"] is None
     finally:
         app.dependency_overrides.clear()
 
 
 def test_create_suggestion_dedupes_existing_pending(client):
+    """De-dup now happens INSIDE insert_or_get_pending (a DB-level partial
+    unique index + ON CONFLICT), not via a router-level read-then-insert - the
+    router just returns whatever the repo method returns."""
     from taxflow.main import app
 
     fake_client = {"id": "client-1", "email": "a@b.com.au"}
     mock_db = MagicMock()
     mock_db.queries.get_for_client.return_value = {"id": "q1"}
-    mock_db.knowledge_suggestions.exists_for_query.return_value = True
-    mock_db.knowledge_suggestions.list_for_client.return_value = [
-        {"id": "existing", "status": "pending", "source_query_id": "q1"},
-    ]
+    mock_db.knowledge_suggestions.insert_or_get_pending.return_value = {
+        "id": "existing", "status": "pending", "source_query_id": "q1"
+    }
 
     _override(fake_client, mock_db)
     try:
@@ -354,9 +362,7 @@ def test_create_suggestion_dedupes_existing_pending(client):
             json={"title": "Promoted", "content": "body", "source_query_id": "q1"},
         )
         assert resp.status_code == 200
-        # Returns the existing pending suggestion; no second insert.
         assert resp.json()["id"] == "existing"
-        mock_db.knowledge_suggestions.insert.assert_not_called()
     finally:
         app.dependency_overrides.clear()
 
@@ -376,7 +382,7 @@ def test_create_suggestion_cross_client_query_404(client):
             json={"title": "t", "content": "c", "source_query_id": "other-q"},
         )
         assert resp.status_code == 404
-        mock_db.knowledge_suggestions.insert.assert_not_called()
+        mock_db.knowledge_suggestions.insert_or_get_pending.assert_not_called()
     finally:
         app.dependency_overrides.clear()
 
@@ -388,7 +394,9 @@ def test_create_suggestion_route_resolves_to_create_handler(client):
 
     fake_client = {"id": "client-1", "email": "a@b.com.au"}
     mock_db = MagicMock()
-    mock_db.knowledge_suggestions.insert.return_value = {"id": "s9", "status": "pending"}
+    mock_db.knowledge_suggestions.insert_or_get_pending.return_value = {
+        "id": "s9", "status": "pending"
+    }
 
     _override(fake_client, mock_db)
     try:
@@ -396,7 +404,137 @@ def test_create_suggestion_route_resolves_to_create_handler(client):
             "/firm-knowledge/suggestions", json={"title": "t", "content": "c"}
         )
         assert resp.status_code == 200
-        mock_db.knowledge_suggestions.insert.assert_called_once()
+        mock_db.knowledge_suggestions.insert_or_get_pending.assert_called_once()
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- role enforcement: approve/reject are Owner-only server-side -------------
+
+
+def test_approve_403s_for_reviewer_and_staff(client):
+    """The approval gate is the entire safety mechanism of the learning loop -
+    it must be enforced server-side (require_permission), not merely implied
+    by which buttons the UI happens to render."""
+    from taxflow.main import app
+
+    for role in ("reviewer", "staff"):
+        fake_client = {"id": "client-1", "email": "a@b.com.au", "role": role}
+        mock_db = MagicMock()
+        mock_db.knowledge_suggestions.get_for_client.return_value = {
+            "id": "s1", "title": "t", "content": "c", "status": "pending"
+        }
+        _override(fake_client, mock_db)
+        try:
+            resp = client.post("/firm-knowledge/suggestions/s1/approve")
+            assert resp.status_code == 403
+            mock_db.knowledge_suggestions.approve.assert_not_called()
+        finally:
+            app.dependency_overrides.clear()
+
+
+def test_reject_403s_for_reviewer_and_staff(client):
+    from taxflow.main import app
+
+    for role in ("reviewer", "staff"):
+        fake_client = {"id": "client-1", "email": "a@b.com.au", "role": role}
+        mock_db = MagicMock()
+        mock_db.knowledge_suggestions.get_for_client.return_value = {
+            "id": "s1", "title": "t", "content": "c", "status": "pending"
+        }
+        _override(fake_client, mock_db)
+        try:
+            resp = client.post("/firm-knowledge/suggestions/s1/reject")
+            assert resp.status_code == 403
+            mock_db.knowledge_suggestions.set_decision.assert_not_called()
+        finally:
+            app.dependency_overrides.clear()
+
+
+def test_approve_allows_owner(client):
+    from taxflow.main import app
+    from taxflow.routers import firm_knowledge as fk_router
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au", "role": "owner"}
+    mock_db = MagicMock()
+    mock_db.knowledge_suggestions.get_for_client.return_value = {
+        "id": "s1", "title": "t", "content": "c", "status": "pending"
+    }
+    mock_db.knowledge_suggestions.approve.return_value = {
+        "id": "s1", "status": "approved", "firm_knowledge_id": "fk-1"
+    }
+    _override(fake_client, mock_db)
+    try:
+        with patch.object(fk_router, "embed", new=AsyncMock(return_value=[0.1] * 1536)):
+            resp = client.post("/firm-knowledge/suggestions/s1/approve")
+        assert resp.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- assignment: an explicit reviewer, not "whoever notices the badge" ------
+
+
+def test_assign_suggestion_to_owner(client):
+    from taxflow.main import app
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au", "user_id": "user-assigner"}
+    mock_db = MagicMock()
+    mock_db.users.list_for_client.return_value = [
+        {"id": "owner-1", "role": "owner"},
+        {"id": "staff-1", "role": "staff"},
+    ]
+    mock_db.knowledge_suggestions.assign.return_value = {
+        "id": "s1", "status": "pending", "assigned_to": "owner-1"
+    }
+    _override(fake_client, mock_db)
+    try:
+        resp = client.post(
+            "/firm-knowledge/suggestions/s1/assign", json={"user_id": "owner-1"}
+        )
+        assert resp.status_code == 200
+        mock_db.knowledge_suggestions.assign.assert_called_once_with(
+            "client-1", "s1", "owner-1", "user-assigner"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_assign_suggestion_rejects_non_owner(client):
+    """Assigning to a Staff/Reviewer user would silently create an unactionable
+    queue item - only an Owner can ever approve/reject, so only an Owner can
+    be the assignee."""
+    from taxflow.main import app
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au"}
+    mock_db = MagicMock()
+    mock_db.users.list_for_client.return_value = [{"id": "staff-1", "role": "staff"}]
+    _override(fake_client, mock_db)
+    try:
+        resp = client.post(
+            "/firm-knowledge/suggestions/s1/assign", json={"user_id": "staff-1"}
+        )
+        assert resp.status_code == 400
+        mock_db.knowledge_suggestions.assign.assert_not_called()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_assign_suggestion_unassign(client):
+    from taxflow.main import app
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au"}
+    mock_db = MagicMock()
+    mock_db.knowledge_suggestions.assign.return_value = {
+        "id": "s1", "status": "pending", "assigned_to": None
+    }
+    _override(fake_client, mock_db)
+    try:
+        resp = client.post(
+            "/firm-knowledge/suggestions/s1/assign", json={"user_id": None}
+        )
+        assert resp.status_code == 200
+        mock_db.users.list_for_client.assert_not_called()
     finally:
         app.dependency_overrides.clear()
 

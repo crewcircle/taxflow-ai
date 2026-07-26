@@ -444,10 +444,14 @@ function AnswerActionsBar({
   }
 
   const feedbackSegment =
+    // State plainly, at the point of the click, what thumbs-up just did - a
+    // hover tooltip beforehand isn't the same as staff realising, after the
+    // fact, that a casual "yes this was helpful" started a real workflow
+    // with firm-wide consequences (business audit P1 - Persona 1).
     outcome === "sent_for_approval" ? (
       <span className="flex items-center gap-1.5 text-sm text-foreground">
         <BookOpen className="size-4 text-accent" />
-        Sent for approval
+        Nominated for Firm Knowledge - a partner will review it
       </span>
     ) : outcome === "re_researching" ? (
       <span className="flex items-center gap-1.5 text-sm text-foreground">

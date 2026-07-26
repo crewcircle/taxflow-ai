@@ -2,7 +2,7 @@
 
 import { use as usePromise, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Download } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Download } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { AnnotatableMarkdown } from "@/components/AnnotatableMarkdown";
 
@@ -16,6 +16,8 @@ interface DocumentDetail {
   created_at: string;
   approved_by: string | null;
   approved_at: string | null;
+  stale?: boolean;
+  stale_since?: string | null;
 }
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
@@ -85,6 +87,20 @@ export default function DocumentViewerPage({ params }: { params: Promise<{ id: s
           </a>
         </div>
       </div>
+
+      {doc.stale && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          <span>
+            <span className="block font-medium">The underlying research answer has changed since this was generated</span>
+            The answer this document came from was re-researched
+            {doc.stale_since ? ` on ${new Date(doc.stale_since).toLocaleDateString("en-AU")}` : ""}
+            {" "}after this document was created - the content below may no longer match what
+            TaxFlow would say today. Worth reviewing before relying on it, especially if it&apos;s
+            already been sent to a client.
+          </span>
+        </div>
+      )}
 
       <div className="rounded-xl border border-border p-6">
         <AnnotatableMarkdown
