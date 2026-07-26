@@ -1,8 +1,9 @@
 import re
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from taxflow.services.knowledge.scraper_base import ScraperBase
+from taxflow.services.knowledge.structure import LEGISLATION_SENTINELS
 
 # Key AU tax legislation, by titleId on legislation.gov.au. titleId is the
 # permanent identifier for an Act (looked up once via the OData Titles API,
@@ -24,6 +25,63 @@ ACTS = [
 _VOLUME_HREF = re.compile(
     r"https://www\.legislation\.gov\.au/[^\"'\s]+/text/original/epub/OEBPS/document_(\d+)/document_\d+\.html"
 )
+
+# legislation.gov.au's per-volume EPUB HTML is Word-exported XHTML with real
+# semantic CSS classes (confirmed by fetching a live volume and inspecting its
+# markup - see the module docstring). Two groups of classes matter here:
+#
+# - Table-of-contents paragraphs (master TOC + each Division's own "Table of
+#   sections" mini-TOC) repeat every heading as plain text ahead of the real
+#   content. A plain text-regex parser can't tell a TOC entry from the real
+#   heading, so it was opening (empty) units from the TOC listing instead of
+#   the real one. These are skipped outright.
+# - Real structural headings (Chapter/Part/Division/Subdivision/Section) get
+#   stamped with a sentinel prefix (``LEGISLATION_SENTINELS``) so
+#   ``structure.parse_structure`` can match them unambiguously instead of
+#   guessing from plain text.
+_SKIP_PARA_CLASSES = {
+    "TOC1", "TOC2", "TOC3", "TOC4", "TOC5",
+    "TofSectsHeading", "TofSectsGroupHeading", "TofSectsSection", "TofSectsSubdiv",
+}
+_HEAD_LEVEL_BY_CLASS = {
+    "ActHead1": "chapter",
+    "ActHead2": "part",
+    "ActHead3": "division",
+    "ActHead5": "section",
+}
+_LEADING_LABEL_RE = re.compile(r"^(Chapter|Part|Division|Subdivision)\s+", re.IGNORECASE)
+# get_text(separator=" ") inserts a space at every inline span boundary, which
+# splits a hyphenated ref like "40-1" (rendered as three spans: "40", a
+# non-breaking hyphen, "1") into "40 - 1". This re-tightens any hyphen that's
+# sitting between two alphanumerics back into a single unspaced token.
+_HYPHEN_RETIGHTEN_RE = re.compile(r"(?<=[0-9A-Za-z])\s*-\s*(?=[0-9A-Za-z])")
+
+
+def _normalize_para_text(p: Tag) -> str:
+    text = p.get_text(separator=" ", strip=True)
+    # ‑ is the non-breaking hyphen legislation.gov.au uses in ref numbers
+    # (e.g. "40‑1"); normalize it to a plain ASCII hyphen so it matches
+    # the same character the structure-parser regexes expect.
+    text = text.replace("‑", "-").replace("\xa0", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return _HYPHEN_RETIGHTEN_RE.sub("-", text)
+
+
+def _heading_level(p: Tag) -> str | None:
+    """Which structural level (if any) this <p> is a heading for.
+
+    ``ActHead4`` is overloaded by the Word export: it's used both for real
+    Subdivision headings (which contain a ``CharSubdNo`` span) and for
+    decorative "Guide to Division N" sub-headings (which don't). Only the
+    former is a real structural marker.
+    """
+    classes = set(p.get("class") or [])
+    for cls, level in _HEAD_LEVEL_BY_CLASS.items():
+        if cls in classes:
+            return level
+    if "ActHead4" in classes and p.find("span", class_="CharSubdNo"):
+        return "subdivision"
+    return None
 
 
 class LegislationScraper(ScraperBase):
@@ -59,11 +117,41 @@ class LegislationScraper(ScraperBase):
         ]
 
     def _extract_text(self, html: str) -> str:
+        """DOM-class-aware extraction (see the module-level constants above).
+
+        Walks the document's <p> elements in reading order, drops the two
+        TOC-style paragraph classes that duplicate real content as plain
+        text, and stamps real structural headings with a sentinel prefix so
+        ``structure.parse_structure`` can chunk the Act hierarchically
+        instead of falling back to flat sentence-packing.
+
+        A prior version called ``main.get_text(separator="\\n", strip=True)``
+        on the whole page: BeautifulSoup inserts that separator between EVERY
+        tag boundary, not just block-level ones, so a heading built from
+        several inline spans (e.g. "40", a hyphen, "1") landed on 2-3 separate
+        lines instead of one - which is why no bare-text heading regex could
+        ever reliably match it, and why the TOC/mini-TOC listings polluted
+        the parsed structure with empty duplicate units.
+        """
         soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["nav", "header", "footer", "script", "style", "aside"]):
             tag.decompose()
         main = soup.find("main") or soup.find("article") or soup.body or soup
-        return main.get_text(separator="\n", strip=True)
+
+        lines: list[str] = []
+        for p in main.find_all("p"):
+            classes = set(p.get("class") or [])
+            if classes & _SKIP_PARA_CLASSES:
+                continue
+            text = _normalize_para_text(p)
+            if not text:
+                continue
+            level = _heading_level(p)
+            if level:
+                text = _LEADING_LABEL_RE.sub("", text)
+                text = f"{LEGISLATION_SENTINELS[level]} {text}"
+            lines.append(text)
+        return "\n".join(lines)
 
     async def fetch_document_content(self, url: str) -> str:
         response = await self._get(url)
