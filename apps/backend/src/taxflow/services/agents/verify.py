@@ -3,6 +3,7 @@ from taxflow.config import settings
 from taxflow.ports.llm import StructuredParseError
 from taxflow.services.agents.models import VerificationResult
 from taxflow.services.json_utils import extract_json_object
+from taxflow.services.knowledge.pipeline import classify_topic
 from taxflow.services.prompt_cache import cacheable_system
 
 SYSTEM_PROMPT = """You are a senior Australian tax lawyer reviewing an AI-drafted advice memo.
@@ -41,20 +42,60 @@ Return ONLY valid JSON. No preamble or explanation."""
 INSUFFICIENT_PHRASE = "do not contain sufficient information"
 
 
-def should_verify(confidence: float, citations: list[dict], answer: str) -> bool:
+def _topic_mismatch(question: str, citations: list[dict]) -> bool:
+    """True when the question confidently classifies to a specific topic but
+    every actually-cited source classifies to a DIFFERENT specific topic.
+
+    This is the exact failure mode a RAG-quality audit found undetected in
+    production: a fluent, topically-correct-*sounding* answer citing sources
+    from a completely unrelated area (e.g. NSW state payroll-tax rulings
+    cited for a federal FBT question) - `_estimate_confidence` only counts
+    citation/chunk quantity, so it scored these HIGH and `should_verify`
+    never even ran. `classify_topic` is the same cheap regex classifier
+    already used at ingestion time (no LLM call), reused here symmetrically
+    on the query and on each cited source.
+
+    Deliberately conservative: never trips on unclassified/generic content on
+    either side (a `None` topic - most chunks - is not evidence of anything),
+    only on a confident clash between two specific topics.
+    """
+    question_topic = classify_topic("", "", question)
+    if question_topic is None or not citations:
+        return False
+    cited_topics = {
+        classify_topic("", c.get("citation") or "", c.get("excerpt") or "") for c in citations
+    }
+    cited_topics.discard(None)
+    if not cited_topics:
+        return False
+    return question_topic not in cited_topics
+
+
+def should_verify(
+    confidence: float, citations: list[dict], answer: str, question: str = ""
+) -> bool:
     """Gate the verify pass (Task B2): run ONLY on risky answers.
 
     Risky means any of:
       - low estimated confidence (< VERIFY_CONFIDENCE_THRESHOLD),
       - few/zero parsed citations (< VERIFY_MIN_CITATIONS),
-      - the "insufficient information" phrase in the answer.
-    A confident, well-cited answer skips the (expensive) verify call entirely.
+      - the "insufficient information" phrase in the answer,
+      - the cited sources don't topically match the question (see
+        ``_topic_mismatch``) - added after a RAG-quality audit found this
+        exact case slipping through the citation-count-based confidence
+        score undetected.
+    A confident, well-cited, topically-grounded answer skips the (expensive)
+    verify call entirely. ``question`` defaults to "" for callers that don't
+    have it handy - the topic-mismatch check simply never trips in that case,
+    same as before this signal existed.
     """
     if confidence < settings.VERIFY_CONFIDENCE_THRESHOLD:
         return True
     if len(citations) < settings.VERIFY_MIN_CITATIONS:
         return True
     if INSUFFICIENT_PHRASE in (answer or "").lower():
+        return True
+    if question and _topic_mismatch(question, citations):
         return True
     return False
 

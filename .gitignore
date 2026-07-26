@@ -14,3 +14,10 @@ dist/
 .DS_Store
 .claude/
 .vercel/
+
+# graphrag_accuracy experiment: generated corpus/index/results, not source
+apps/backend/scripts/experiments/graphrag_accuracy/corpus/
+apps/backend/scripts/experiments/graphrag_accuracy/lightrag_storage/
+apps/backend/scripts/experiments/graphrag_accuracy/cognee_storage/
+apps/backend/scripts/experiments/graphrag_accuracy/results/
+apps/backend/scripts/experiments/graphrag_accuracy/manifest.json
