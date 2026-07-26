@@ -55,14 +55,24 @@ def _get_or_provision_client(identity) -> dict:
         if user["status"] == "removed":
             raise HTTPException(status_code=403, detail="This account has been removed")
         client = db.clients.get_by_id(user["client_id"])
-        return {**client, "role": user["role"], "user_id": user["id"]}
+        return {
+            **client,
+            "role": user["role"],
+            "user_id": user["id"],
+            "regulatory_alerts_seen_at": user.get("regulatory_alerts_seen_at"),
+        }
 
     client = db.clients.get_by_email(identity.email)
     if client:
         # Pre-043 gap (or a user created after the migration's join ran):
         # self-heal by creating the missing Owner row now.
         user = db.users.create(identity.sub, client["id"], identity.email, role="owner")
-        return {**client, "role": user["role"], "user_id": user["id"]}
+        return {
+            **client,
+            "role": user["role"],
+            "user_id": user["id"],
+            "regulatory_alerts_seen_at": user.get("regulatory_alerts_seen_at"),
+        }
 
     metadata = identity.metadata or {}
     business_name = (

@@ -92,8 +92,35 @@ def test_documents_list_for_client_scoped_by_client():
         Repositories().documents.list_for_client("client-1")
     sql, params = cur.executed[-1]
     assert "FROM documents" in sql
-    assert "WHERE client_id = %s" in sql
+    assert "WHERE d.client_id = %s" in sql
     assert params[0] == "client-1"
+
+
+def test_documents_list_flags_staleness_against_re_research_jobs():
+    """A document is stale when its linked query was successfully re-researched
+    AFTER the document was generated (business audit P0 - Persona 1: a
+    re-research can silently make the tool disagree with advice already given
+    to a client). This asserts the join predicate shape, not real DB rows."""
+    cur = _FakeCursor(fetchall=[])
+    with _patch_conn(cur):
+        Repositories().documents.list_for_client("client-1")
+    sql, _ = cur.executed[-1]
+    assert "re_research_jobs" in sql
+    assert "r.query_id = d.query_id" in sql
+    assert "r.status = 'done'" in sql
+    assert "r.updated_at > d.created_at" in sql
+    assert "stale_check.stale_since IS NOT NULL AS stale" in sql
+
+
+def test_documents_get_for_client_flags_staleness():
+    cur = _FakeCursor(fetchone={"id": "doc-1", "client_id": "client-1"})
+    with _patch_conn(cur):
+        Repositories().documents.get_for_client("client-1", "doc-1")
+    sql, params = cur.executed[0]
+    assert "FROM documents" in sql
+    assert "d.id = %s AND d.client_id = %s" in sql
+    assert "stale_check.stale_since IS NOT NULL AS stale" in sql
+    assert params == ("doc-1", "client-1")
 
 
 def test_documents_list_for_client_with_kind_filter_scoped_by_client():

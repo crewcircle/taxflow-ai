@@ -274,5 +274,5 @@ def test_full_migration_sequence_applied(_migrated_db):
         conn.close()
 
     assert applied == expected
-    assert applied[-1] == "047_mentions.sql"
-    assert len(applied) == 47
+    assert applied[-1] == "048_suggestion_assignment_dedup_regulatory_seen.sql"
+    assert len(applied) == 48

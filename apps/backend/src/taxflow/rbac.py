@@ -30,6 +30,11 @@ PERMISSIONS: dict[str, set[Role]] = {
     "documents.approve": {Role.OWNER, Role.REVIEWER},
     "ato_response.approve": {Role.OWNER, Role.REVIEWER},
     "verification.resolve": {Role.OWNER, Role.REVIEWER},
+    # Deliberately Owner-only, not Owner+Reviewer like the permissions above -
+    # this is the entire safety mechanism of the learning loop (approving a
+    # suggestion writes into firm-wide knowledge used by every future
+    # answer), a bigger blast radius than approving one document or response.
+    "knowledge.approve": {Role.OWNER},
     "work.delete_any": {Role.OWNER},
     "query.ask": {Role.OWNER, Role.REVIEWER, Role.STAFF},
     "documents.draft": {Role.OWNER, Role.REVIEWER, Role.STAFF},

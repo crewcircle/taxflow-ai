@@ -1012,27 +1012,25 @@ async def submit_feedback(
 
     # Task C5: a thumbs-UP creates a PENDING knowledge_suggestion from the
     # question + answer (approval-gated learning loop — a partner later approves
-    # it into firm_knowledge). De-duped per query via exists_for_query so a
-    # second thumbs-up on the same query never creates a second pending
-    # suggestion. Best-effort: a suggestion failure never fails the feedback.
+    # it into firm_knowledge). insert_or_get_pending de-dups against BOTH this
+    # path and the manual "Suggest for Firm Knowledge" button via a DB-level
+    # partial unique index, not a check-then-act read, so a thumbs-up racing a
+    # manual promote on the same query can't create two pending suggestions.
+    # Best-effort: a suggestion failure never fails the feedback.
     if body.rating == "up" and settings.LEARNING_LOOP_ENABLED:
-        already = await asyncio.to_thread(
-            db.knowledge_suggestions.exists_for_query, client["id"], query_id
-        )
-        if not already:
-            title = (owned.get("question") or "").strip()[:80] or "Suggested note"
-            content = (owned.get("final_answer") or "").strip()
-            if content:
-                await asyncio.to_thread(
-                    db.knowledge_suggestions.insert,
-                    {
-                        "client_id": client["id"],
-                        "source_query_id": query_id,
-                        "title": title,
-                        "content": content,
-                        "reason": "thumbs_up",
-                    },
-                )
+        title = (owned.get("question") or "").strip()[:80] or "Suggested note"
+        content = (owned.get("final_answer") or "").strip()
+        if content:
+            await asyncio.to_thread(
+                db.knowledge_suggestions.insert_or_get_pending,
+                {
+                    "client_id": client["id"],
+                    "source_query_id": query_id,
+                    "title": title,
+                    "content": content,
+                    "reason": "thumbs_up",
+                },
+            )
 
     return {
         "id": feedback_id,

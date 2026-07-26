@@ -171,3 +171,34 @@ def test_flag_off_matches_current_context_and_positional_citations(agent):
     assert [c["citation"] for c in citations] == ["TR 2024/1", "TR 2024/2"]
     assert citations[0]["url"] == "http://a"
     assert citations[1]["url"] == "http://b"
+
+
+# --- reliance posture flags (business audit P1) -------------------------------
+def test_parse_citations_flags_historical_and_engagement_memo(agent):
+    """Historical/superseded and engagement-memo citations must carry their own
+    flags so the inline citation list can distinguish them from a current
+    official source, not just the trace panel's detail toggle."""
+    chunks = [
+        {"citation": "ITAA 1936 s 260", "source_url": "http://old", "content": "repealed text",
+         "last_scraped_at": None, "is_historical": True, "superseded_by": "ITAA 1997 Part IVA"},
+        {"citation": "Engagement memo: Acme Pty Ltd", "source_url": None, "content": "prior advice",
+         "last_scraped_at": None},
+        {"citation": "TR 2024/1", "source_url": "http://a", "content": "current ruling",
+         "last_scraped_at": None},
+    ]
+    context, citation_map = agent._build_context_string(chunks)
+    citations = agent._parse_citations("[1][2][3]", citation_map)
+
+    historical = next(c for c in citations if c["citation"] == "ITAA 1936 s 260")
+    assert historical["is_historical"] is True
+    assert historical["superseded_by"] == "ITAA 1997 Part IVA"
+    assert historical["is_engagement_memo"] is False
+
+    memo = next(c for c in citations if c["citation"].startswith("Engagement memo:"))
+    assert memo["is_engagement_memo"] is True
+    assert memo["is_historical"] is False
+
+    current = next(c for c in citations if c["citation"] == "TR 2024/1")
+    assert current["is_historical"] is False
+    assert current["is_engagement_memo"] is False
+    assert current["superseded_by"] is None
