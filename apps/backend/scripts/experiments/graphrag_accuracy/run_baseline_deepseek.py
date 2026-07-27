@@ -64,9 +64,12 @@ async def main() -> None:
         print(f"[{q['id']}] {q['question'][:70]}...")
         start = time.monotonic()
         try:
+            # 400s, not 180s: _generate() can now internally retry once on an
+            # empty completion (see research.py), so worst-case latency for a
+            # single question is up to ~2x one slow OpenRouter/DeepSeek call.
             result = await asyncio.wait_for(
                 agent.run(question=q["question"], client_id="experiment-baseline-deepseek"),
-                timeout=180,
+                timeout=400,
             )
         except Exception as e:  # noqa: BLE001 - one bad question (timeout, API error) must not kill the run
             elapsed_ms = (time.monotonic() - start) * 1000
