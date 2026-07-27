@@ -103,8 +103,16 @@ class Settings(BaseSettings):
     # ranks them together instead of appending firm chunks after global truncation.
     # The firm weight multiplies the firm chunk's score so it participates in the
     # merged ranking (was a dead 1.5x that never ranked).
-    RETRIEVAL_TOP_K: int = 10
-    RETRIEVAL_GLOBAL_POOL: int = 8
+    # RETRIEVAL_GLOBAL_POOL/TOP_K were tuned for flat ~512-token chunks. Now
+    # that legislation is hierarchically chunked (RAG-quality audit Fix 1),
+    # the average chunk covers much less ground (a single subsection can be
+    # 50-150 tokens), and the corpus is ~3.5x more chunks for the same Acts -
+    # the OLD pool size of 8 candidates was retrieving proportionally far less
+    # actual legislative text than before, causing genuine "insufficient
+    # information" misses on questions the flat-chunked corpus used to answer.
+    # Scaled up together so TOP_K still keeps most of the wider pool.
+    RETRIEVAL_TOP_K: int = 18
+    RETRIEVAL_GLOBAL_POOL: int = 16
     RETRIEVAL_FIRM_POOL: int = 4
     FIRM_CHUNK_WEIGHT: float = 1.5
 
