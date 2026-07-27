@@ -63,7 +63,17 @@ async def main() -> None:
     for q in questions:
         print(f"[{q['id']}] {q['question'][:70]}...")
         start = time.monotonic()
-        result = await agent.run(question=q["question"], client_id="experiment-baseline-deepseek")
+        try:
+            result = await asyncio.wait_for(
+                agent.run(question=q["question"], client_id="experiment-baseline-deepseek"),
+                timeout=180,
+            )
+        except Exception as e:  # noqa: BLE001 - one bad question (timeout, API error) must not kill the run
+            elapsed_ms = (time.monotonic() - start) * 1000
+            print(f"  -> FAILED after {elapsed_ms:.0f}ms: {e!r}")
+            results.append({"id": q["id"], "answer": "", "citations": [], "wall_ms": round(elapsed_ms), "error": repr(e)})
+            save_results("baseline_deepseek", results)
+            continue
         elapsed_ms = (time.monotonic() - start) * 1000
         results.append(
             {
@@ -74,8 +84,7 @@ async def main() -> None:
             }
         )
         print(f"  -> {elapsed_ms:.0f}ms, {len(result.get('citations', []))} citations")
-
-    save_results("baseline_deepseek", results)
+        save_results("baseline_deepseek", results)
 
 
 if __name__ == "__main__":

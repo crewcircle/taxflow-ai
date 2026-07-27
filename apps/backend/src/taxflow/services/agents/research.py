@@ -50,7 +50,16 @@ Rules:
 """
 
 CONTEXT_TOKEN_LIMIT = 60_000
-CITATION_PATTERN = re.compile(r"\[(\d+)\]")
+# Matches a bracketed citation marker whose ENTIRE contents are one or more
+# digit groups separated only by commas/whitespace - "[1]", "[1,7]", "[1, 7]".
+# The system prompt asks for one [N] per claim, but not every model follows
+# that literally (DeepSeek in particular often bundles several sources behind
+# one claim into a single "[1, 7]" marker); a plain `\[(\d+)\]` silently drops
+# every citation in a multi-number bracket since it never matches at all. The
+# whole-contents-must-be-digits constraint is deliberate: it keeps this from
+# misreading an unrelated bracketed aside like "[section 8-1]" as citing
+# indices 8 and 1.
+CITATION_PATTERN = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 
 # --- Phase 4: suggested follow-ups (inline strategy) -------------------------
 # The model is asked to end its output with this sentinel followed by up to
@@ -838,13 +847,19 @@ class ResearchAgent:
     async def _generate(
         self, question: str, context: str, model: str, steering: str = ""
     ) -> tuple[str, dict]:
-        result = await self._llm.generate(
+        kwargs = dict(
             messages=[{"role": "user", "content": self._user_content(question, context, steering)}],
             system=_system_blocks(),
             model=model,
             max_tokens=1500,
             temperature=0,
         )
+        result = await self._llm.generate(**kwargs)
+        # Some providers occasionally return an empty completion with no error
+        # (observed on OpenRouter/DeepSeek) - one retry recovers most of these
+        # rather than surfacing a blank answer to the user.
+        if not result.text.strip():
+            result = await self._llm.generate(**kwargs)
         answer = result.text
         usage = result.usage
         # Capture prompt-cache token usage (Task B1) alongside the existing token
@@ -988,7 +1003,11 @@ class ResearchAgent:
         chunk in order = today's positional resolution. The excerpt/url come from
         the entry's first underlying chunk (the parent's own citation).
         """
-        cited_numbers = {int(n) for n in CITATION_PATTERN.findall(answer)}
+        cited_numbers = {
+            int(n.strip())
+            for group in CITATION_PATTERN.findall(answer)
+            for n in group.split(",")
+        }
         citations = []
         for n in sorted(cited_numbers):
             if 1 <= n <= len(citation_map):

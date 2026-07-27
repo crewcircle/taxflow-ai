@@ -44,3 +44,25 @@ def test_legacy_trace_falls_back_to_candidates():
     # Both parsed citations are present in candidates -> no unmatched.
     assert out["unmatched_citations"] == []
     assert out["valid"] is False
+
+
+def test_multi_number_bracket_marker_counted_and_validated():
+    """A model can bundle several sources behind one claim into a single
+    "[1, 2]" marker rather than one [N] per claim - both indices must still be
+    read and validated, not silently dropped."""
+    result = {
+        "answer": "A claim backed by two sources [1, 2].",
+        "citations": [],
+        "trace": {
+            "retrieval": {
+                "rendered_sources": [
+                    {"citation": "TR 2024/1"},
+                    {"citation": "TR 2024/2"},
+                ]
+            }
+        },
+    }
+    out = check_citation_validity(result)
+    assert out["total_citations"] == 2
+    assert out["fabricated_markers"] == []
+    assert out["valid"] is True

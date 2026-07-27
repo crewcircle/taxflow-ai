@@ -57,7 +57,13 @@ def check_citation_validity(result: dict) -> dict:
     n_rendered = len(rendered)
 
     answer = (result or {}).get("answer") or ""
-    marker_numbers = sorted({int(n) for n in CITATION_PATTERN.findall(answer)})
+    marker_numbers = sorted(
+        {
+            int(n.strip())
+            for group in CITATION_PATTERN.findall(answer)
+            for n in group.split(",")
+        }
+    )
     fabricated = [n for n in marker_numbers if n < 1 or n > n_rendered]
 
     rendered_citations = {
