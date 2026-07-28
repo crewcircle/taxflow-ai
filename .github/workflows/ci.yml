@@ -142,3 +142,21 @@ jobs:
         # MIGRATION_DATABASE_URL (Supabase session pooler, port 5432) comes from the
         # taxflow/prd Doppler config alongside the other required vars.
         run: doppler run --project taxflow --config prd -- bash scripts/deploy_backend.sh
+
+  docs:
+    name: Generate Docs
+    needs: [test-backend, test-dashboard]
+    # Opt-in only: unset by default, so this job is skipped on every normal
+    # push/PR until a maintainer sets the OPENWIKI_DOCS_ENABLED repository
+    # (or org) variable to "true". Never runs on pull_request — an LLM pass
+    # on every contributor's PR would be wasteful and noisy. Logic lives in
+    # crewcircle-website's shared reusable workflow so every CrewCircle repo
+    # uses the same OpenWiki config instead of a copy-pasted script.
+    if: github.event_name == 'push' && vars.OPENWIKI_DOCS_ENABLED == 'true'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: crewcircle/crewcircle-website/.github/workflows/docs-generate.yml@main
+    with:
+      mode: engineering
+    secrets: inherit
