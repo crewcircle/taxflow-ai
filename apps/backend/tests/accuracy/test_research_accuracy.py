@@ -27,7 +27,11 @@ def agent():
 
 # Pulls the section/subsection token out of an "Act s.N" style expected
 # citation (e.g. "GST Act s.9-80" -> "9-80", "ITAA 1936 s.170" -> "170").
-_SECTION_TOKEN_RE = re.compile(r"s\.?\s*(\d[\d\-a-z]*)", re.IGNORECASE)
+_SECTION_TOKEN_RE = re.compile(r"\bs\.?\s*(\d[\d\-a-z]*)", re.IGNORECASE)
+# Same idea for "Act Div N" style expected citations (e.g. "ITAA 1997 Div
+# 820" -> "820"). A model correctly saying "Division 820 of ITAA 1997"
+# doesn't match the literal "itaa 1997 div 820" string either.
+_DIVISION_TOKEN_RE = re.compile(r"\bdiv\.?\s*(\d[\d\-a-z]*)", re.IGNORECASE)
 
 
 def score_answer(question: dict, result: dict) -> dict:
@@ -46,15 +50,17 @@ def score_answer(question: dict, result: dict) -> dict:
     def _cited(ec: str) -> bool:
         if any(ec in c for c in citations) or ec in answer:
             return True
-        # A model correctly citing "section 9-80 of the GST Act" won't match
-        # the literal "gst act s.9-80" string above - accept a bare match on
-        # just the section/subsection token too (e.g. "9-80") so natural
-        # phrasing isn't scored as a miss when the actual citation is right.
-        m = _SECTION_TOKEN_RE.search(ec)
-        if m:
-            token = m.group(1)
-            if len(token) >= 2 and (token in answer or any(token in c for c in citations)):
-                return True
+        # A model correctly citing "section 9-80 of the GST Act" or "Division
+        # 820 of ITAA 1997" won't match the literal "gst act s.9-80" /
+        # "itaa 1997 div 820" strings above - accept a bare match on just the
+        # section/division token too (e.g. "9-80", "820") so natural phrasing
+        # isn't scored as a miss when the actual citation is right.
+        for pattern in (_SECTION_TOKEN_RE, _DIVISION_TOKEN_RE):
+            m = pattern.search(ec)
+            if m:
+                token = m.group(1)
+                if len(token) >= 2 and (token in answer or any(token in c for c in citations)):
+                    return True
         return False
 
     cits_found = sum(1 for ec in expected_cits if _cited(ec))

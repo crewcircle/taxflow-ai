@@ -59,6 +59,29 @@ def test_short_section_token_not_loosely_matched():
     assert s["cit_ratio"] == 0.0
 
 
+def test_natural_phrasing_of_correct_division_now_scores_credit():
+    """Same brittleness as the section-number case but for "Act Div N" style
+    expected citations - found via q14 of the RAG-quality experiment:
+    retrieval found precisely Division 820, the model wrote "Division 820 of
+    ITAA 1997" naturally, but the literal "itaa 1997 div 820" string never
+    matched."""
+    result = {
+        "answer": "The thin capitalisation rules in Division 820 of ITAA 1997 apply when total debt deductions exceed $2 million.",
+        "citations": [{"citation": "ITAA 1997"}],
+    }
+    s = score_answer(_question(["thin cap"], ["ITAA 1997 Div 820"]), result)
+    assert s["cit_ratio"] == 1.0
+
+
+def test_wrong_division_does_not_score_credit():
+    result = {
+        "answer": "Division 855 of ITAA 1997 deals with CGT for foreign residents.",
+        "citations": [{"citation": "ITAA 1997"}],
+    }
+    s = score_answer(_question([], ["ITAA 1997 Div 820"]), result)
+    assert s["cit_ratio"] == 0.0
+
+
 def test_citation_without_section_marker_unaffected():
     """Expected citations with no 's.N' section marker (e.g. a ruling
     number) are untouched by the loosening - only the original literal
