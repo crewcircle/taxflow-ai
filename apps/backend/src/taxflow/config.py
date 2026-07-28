@@ -205,6 +205,14 @@ class Settings(BaseSettings):
     LLM_API_BASE: str = ""
     LLM_API_KEY: str = ""
     OPENCODE_API_KEY: str = ""
+    # Per-request timeout + LiteLLM's built-in retry-with-backoff (observed a
+    # single OpenRouter/DeepSeek call hang for 1420s with no timeout set at
+    # all - the LiteLLM adapter previously passed neither). A bounded timeout
+    # lets a genuinely stuck request fail fast and retry instead of blocking
+    # the caller indefinitely; num_retries only fires on LiteLLM's own
+    # retryable errors (timeouts, 5xx, rate limits), not on a real completion.
+    LLM_REQUEST_TIMEOUT_S: float = 90.0
+    LLM_NUM_RETRIES: int = 2
     EMBEDDING_PROVIDER: str = "openai"
     RELATIONAL_PROVIDER: str = "postgres"
     AUTH_PROVIDER: str = "supabase"

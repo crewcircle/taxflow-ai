@@ -40,9 +40,37 @@ def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
     return _pool
 
 
+def _borrow_live_conn(pool: psycopg2.pool.ThreadedConnectionPool):
+    """Borrow a connection from ``pool``, discarding and replacing it if the
+    server has silently closed it while it sat idle in the pool.
+
+    Observed in production/experiment traffic: Supabase's pooler can drop a
+    connection that's been idle for a while (e.g. sitting in our pool during a
+    long LLM generation call in between DB calls); the NEXT borrow of that same
+    connection object then fails on its first query with
+    ``psycopg2.InterfaceError: connection already closed`` or
+    ``OperationalError: server closed the connection unexpectedly`` - a real,
+    silent-until-used failure the pool itself never detects on its own. One
+    cheap ``SELECT 1`` liveness probe per borrow (the standard "pre-ping"
+    pattern) catches this before the caller's real query does.
+    """
+    conn = pool.getconn()
+    if conn.closed:
+        pool.putconn(conn, close=True)
+        return pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+    except Exception:  # noqa: BLE001 - any failure here means the conn is dead
+        pool.putconn(conn, close=True)
+        return pool.getconn()
+    return conn
+
+
 @contextmanager
 def get_pg_conn():
-    """Borrow a pooled psycopg2 connection and return it in a finally block.
+    """Borrow a pooled, verified-live psycopg2 connection and return it in a
+    finally block.
 
     The connection is always returned to the pool, even if the body raises. We
     roll back first so any open transaction is cleared and the connection goes
@@ -50,7 +78,7 @@ def get_pg_conn():
     explicitly, but a failed statement can still leave an aborted transaction).
     """
     pool = _get_pool()
-    conn = pool.getconn()
+    conn = _borrow_live_conn(pool)
     try:
         yield conn
     finally:
