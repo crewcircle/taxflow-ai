@@ -19,6 +19,7 @@ class VectorHit(TypedDict, total=False):
     source_object_key: str | None
     source_type: str | None
     last_scraped_at: object  # datetime | None; kept loose to match row shapes
+    jurisdiction: str | None
     score: float
     superseded_by: str | None
     is_current: bool

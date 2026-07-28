@@ -6,7 +6,9 @@ from taxflow import providers
 from taxflow.config import settings
 from taxflow.services.prompt_cache import cacheable_system
 from taxflow.services.knowledge.retrieval import (
+    apply_jurisdiction_boost,
     apply_source_type_boost,
+    cap_per_source_url,
     generate_candidates,
     generate_historical_candidates,
     rerank_candidates,
@@ -298,6 +300,47 @@ _INTENT_SOURCE_TYPES = [
 ]
 
 
+# AU state/territory jurisdiction codes, as stored on knowledge_chunks.jurisdiction
+# (see scrapers/state_revenue.py's STATES list). Full names are matched
+# case-insensitively; abbreviations are matched CASE-SENSITIVE (uppercase only)
+# since e.g. "act"/"nt"/"sa" are common English words and a case-insensitive
+# match on the bare abbreviation would fire constantly on unrelated text.
+_JURISDICTION_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bnew south wales\b", re.IGNORECASE), "NSW"),
+    (re.compile(r"\bNSW\b"), "NSW"),
+    (re.compile(r"\bvictoria\b", re.IGNORECASE), "VIC"),
+    (re.compile(r"\bVIC\b"), "VIC"),
+    (re.compile(r"\bqueensland\b", re.IGNORECASE), "QLD"),
+    (re.compile(r"\bQLD\b"), "QLD"),
+    (re.compile(r"\bwestern australia\b", re.IGNORECASE), "WA"),
+    (re.compile(r"\bWA\b"), "WA"),
+    (re.compile(r"\bsouth australia\b", re.IGNORECASE), "SA"),
+    (re.compile(r"\bSA\b"), "SA"),
+    (re.compile(r"\btasmania\b", re.IGNORECASE), "TAS"),
+    (re.compile(r"\bTAS\b"), "TAS"),
+    (re.compile(r"\baustralian capital territory\b", re.IGNORECASE), "ACT"),
+    (re.compile(r"\bACT\b"), "ACT"),
+    (re.compile(r"\bnorthern territory\b", re.IGNORECASE), "NT"),
+    (re.compile(r"\bNT\b"), "NT"),
+]
+
+
+def derive_jurisdiction_hint(question: str) -> str | None:
+    """Derive a jurisdiction SOFT-BOOST hint from an explicitly-named AU
+    state/territory in the question (e.g. "payroll tax grouping in New South
+    Wales" -> "NSW"). Returns None when no state/territory is named - a
+    question about federal law is never boosted toward any one state.
+
+    First match wins (question order), since a question naming exactly one
+    state is the common case this targets; a question comparing two states
+    isn't meaningfully served by picking one to boost anyway.
+    """
+    for pattern, code in _JURISDICTION_PATTERNS:
+        if pattern.search(question or ""):
+            return code
+    return None
+
+
 def derive_source_type_hint(question: str, active_modules: list[str] | None) -> list[str] | None:
     """Derive a source_types SOFT-BOOST hint (Task D2) from question intent and
     the firm's active_modules. Returns None when nothing matches (no boost).
@@ -536,6 +579,14 @@ class ResearchAgent:
         )
         if settings.SOURCE_TYPE_FILTER_MODE != "hard":
             global_candidates = apply_source_type_boost(global_candidates, source_type_hint)
+        jurisdiction_hint = derive_jurisdiction_hint(question)
+        global_candidates = apply_jurisdiction_boost(global_candidates, jurisdiction_hint)
+        # Cap BEFORE the pool-size truncation below, so one heavily-chunked
+        # document can't monopolize the whole truncation window and starve out
+        # a different, more precisely on-point source.
+        global_candidates = cap_per_source_url(
+            global_candidates, settings.RETRIEVAL_MAX_PER_SOURCE_URL
+        )
         firm_candidates = await self._firm_knowledge_search(
             question,
             client_id,

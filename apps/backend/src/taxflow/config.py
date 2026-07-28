@@ -175,6 +175,27 @@ class Settings(BaseSettings):
     SOURCE_TYPE_FILTER_MODE: str = "soft"
     SOURCE_TYPE_BOOST_WEIGHT: float = 0.25
 
+    # --- jurisdiction soft boost (RAG-quality audit follow-up) ----------------
+    # Same soft-boost design as source_types above, but for AU state/territory
+    # jurisdiction: when a question explicitly names a state ("New South
+    # Wales", "NSW"), candidates whose `jurisdiction` matches get their score
+    # multiplied by (1 + JURISDICTION_BOOST_WEIGHT). Root cause: state revenue
+    # offices publish near-identically-titled rulings independently per state
+    # (e.g. "Commissioners Discretion To Exclude From A Group"), and nothing in
+    # retrieval previously carried jurisdiction at all - a topically-similar
+    # ruling from the wrong state could out-rank the right one. Boost only,
+    # never excludes - a federal ITAA provision must stay retrievable even if a
+    # state was named elsewhere in the question.
+    JURISDICTION_BOOST_WEIGHT: float = 0.25
+
+    # --- per-source-url diversity cap (RAG-quality audit follow-up) -----------
+    # A single long ruling chunked with overlapping windows can place many
+    # near-duplicate chunks at the top of the candidate pool, crowding out a
+    # different, more precisely on-point source from ever reaching the merged
+    # pool. Caps how many candidates from the SAME source_url can occupy the
+    # PRE-rerank global pool slice (0 disables the cap).
+    RETRIEVAL_MAX_PER_SOURCE_URL: int = 4
+
     # --- Session memory (Task D3) ---------------------------------------------
     # When a request carries an explicit session_id, the last N prior queries for
     # that (client_id, session_id) are loaded (question + a truncated answer

@@ -99,6 +99,7 @@ def _rrf_merge(semantic: list[dict], textual: list[dict]) -> list[dict]:
             "source_object_key": docs[doc_id].get("source_object_key"),
             "source_type": docs[doc_id].get("source_type"),
             "last_scraped_at": docs[doc_id].get("last_scraped_at"),
+            "jurisdiction": docs[doc_id].get("jurisdiction"),
             **_hierarchy_fields(docs[doc_id]),
             "score": score,
         }
@@ -127,14 +128,23 @@ async def _llm_rerank(query: str, candidates: list[dict], pool_scale: int = 1) -
         return candidates
     batch = candidates[:depth]
 
+    # Jurisdiction is surfaced explicitly so the re-ranker can tell apart two
+    # near-identically-titled rulings published independently by different
+    # states (e.g. NSW vs WA "Commissioners Discretion To Exclude From A
+    # Group") - without this the LLM has no signal that one is simply the
+    # wrong state for the question asked, and a purely topical judgment can
+    # rank the wrong-jurisdiction source first.
     listing = "\n".join(
-        f"[{i}] {c['citation']}: {c['content'][:500]}" for i, c in enumerate(batch)
+        f"[{i}] {c['citation']} (jurisdiction: {c.get('jurisdiction') or 'federal'}): {c['content'][:500]}"
+        for i, c in enumerate(batch)
     )
     system = (
         "You are a retrieval re-ranker for Australian tax law. Score how relevant "
         "each candidate passage is to the user's question from 0.0 (irrelevant) to "
-        "1.0 (directly answers it). Return ONLY a JSON object with a `scores` field "
-        "mapping the candidate index (as a string) to its score, "
+        "1.0 (directly answers it). If the question names a specific state/territory, "
+        "a candidate from a DIFFERENT jurisdiction is almost never a correct answer even "
+        "if its title looks similar - score it low. Return ONLY a JSON object with a "
+        "`scores` field mapping the candidate index (as a string) to its score, "
         'e.g. {"scores": {"0": 0.9, "1": 0.2}}. No prose.'
     )
     user = f"Question: {query}\n\nCandidates:\n{listing}"
@@ -221,6 +231,56 @@ def apply_source_type_boost(candidates: list[dict], boost_types: list[str] | Non
         if cand.get("source_type") in boost_set:
             cand["score"] = cand.get("score", 0.0) * multiplier
     return sorted(candidates, key=lambda c: c.get("score", 0.0), reverse=True)
+
+
+def apply_jurisdiction_boost(candidates: list[dict], jurisdiction_hint: str | None) -> list[dict]:
+    """SOFT BOOST candidates whose `jurisdiction` matches an explicitly-named
+    AU state/territory in the question. Never excludes anything.
+
+    Root-caused via the RAG-quality experiment: a question naming "New South
+    Wales" retrieved a Western Australia ruling instead, because nothing in
+    retrieval was jurisdiction-aware - state revenue offices publish near-
+    identically-titled rulings ("Commissioners Discretion To Exclude From A
+    Group") independently per state, and neither RRF's text/semantic score nor
+    the LLM re-ranker's prompt carried jurisdiction, so a topically-similar
+    ruling from the WRONG state could out-rank the right one. Mirrors
+    ``apply_source_type_boost``'s soft-boost-only design: a document from a
+    different jurisdiction keeps its score and stays retrievable (e.g. a
+    federal ITAA provision must never be excluded just because a state was
+    named elsewhere in the question).
+    """
+    if not jurisdiction_hint or settings.JURISDICTION_BOOST_WEIGHT <= 0:
+        return candidates
+    multiplier = 1.0 + settings.JURISDICTION_BOOST_WEIGHT
+    for cand in candidates:
+        if cand.get("jurisdiction") == jurisdiction_hint:
+            cand["score"] = cand.get("score", 0.0) * multiplier
+    return sorted(candidates, key=lambda c: c.get("score", 0.0), reverse=True)
+
+
+def cap_per_source_url(candidates: list[dict], max_per_url: int) -> list[dict]:
+    """Cap how many candidates from the SAME source_url can occupy the pool,
+    preserving overall rank order otherwise.
+
+    Root-caused via the RAG-quality experiment: a single long ruling chunked
+    with overlapping windows can place 13+ near-duplicate chunks at the top of
+    the candidate pool (e.g. TR 2024/4 for a SMSF contribution-cap question),
+    crowding out a different, more precisely on-point source (ITAA 1997
+    s.292-25) that would otherwise have made the pool. This doesn't drop the
+    dominant document - it still keeps its best ``max_per_url`` chunks - it
+    just stops one document from monopolizing the whole pool. No-op when
+    ``max_per_url`` is falsy (0/None disables the cap).
+    """
+    if not max_per_url:
+        return candidates
+    counts: dict[str, int] = {}
+    capped = []
+    for cand in candidates:
+        url = cand.get("source_url") or ""
+        counts[url] = counts.get(url, 0) + 1
+        if counts[url] <= max_per_url:
+            capped.append(cand)
+    return capped
 
 
 async def generate_candidates(
