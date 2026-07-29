@@ -40,6 +40,16 @@ def score_answer(question: dict, result: dict) -> dict:
     """
     answer = result.get("answer", "").lower()
     citations = [c.get("citation", "").lower() for c in result.get("citations", [])]
+    # Hierarchical chunking (RAG-quality audit Fix 1) carries the retrieved
+    # section's own heading breadcrumb in `section` (e.g. "... > Section 25-35
+    # (Bad debts)") - the `citation` field alone often stays a bare Act name
+    # ("ITAA 1997"). A citation dict can be exactly right at the section level
+    # while `citation` says nothing more specific than the Act - found via q09
+    # of the production-path benchmark: real citations = ["ITAA 1997"] only,
+    # but its `section` field was "...Section 25-35 (Bad debts)", an EXACT
+    # match for the expected "ITAA 1997 s.25-35" that the citation-only check
+    # could never see.
+    sections = [(c.get("section") or "").lower() for c in result.get("citations", [])]
 
     expected_topics = [t.lower() for t in question.get("expected_topics", [])]
     topics_covered = sum(1 for t in expected_topics if t in answer)
@@ -54,12 +64,18 @@ def score_answer(question: dict, result: dict) -> dict:
         # 820 of ITAA 1997" won't match the literal "gst act s.9-80" /
         # "itaa 1997 div 820" strings above - accept a bare match on just the
         # section/division token too (e.g. "9-80", "820") so natural phrasing
-        # isn't scored as a miss when the actual citation is right.
+        # isn't scored as a miss when the actual citation is right. Checked
+        # against the answer text, the citation label, AND the section
+        # breadcrumb (see `sections` above).
         for pattern in (_SECTION_TOKEN_RE, _DIVISION_TOKEN_RE):
             m = pattern.search(ec)
             if m:
                 token = m.group(1)
-                if len(token) >= 2 and (token in answer or any(token in c for c in citations)):
+                if len(token) >= 2 and (
+                    token in answer
+                    or any(token in c for c in citations)
+                    or any(token in s for s in sections)
+                ):
                     return True
         return False
 

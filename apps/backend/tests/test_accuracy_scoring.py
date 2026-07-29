@@ -82,6 +82,34 @@ def test_wrong_division_does_not_score_credit():
     assert s["cit_ratio"] == 0.0
 
 
+def test_section_field_credited_even_when_citation_label_is_bare():
+    """Hierarchical chunking carries the retrieved section's own heading
+    breadcrumb in the citation dict's `section` field (e.g. "... > Section
+    25-35 (Bad debts)"), while `citation` often stays a bare Act name. Found
+    via q09 of the production-path benchmark: real citations = ["ITAA 1997"]
+    only, but its `section` field was an exact match for the expected
+    "ITAA 1997 s.25-35" - the citation-only check could never see it."""
+    result = {
+        "answer": "A company can deduct a bad debt written off in the income year.",
+        "citations": [
+            {"citation": "ITAA 1997", "section": "Division 25 > Section 25-35 (Bad debts)"}
+        ],
+    }
+    s = score_answer(_question(["bad debt"], ["ITAA 1997 s.25-35"]), result)
+    assert s["cit_ratio"] == 1.0
+
+
+def test_section_field_wrong_section_still_not_credited():
+    result = {
+        "answer": "See the relevant division for details.",
+        "citations": [
+            {"citation": "ITAA 1997", "section": "Division 165 > Section 165-120 (To deduct a bad debt)"}
+        ],
+    }
+    s = score_answer(_question([], ["ITAA 1997 s.25-35"]), result)
+    assert s["cit_ratio"] == 0.0
+
+
 def test_citation_without_section_marker_unaffected():
     """Expected citations with no 's.N' section marker (e.g. a ruling
     number) are untouched by the loosening - only the original literal
