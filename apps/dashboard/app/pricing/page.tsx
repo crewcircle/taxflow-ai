@@ -37,7 +37,8 @@ export default function PricingPage() {
             Simple pricing, no surprises
           </h1>
           <p className="text-lg text-muted-foreground">
-            Annual billing. Cancel anytime. Card or BECS direct debit.
+            Same product, same team seats on both plans - the only difference is how many
+            questions you ask us a month. Monthly billing, cancel anytime.
           </p>
         </div>
 

@@ -48,6 +48,29 @@ export default function AboutPage() {
             </p>
           </div>
 
+          <div className="mt-12 border-t border-border pt-8">
+            <h2 className="mb-3 text-xl font-bold text-foreground">Where your data lives</h2>
+            <div className="space-y-4 text-base leading-relaxed text-muted-foreground">
+              <p>
+                Your practice data - client records, documents, question history - is stored and
+                hosted in Australia, isolated per firm at the database level. Firm-uploaded
+                knowledge is never used to answer another firm&apos;s questions.
+              </p>
+              <p>
+                To generate an answer, the text of your question is sent to Anthropic&apos;s and
+                OpenAI&apos;s AI models under their standard API terms, which is how every AI
+                product in this category works today. We don&apos;t claim your questions never
+                leave Australia, because that wouldn&apos;t be true - we&apos;d rather tell you
+                exactly what happens than make a claim that doesn&apos;t hold up. If your firm
+                needs a stricter data-processing arrangement for a specific engagement,{" "}
+                <Link href="/contact" className="font-medium text-accent hover:underline">
+                  get in touch
+                </Link>{" "}
+                and we&apos;ll talk through the options.
+              </p>
+            </div>
+          </div>
+
           <div className="mt-12 flex flex-col gap-4 sm:flex-row">
             <Button asChild size="lg" className="bg-accent text-accent-foreground hover:opacity-90">
               <Link href="/signup">Start your free trial</Link>
