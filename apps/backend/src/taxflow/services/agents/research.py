@@ -6,7 +6,9 @@ from taxflow import providers
 from taxflow.config import settings
 from taxflow.services.prompt_cache import cacheable_system
 from taxflow.services.knowledge.retrieval import (
+    apply_jurisdiction_boost,
     apply_source_type_boost,
+    cap_per_source_url,
     generate_candidates,
     generate_historical_candidates,
     rerank_candidates,
@@ -50,7 +52,24 @@ Rules:
 """
 
 CONTEXT_TOKEN_LIMIT = 60_000
-CITATION_PATTERN = re.compile(r"\[(\d+)\]")
+# The corrective pass (regenerate_with_feedback) asks the model to both restate
+# a full answer AND explicitly resolve each flagged issue, on a strictly larger
+# prompt (original context + the issues themselves) than a first-pass draft.
+# Reusing the first pass's 1500-token budget was observed truncating a
+# corrective answer mid-sentence - literally mid-citation-bracket ("...for all
+# taxpayers [" with no closing "]") - silently dropping the trailing citation
+# along with whatever text never got written.
+CORRECTIVE_MAX_TOKENS = 2200
+# Matches a bracketed citation marker whose ENTIRE contents are one or more
+# digit groups separated only by commas/whitespace - "[1]", "[1,7]", "[1, 7]".
+# The system prompt asks for one [N] per claim, but not every model follows
+# that literally (DeepSeek in particular often bundles several sources behind
+# one claim into a single "[1, 7]" marker); a plain `\[(\d+)\]` silently drops
+# every citation in a multi-number bracket since it never matches at all. The
+# whole-contents-must-be-digits constraint is deliberate: it keeps this from
+# misreading an unrelated bracketed aside like "[section 8-1]" as citing
+# indices 8 and 1.
+CITATION_PATTERN = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 
 # --- Phase 4: suggested follow-ups (inline strategy) -------------------------
 # The model is asked to end its output with this sentinel followed by up to
@@ -287,6 +306,47 @@ _INTENT_SOURCE_TYPES = [
     (re.compile(r"\b(court|tribunal|aat|federal court|decision|case law)", re.IGNORECASE),
      ["court_decision"]),
 ]
+
+
+# AU state/territory jurisdiction codes, as stored on knowledge_chunks.jurisdiction
+# (see scrapers/state_revenue.py's STATES list). Full names are matched
+# case-insensitively; abbreviations are matched CASE-SENSITIVE (uppercase only)
+# since e.g. "act"/"nt"/"sa" are common English words and a case-insensitive
+# match on the bare abbreviation would fire constantly on unrelated text.
+_JURISDICTION_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bnew south wales\b", re.IGNORECASE), "NSW"),
+    (re.compile(r"\bNSW\b"), "NSW"),
+    (re.compile(r"\bvictoria\b", re.IGNORECASE), "VIC"),
+    (re.compile(r"\bVIC\b"), "VIC"),
+    (re.compile(r"\bqueensland\b", re.IGNORECASE), "QLD"),
+    (re.compile(r"\bQLD\b"), "QLD"),
+    (re.compile(r"\bwestern australia\b", re.IGNORECASE), "WA"),
+    (re.compile(r"\bWA\b"), "WA"),
+    (re.compile(r"\bsouth australia\b", re.IGNORECASE), "SA"),
+    (re.compile(r"\bSA\b"), "SA"),
+    (re.compile(r"\btasmania\b", re.IGNORECASE), "TAS"),
+    (re.compile(r"\bTAS\b"), "TAS"),
+    (re.compile(r"\baustralian capital territory\b", re.IGNORECASE), "ACT"),
+    (re.compile(r"\bACT\b"), "ACT"),
+    (re.compile(r"\bnorthern territory\b", re.IGNORECASE), "NT"),
+    (re.compile(r"\bNT\b"), "NT"),
+]
+
+
+def derive_jurisdiction_hint(question: str) -> str | None:
+    """Derive a jurisdiction SOFT-BOOST hint from an explicitly-named AU
+    state/territory in the question (e.g. "payroll tax grouping in New South
+    Wales" -> "NSW"). Returns None when no state/territory is named - a
+    question about federal law is never boosted toward any one state.
+
+    First match wins (question order), since a question naming exactly one
+    state is the common case this targets; a question comparing two states
+    isn't meaningfully served by picking one to boost anyway.
+    """
+    for pattern, code in _JURISDICTION_PATTERNS:
+        if pattern.search(question or ""):
+            return code
+    return None
 
 
 def derive_source_type_hint(question: str, active_modules: list[str] | None) -> list[str] | None:
@@ -527,6 +587,14 @@ class ResearchAgent:
         )
         if settings.SOURCE_TYPE_FILTER_MODE != "hard":
             global_candidates = apply_source_type_boost(global_candidates, source_type_hint)
+        jurisdiction_hint = derive_jurisdiction_hint(question)
+        global_candidates = apply_jurisdiction_boost(global_candidates, jurisdiction_hint)
+        # Cap BEFORE the pool-size truncation below, so one heavily-chunked
+        # document can't monopolize the whole truncation window and starve out
+        # a different, more precisely on-point source.
+        global_candidates = cap_per_source_url(
+            global_candidates, settings.RETRIEVAL_MAX_PER_SOURCE_URL
+        )
         firm_candidates = await self._firm_knowledge_search(
             question,
             client_id,
@@ -836,15 +904,21 @@ class ResearchAgent:
         return f"{prefix}Question: {question}\n\nSource documents:\n{context}"
 
     async def _generate(
-        self, question: str, context: str, model: str, steering: str = ""
+        self, question: str, context: str, model: str, steering: str = "", max_tokens: int = 1500
     ) -> tuple[str, dict]:
-        result = await self._llm.generate(
+        kwargs = dict(
             messages=[{"role": "user", "content": self._user_content(question, context, steering)}],
             system=_system_blocks(),
             model=model,
-            max_tokens=1500,
+            max_tokens=max_tokens,
             temperature=0,
         )
+        result = await self._llm.generate(**kwargs)
+        # Some providers occasionally return an empty completion with no error
+        # (observed on OpenRouter/DeepSeek) - one retry recovers most of these
+        # rather than surfacing a blank answer to the user.
+        if not result.text.strip():
+            result = await self._llm.generate(**kwargs)
         answer = result.text
         usage = result.usage
         # Capture prompt-cache token usage (Task B1) alongside the existing token
@@ -988,7 +1062,11 @@ class ResearchAgent:
         chunk in order = today's positional resolution. The excerpt/url come from
         the entry's first underlying chunk (the parent's own citation).
         """
-        cited_numbers = {int(n) for n in CITATION_PATTERN.findall(answer)}
+        cited_numbers = {
+            int(n.strip())
+            for group in CITATION_PATTERN.findall(answer)
+            for n in group.split(",")
+        }
         citations = []
         for n in sorted(cited_numbers):
             if 1 <= n <= len(citation_map):
@@ -1407,7 +1485,8 @@ class ResearchAgent:
 
         corrective_model = providers.resolve_model("sonnet")
         answer, stats = await self._generate(
-            question, corrective_context, corrective_model, steering=steering
+            question, corrective_context, corrective_model, steering=steering,
+            max_tokens=CORRECTIVE_MAX_TOKENS,
         )
         citations = self._parse_citations(answer, citation_map)
         confidence = self._estimate_confidence(answer, chunks, citations)

@@ -16,6 +16,7 @@ from typing import Any, AsyncIterator
 
 from pydantic import BaseModel, ValidationError
 
+from taxflow.config import settings
 from taxflow.ports.llm import (
     LLMResult,
     Messages,
@@ -94,7 +95,13 @@ class LiteLLMAdapter:
     ) -> dict[str, Any]:
         """Base kwargs shared by every ``litellm.acompletion`` call (model,
         messages, sampling and the injected key/base). Per-call extras like
-        ``stream`` or ``response_format`` are added by the caller."""
+        ``stream`` or ``response_format`` are added by the caller.
+
+        ``timeout``/``num_retries`` were previously unset entirely - observed
+        a single OpenRouter/DeepSeek call hang for 1420s with no bound at all.
+        LiteLLM's own retry only fires on its retryable errors (timeout, 5xx,
+        rate limit), never on a real completion, so this doesn't mask genuine
+        failures - it just stops a stuck request from blocking forever."""
         return {
             "model": _normalize_model(model),
             "messages": _build_messages(messages, system),
@@ -102,6 +109,8 @@ class LiteLLMAdapter:
             "temperature": temperature,
             "api_key": self._api_key,
             "api_base": self._api_base,
+            "timeout": settings.LLM_REQUEST_TIMEOUT_S,
+            "num_retries": settings.LLM_NUM_RETRIES,
         }
 
     async def generate(

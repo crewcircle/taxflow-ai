@@ -17,6 +17,7 @@ from taxflow.services.agents.research import (
     ResearchAgent,
     build_client_profile,
     build_session_block,
+    derive_jurisdiction_hint,
     derive_source_type_hint,
 )
 from taxflow.services.knowledge import retrieval
@@ -119,6 +120,88 @@ def test_source_type_boost_keeps_non_matching_docs_retrievable():
 def test_source_type_boost_noop_when_no_hint():
     candidates = [{"id": "a", "source_type": "ato_news", "score": 0.10}]
     assert retrieval.apply_source_type_boost(candidates, None) == candidates
+
+
+# --- jurisdiction SOFT boost (RAG-quality audit follow-up) ---------------------
+# Root cause: a question naming "New South Wales" retrieved a Western
+# Australia ruling instead, because nothing in retrieval carried jurisdiction
+# at all - state revenue offices publish near-identically-titled rulings
+# independently per state.
+
+
+def test_derive_jurisdiction_hint_from_full_state_name():
+    assert derive_jurisdiction_hint("payroll tax grouping in New South Wales") == "NSW"
+
+
+def test_derive_jurisdiction_hint_from_uppercase_abbreviation():
+    assert derive_jurisdiction_hint("What is the NSW payroll tax threshold?") == "NSW"
+
+
+def test_derive_jurisdiction_hint_ignores_lowercase_abbreviation():
+    """Bare lowercase state codes are common English words ("act", "sa", "nt")
+    - only an exact-uppercase abbreviation match is trusted, never lowercase."""
+    assert derive_jurisdiction_hint("what act governs this deduction?") is None
+
+
+def test_derive_jurisdiction_hint_none_for_federal_question():
+    assert derive_jurisdiction_hint("What is the small business CGT concession?") is None
+
+
+def test_jurisdiction_boost_keeps_non_matching_docs_retrievable():
+    """A SOFT boost must re-order, never drop - the wrong-jurisdiction doc stays
+    retrievable (a federal ITAA provision must never be excluded just because a
+    state was named elsewhere in the question)."""
+    candidates = [
+        {"id": "wa", "jurisdiction": "WA", "score": 0.501},
+        {"id": "nsw", "jurisdiction": "NSW", "score": 0.500},
+    ]
+    boosted = retrieval.apply_jurisdiction_boost(candidates, "NSW")
+    ids = {c["id"] for c in boosted}
+    assert ids == {"wa", "nsw"}
+    # The matching-jurisdiction doc is boosted above the near-tied non-matching one.
+    assert boosted[0]["id"] == "nsw"
+
+
+def test_jurisdiction_boost_noop_when_no_hint():
+    candidates = [{"id": "a", "jurisdiction": "WA", "score": 0.10}]
+    assert retrieval.apply_jurisdiction_boost(candidates, None) == candidates
+
+
+def test_jurisdiction_boost_noop_for_federal_docs_with_no_jurisdiction():
+    """A federal document (jurisdiction=None) is simply never boosted - it's
+    not penalised either, since the boost only ever multiplies matching docs."""
+    candidates = [
+        {"id": "fed", "jurisdiction": None, "score": 0.45},
+        {"id": "nsw", "jurisdiction": "NSW", "score": 0.40},
+    ]
+    boosted = retrieval.apply_jurisdiction_boost(candidates, "NSW")
+    assert boosted[0]["id"] == "nsw"  # boosted above the higher-scoring federal doc
+
+
+# --- per-source-url diversity cap (RAG-quality audit follow-up) ----------------
+# Root cause: a single long ruling chunked with overlapping windows can place
+# many near-duplicate chunks at the top of the pool, crowding out a different,
+# more precisely on-point source from ever reaching the merged pool.
+
+
+def test_cap_per_source_url_limits_dominant_document():
+    candidates = (
+        [{"id": f"dup-{i}", "source_url": "http://a", "score": 1.0 - i * 0.01} for i in range(6)]
+        + [{"id": "other", "source_url": "http://b", "score": 0.5}]
+    )
+    capped = retrieval.cap_per_source_url(candidates, max_per_url=4)
+    from_a = [c for c in capped if c["source_url"] == "http://a"]
+    assert len(from_a) == 4
+    # The best 4 (highest score, already in rank order) are kept, not an
+    # arbitrary subset.
+    assert [c["id"] for c in from_a] == ["dup-0", "dup-1", "dup-2", "dup-3"]
+    # The different source is still present - the cap doesn't drop it.
+    assert any(c["id"] == "other" for c in capped)
+
+
+def test_cap_per_source_url_noop_when_disabled():
+    candidates = [{"id": "a", "source_url": "http://a", "score": 1.0}]
+    assert retrieval.cap_per_source_url(candidates, max_per_url=0) == candidates
 
 
 @pytest.mark.asyncio

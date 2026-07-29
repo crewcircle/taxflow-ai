@@ -116,6 +116,30 @@ async def test_generate_forwards_api_key(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_generate_forwards_timeout_and_num_retries(monkeypatch):
+    """A single OpenRouter/DeepSeek call was observed hanging for 1420s with
+    no timeout set at all. Every acompletion call must carry a bounded
+    timeout + LiteLLM's own retry-on-transient-error count."""
+    from taxflow.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "LLM_REQUEST_TIMEOUT_S", 42.0)
+    monkeypatch.setattr(cfg, "LLM_NUM_RETRIES", 3)
+    capture: dict = {}
+    resp = _completion_response("hi", _anthropic_usage())
+    monkeypatch.setattr(litellm_adapter.litellm, "acompletion", _fake_acompletion(resp, capture))
+
+    adapter = LiteLLMAdapter()
+    await adapter.generate(
+        messages=[{"role": "user", "content": "hi"}],
+        model="anthropic/claude-haiku-4-5",
+        max_tokens=128,
+    )
+
+    assert capture["timeout"] == 42.0
+    assert capture["num_retries"] == 3
+
+
+@pytest.mark.asyncio
 async def test_generate_maps_openai_style_usage(monkeypatch):
     capture: dict = {}
     resp = _completion_response("hi", _openai_usage())

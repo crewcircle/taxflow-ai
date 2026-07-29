@@ -29,7 +29,11 @@ class _FakeVectorStore:
 
 
 class _FakeLLM:
+    def __init__(self):
+        self.last_generate_kwargs: dict | None = None
+
     async def generate(self, **kwargs):
+        self.last_generate_kwargs = kwargs
         return LLMResult(text="Corrected answer [1]", usage=Usage(input_tokens=10, output_tokens=5))
 
 
@@ -117,3 +121,26 @@ async def test_widen_disabled_by_flag_does_not_fire(monkeypatch):
     assert store.semantic_search.await_args.kwargs["limit"] == settings.RERANK_CANDIDATE_POOL
     assert result["re_retrieval"] == {"fired": False}
     assert result["re_retrieved"] is False
+
+
+@pytest.mark.asyncio
+async def test_corrective_pass_uses_larger_max_tokens_than_first_pass():
+    """Regression guard: a corrective-pass answer was observed truncated
+    mid-citation-bracket because regenerate_with_feedback reused the
+    first-pass 1500-token budget on a strictly larger prompt (original
+    context + the flagged issues to resolve)."""
+    from taxflow.services.agents.research import CORRECTIVE_MAX_TOKENS
+
+    store = _FakeVectorStore()
+    fake_llm = _FakeLLM()
+    agent = ResearchAgent(llm=fake_llm)
+
+    with patch.object(providers, "get_vector_store", return_value=store), patch.object(
+        retrieval, "embed", new=AsyncMock(return_value=[0.0] * 1536)
+    ):
+        await agent.regenerate_with_feedback(
+            "q", "cid", issues=[{"issue": "wrong section"}], embedding=[0.1] * 1536,
+        )
+
+    assert fake_llm.last_generate_kwargs["max_tokens"] == CORRECTIVE_MAX_TOKENS
+    assert CORRECTIVE_MAX_TOKENS > 1500  # strictly larger than a first-pass draft

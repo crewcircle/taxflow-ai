@@ -49,7 +49,7 @@ class PgVectorStore:
                     cur.execute(
                         """
                         SELECT id, citation, content, source_url, source_object_key, source_type,
-                               last_scraped_at,
+                               last_scraped_at, jurisdiction,
                                heading_path, parent_content, chunk_level, parent_key,
                                1 - (embedding <=> %s::vector) AS cosine_sim
                         FROM knowledge_chunks
@@ -124,7 +124,7 @@ class PgVectorStore:
                 cur.execute(
                     """
                     SELECT id, citation, content, source_url, source_object_key, source_type,
-                           last_scraped_at,
+                           last_scraped_at, jurisdiction,
                            heading_path, parent_content, chunk_level, parent_key,
                            ts_rank(to_tsvector('english', content), plainto_tsquery('english', %s)) AS text_rank
                     FROM knowledge_chunks

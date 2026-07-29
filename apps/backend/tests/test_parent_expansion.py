@@ -173,6 +173,38 @@ def test_flag_off_matches_current_context_and_positional_citations(agent, monkey
     assert citations[1]["url"] == "http://b"
 
 
+# --- multi-number citation markers (RAG-quality investigation) ---------------
+# A model isn't guaranteed to emit one [N] per claim even though the system
+# prompt asks for it - DeepSeek in particular often bundles several sources
+# behind one claim into a single "[1, 7]" marker. A regex that only matches
+# "[N]" (a lone digit group) silently drops every citation in that answer,
+# since it never matches the bracket at all.
+def test_parse_citations_handles_multi_number_bracket(agent):
+    chunks = [
+        _child("TR 2024/1", "http://a", "first source"),
+        _child("TR 2024/2", "http://b", "second source"),
+    ]
+    _, citation_map = agent._build_context_string(chunks)
+    citations = agent._parse_citations("A claim backed by two sources [1, 2].", citation_map)
+    assert {c["citation"] for c in citations} == {"TR 2024/1", "TR 2024/2"}
+
+
+def test_parse_citations_handles_multi_number_bracket_no_space(agent):
+    chunks = [_child("TR 2024/1", "http://a", "first source")]
+    _, citation_map = agent._build_context_string(chunks)
+    citations = agent._parse_citations("Cited [1,1] twice in one marker.", citation_map)
+    assert [c["citation"] for c in citations] == ["TR 2024/1"]
+
+
+def test_parse_citations_ignores_non_numeric_bracket_content(agent):
+    """A bracketed aside that happens to contain digits (e.g. a section
+    reference) must never be misread as a citation index."""
+    chunks = [_child("ITAA 1997", "http://a", "content")]
+    _, citation_map = agent._build_context_string(chunks)
+    citations = agent._parse_citations("See [section 8-1] for details, cited in [1].", citation_map)
+    assert [c["citation"] for c in citations] == ["ITAA 1997"]
+
+
 # --- reliance posture flags (business audit P1) -------------------------------
 def test_parse_citations_flags_historical_and_engagement_memo(agent):
     """Historical/superseded and engagement-memo citations must carry their own

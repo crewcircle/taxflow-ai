@@ -103,8 +103,16 @@ class Settings(BaseSettings):
     # ranks them together instead of appending firm chunks after global truncation.
     # The firm weight multiplies the firm chunk's score so it participates in the
     # merged ranking (was a dead 1.5x that never ranked).
-    RETRIEVAL_TOP_K: int = 10
-    RETRIEVAL_GLOBAL_POOL: int = 8
+    # RETRIEVAL_GLOBAL_POOL/TOP_K were tuned for flat ~512-token chunks. Now
+    # that legislation is hierarchically chunked (RAG-quality audit Fix 1),
+    # the average chunk covers much less ground (a single subsection can be
+    # 50-150 tokens), and the corpus is ~3.5x more chunks for the same Acts -
+    # the OLD pool size of 8 candidates was retrieving proportionally far less
+    # actual legislative text than before, causing genuine "insufficient
+    # information" misses on questions the flat-chunked corpus used to answer.
+    # Scaled up together so TOP_K still keeps most of the wider pool.
+    RETRIEVAL_TOP_K: int = 18
+    RETRIEVAL_GLOBAL_POOL: int = 16
     RETRIEVAL_FIRM_POOL: int = 4
     FIRM_CHUNK_WEIGHT: float = 1.5
 
@@ -167,6 +175,27 @@ class Settings(BaseSettings):
     SOURCE_TYPE_FILTER_MODE: str = "soft"
     SOURCE_TYPE_BOOST_WEIGHT: float = 0.25
 
+    # --- jurisdiction soft boost (RAG-quality audit follow-up) ----------------
+    # Same soft-boost design as source_types above, but for AU state/territory
+    # jurisdiction: when a question explicitly names a state ("New South
+    # Wales", "NSW"), candidates whose `jurisdiction` matches get their score
+    # multiplied by (1 + JURISDICTION_BOOST_WEIGHT). Root cause: state revenue
+    # offices publish near-identically-titled rulings independently per state
+    # (e.g. "Commissioners Discretion To Exclude From A Group"), and nothing in
+    # retrieval previously carried jurisdiction at all - a topically-similar
+    # ruling from the wrong state could out-rank the right one. Boost only,
+    # never excludes - a federal ITAA provision must stay retrievable even if a
+    # state was named elsewhere in the question.
+    JURISDICTION_BOOST_WEIGHT: float = 0.25
+
+    # --- per-source-url diversity cap (RAG-quality audit follow-up) -----------
+    # A single long ruling chunked with overlapping windows can place many
+    # near-duplicate chunks at the top of the candidate pool, crowding out a
+    # different, more precisely on-point source from ever reaching the merged
+    # pool. Caps how many candidates from the SAME source_url can occupy the
+    # PRE-rerank global pool slice (0 disables the cap).
+    RETRIEVAL_MAX_PER_SOURCE_URL: int = 4
+
     # --- Session memory (Task D3) ---------------------------------------------
     # When a request carries an explicit session_id, the last N prior queries for
     # that (client_id, session_id) are loaded (question + a truncated answer
@@ -197,6 +226,14 @@ class Settings(BaseSettings):
     LLM_API_BASE: str = ""
     LLM_API_KEY: str = ""
     OPENCODE_API_KEY: str = ""
+    # Per-request timeout + LiteLLM's built-in retry-with-backoff (observed a
+    # single OpenRouter/DeepSeek call hang for 1420s with no timeout set at
+    # all - the LiteLLM adapter previously passed neither). A bounded timeout
+    # lets a genuinely stuck request fail fast and retry instead of blocking
+    # the caller indefinitely; num_retries only fires on LiteLLM's own
+    # retryable errors (timeouts, 5xx, rate limits), not on a real completion.
+    LLM_REQUEST_TIMEOUT_S: float = 90.0
+    LLM_NUM_RETRIES: int = 2
     EMBEDDING_PROVIDER: str = "openai"
     RELATIONAL_PROVIDER: str = "postgres"
     AUTH_PROVIDER: str = "supabase"
