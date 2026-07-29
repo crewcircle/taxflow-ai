@@ -59,3 +59,33 @@ async def test_generate_gives_up_after_one_retry_if_still_empty():
 
     assert answer == ""
     assert fake_llm.generate.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_default_max_tokens_is_1500():
+    fake_llm = AsyncMock()
+    fake_llm.generate = AsyncMock(
+        return_value=LLMResult(text="Answer [1].", usage=Usage(input_tokens=1, output_tokens=3))
+    )
+    agent = ResearchAgent(llm=fake_llm)
+
+    await agent._generate("q", "ctx", "model")
+
+    assert fake_llm.generate.await_args.kwargs["max_tokens"] == 1500
+
+
+@pytest.mark.asyncio
+async def test_generate_accepts_larger_max_tokens_for_corrective_pass():
+    """Regression guard: a corrective-pass answer was observed truncated
+    mid-citation-bracket ("...for all taxpayers [" with no closing "]")
+    because regenerate_with_feedback reused the first-pass 1500-token budget
+    on a strictly larger prompt (original context + the flagged issues)."""
+    fake_llm = AsyncMock()
+    fake_llm.generate = AsyncMock(
+        return_value=LLMResult(text="Corrected answer [1].", usage=Usage(input_tokens=1, output_tokens=3))
+    )
+    agent = ResearchAgent(llm=fake_llm)
+
+    await agent._generate("q", "ctx", "model", max_tokens=2200)
+
+    assert fake_llm.generate.await_args.kwargs["max_tokens"] == 2200

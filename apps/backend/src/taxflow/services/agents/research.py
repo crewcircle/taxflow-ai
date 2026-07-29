@@ -52,6 +52,14 @@ Rules:
 """
 
 CONTEXT_TOKEN_LIMIT = 60_000
+# The corrective pass (regenerate_with_feedback) asks the model to both restate
+# a full answer AND explicitly resolve each flagged issue, on a strictly larger
+# prompt (original context + the issues themselves) than a first-pass draft.
+# Reusing the first pass's 1500-token budget was observed truncating a
+# corrective answer mid-sentence - literally mid-citation-bracket ("...for all
+# taxpayers [" with no closing "]") - silently dropping the trailing citation
+# along with whatever text never got written.
+CORRECTIVE_MAX_TOKENS = 2200
 # Matches a bracketed citation marker whose ENTIRE contents are one or more
 # digit groups separated only by commas/whitespace - "[1]", "[1,7]", "[1, 7]".
 # The system prompt asks for one [N] per claim, but not every model follows
@@ -896,13 +904,13 @@ class ResearchAgent:
         return f"{prefix}Question: {question}\n\nSource documents:\n{context}"
 
     async def _generate(
-        self, question: str, context: str, model: str, steering: str = ""
+        self, question: str, context: str, model: str, steering: str = "", max_tokens: int = 1500
     ) -> tuple[str, dict]:
         kwargs = dict(
             messages=[{"role": "user", "content": self._user_content(question, context, steering)}],
             system=_system_blocks(),
             model=model,
-            max_tokens=1500,
+            max_tokens=max_tokens,
             temperature=0,
         )
         result = await self._llm.generate(**kwargs)
@@ -1477,7 +1485,8 @@ class ResearchAgent:
 
         corrective_model = providers.resolve_model("sonnet")
         answer, stats = await self._generate(
-            question, corrective_context, corrective_model, steering=steering
+            question, corrective_context, corrective_model, steering=steering,
+            max_tokens=CORRECTIVE_MAX_TOKENS,
         )
         citations = self._parse_citations(answer, citation_map)
         confidence = self._estimate_confidence(answer, chunks, citations)
