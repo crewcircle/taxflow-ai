@@ -5,6 +5,8 @@ import {
   MessageSquare,
   ScrollText,
   ShieldCheck,
+  Users,
+  Briefcase,
 } from "lucide-react";
 import { MarketingHeader } from "@/components/MarketingHeader";
 import { MarketingFooter } from "@/components/MarketingFooter";
@@ -28,9 +30,31 @@ const MODULES = [
     description:
       "Every answer is checked after it's written. A second pass compares each claim against the source material and flags anything that isn't fully backed up.",
     details: [
-      "A clear badge shows whether an answer is verified or needs a second look",
+      "Flagged claims are underlined right where they appear in the answer - click to see why",
       "Specific issues are listed, not just a vague warning",
       "Runs automatically - nothing to switch on",
+    ],
+  },
+  {
+    icon: Users,
+    title: "Team & permissions",
+    description:
+      "Bring your whole team in, not just one shared login. Owner, Reviewer, and Staff roles with a built-in approval gate - Staff can draft, but only an Owner or Reviewer can approve and finalise it as firm work product.",
+    details: [
+      "Unlimited staff seats on every plan",
+      "@mention a teammate on any answer or document and they get a real notification",
+      "A human always signs off before anything leaves the firm",
+    ],
+  },
+  {
+    icon: Briefcase,
+    title: "Client & engagement tracking",
+    description:
+      "Every question is attributed to a specific client and a specific engagement, so a client with a return, an ATO audit, and a structuring question in progress at the same time never gets their history mixed up.",
+    details: [
+      "One client can run multiple concurrent engagements as separate threads",
+      "Search across every client, conversation, and document from one Cmd+K box",
+      "Nothing gets filed against the wrong matter",
     ],
   },
   {

@@ -153,7 +153,8 @@ export default async function Home() {
             {[
               "Real ATO rulings and legislation, not training-data guesses",
               "Every answer checked against its sources before you see it",
-              "Built and hosted in Australia",
+              "A human always signs off before anything leaves your firm",
+              "Your practice data is stored and hosted in Australia",
             ].map((item) => (
               <div key={item} className="flex items-center gap-2 text-sm text-muted-foreground">
                 <CheckCircle2 className="h-4 w-4 shrink-0 text-accent" />

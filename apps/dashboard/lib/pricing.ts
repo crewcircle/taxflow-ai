@@ -4,12 +4,13 @@ export const TIERS = [
   {
     id: "starter",
     name: "Starter",
-    price: "$2,400",
-    period: "/year + GST",
+    price: "$99",
+    period: "/month + GST",
     highlighted: false,
     features: [
-      "300 research queries / month",
-      "50 documents / month",
+      "1,000 research queries / month",
+      "100 documents / month",
+      "Unlimited staff seats with role-based permissions",
       "ATO correspondence module",
       "Email support",
     ],
@@ -17,12 +18,13 @@ export const TIERS = [
   {
     id: "professional",
     name: "Professional",
-    price: "$6,000",
-    period: "/year + GST",
+    price: "$199",
+    period: "/month + GST",
     highlighted: true,
     features: [
       "Unlimited research queries",
       "Unlimited documents",
+      "Unlimited staff seats with role-based permissions",
       "ATO correspondence module",
       "Firm knowledge base",
       "Regulatory alerts",
