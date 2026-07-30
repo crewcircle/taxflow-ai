@@ -213,6 +213,58 @@ def _extract_scores(text: str, depth: int) -> dict[int, float]:
     return out
 
 
+async def _cohere_rerank(query: str, candidates: list[dict], pool_scale: int = 1) -> list[dict]:
+    """Re-order candidates with ONE Cohere Rerank call via OpenRouter's hosted
+    /rerank endpoint (Task: RAG-quality audit precision follow-up).
+
+    Only invoked when RERANK_MODE == "cohere". A cross-encoder does fine-
+    grained joint query/passage scoring, which is specifically better than
+    RRF (a bag-of-words-ish fusion score) or the LLM reranker's coarse 0-1
+    judgment at discriminating between structurally-similar sibling
+    provisions (e.g. ITAA 1997 Subdivision 292-B vs 292-C) - the exact
+    "right Division, wrong Section" failure pattern the audit found. Hosted
+    via OpenRouter rather than a local cross-encoder model, since this
+    backend deliberately carries no ML/torch dependency (see RERANK_MODE's
+    docstring - 2 vCPU / 4GB droplet). On any failure we fall back to the
+    input order so retrieval never breaks over the re-rank, same contract
+    as ``_llm_rerank``.
+    """
+    import httpx
+
+    depth = min(len(candidates), settings.RERANK_DEPTH * pool_scale)
+    if depth == 0 or not settings.OPENROUTER_API_KEY:
+        return candidates
+    batch = candidates[:depth]
+    documents = [
+        f"{c['citation']} (jurisdiction: {c.get('jurisdiction') or 'federal'}): {c['content']}"
+        for c in batch
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://openrouter.ai/api/v1/rerank",
+                headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                json={
+                    "model": settings.RERANK_OPENROUTER_MODEL,
+                    "query": query,
+                    "documents": documents,
+                },
+            )
+            resp.raise_for_status()
+            results = resp.json()["results"]
+    except Exception:  # noqa: BLE001 - never fail retrieval over the re-rank
+        return candidates
+
+    for r in results:
+        idx = r.get("index")
+        if idx is not None and 0 <= idx < len(batch):
+            batch[idx]["rerank_score"] = r.get("relevance_score", 0.0)
+    reranked = sorted(batch, key=lambda c: c.get("rerank_score", 0.0), reverse=True)
+    # Candidates beyond the re-rank depth keep their RRF order, appended after.
+    return reranked + candidates[depth:]
+
+
 def apply_source_type_boost(candidates: list[dict], boost_types: list[str] | None) -> list[dict]:
     """SOFT BOOST matching source_types (Task D2). Never excludes anything.
 
@@ -356,11 +408,15 @@ async def rerank_candidates(
     """Apply RERANK_MODE to an already-merged candidate list (Task C1).
 
     "off"/"rrf_only" return the candidates unchanged (NO LLM call). "llm" runs a
-    single batched Haiku relevance-scoring call and re-orders by score.
-    ``pool_scale`` (Task C3) widens the re-rank depth for this one call only.
+    single batched Haiku relevance-scoring call and re-orders by score. "cohere"
+    runs one Cohere Rerank API call (a cross-encoder, not an LLM) - see
+    ``_cohere_rerank`` for why this exists. ``pool_scale`` (Task C3) widens the
+    re-rank depth for this one call only.
     """
     if settings.RERANK_MODE == "llm":
         return await _llm_rerank(query, candidates, pool_scale=pool_scale)
+    if settings.RERANK_MODE == "cohere":
+        return await _cohere_rerank(query, candidates, pool_scale=pool_scale)
     return candidates
 
 

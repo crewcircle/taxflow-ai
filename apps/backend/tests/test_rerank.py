@@ -76,6 +76,96 @@ async def test_llm_rerank_falls_back_to_input_order_on_error(monkeypatch):
     assert out == cands
 
 
+# --- RERANK_MODE == "cohere" (RAG-quality audit precision follow-up) ---------
+
+
+def _fake_httpx_client(json_body=None, status_error=None):
+    """A minimal fake httpx.AsyncClient context manager returning a canned
+    /rerank response, so the real network is never touched in tests."""
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            if status_error:
+                raise status_error
+
+        def json(self):
+            return json_body
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            self.post = AsyncMock(return_value=_FakeResponse())
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    return _FakeClient
+
+
+@pytest.mark.asyncio
+async def test_rerank_cohere_mode_calls_cohere_rerank(monkeypatch):
+    monkeypatch.setattr(settings, "RERANK_MODE", "cohere")
+    with patch.object(retrieval, "_cohere_rerank", new=AsyncMock(return_value=_cands(3))) as mock_cohere:
+        await retrieval.rerank_candidates("q", _cands(3))
+    mock_cohere.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cohere_rerank_reorders_by_relevance_score(monkeypatch):
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setattr(settings, "RERANK_DEPTH", 3)
+    import httpx
+
+    fake_client_cls = _fake_httpx_client(
+        json_body={
+            "results": [
+                {"index": 0, "relevance_score": 0.1},
+                {"index": 1, "relevance_score": 0.9},
+                {"index": 2, "relevance_score": 0.5},
+            ]
+        }
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", fake_client_cls)
+
+    out = await retrieval._cohere_rerank("q", _cands(3))
+    assert [c["id"] for c in out[:3]] == ["1", "2", "0"]
+
+
+@pytest.mark.asyncio
+async def test_cohere_rerank_noop_without_api_key(monkeypatch):
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "")
+    cands = _cands(3)
+    out = await retrieval._cohere_rerank("q", cands)
+    assert out == cands
+
+
+@pytest.mark.asyncio
+async def test_cohere_rerank_falls_back_to_input_order_on_error(monkeypatch):
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-test")
+    import httpx
+
+    class _FailingClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **kw):
+            raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FailingClient)
+
+    cands = _cands(3)
+    out = await retrieval._cohere_rerank("q", cands)
+    assert out == cands
+
+
 def test_extract_scores_accepts_wrapped_and_bare():
     """The fallback prompt asks for {"scores": {...}}; _extract_scores must parse
     that AND the bare {index: score} form to the same mapping."""
