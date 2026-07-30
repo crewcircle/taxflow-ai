@@ -112,6 +112,12 @@ class Settings(BaseSettings):
     RERANK_OPENROUTER_MODEL: str = "cohere/rerank-4-fast"
     # Lightweight query normalisation (section-number / synonym) before search.
     QUERY_NORMALISE_ENABLED: bool = True
+    # LLM query-rewrite before the full-text search leg only (RAG-quality
+    # audit precision follow-up #3) - disambiguates a question relative to
+    # near-identical sibling provisions (e.g. "concessional" vs
+    # "non-concessional" contributions). One extra cheap LLM call per query
+    # when on; off by default since it adds latency/cost to every request.
+    QUERY_DECOMPOSITION_ENABLED: bool = False
 
     # --- Firm + global merged ranking (Task C4) -------------------------------
     # research._retrieve_context merges global + firm candidates into ONE pool and

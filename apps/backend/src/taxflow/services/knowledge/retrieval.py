@@ -36,6 +36,53 @@ def normalise_query(query: str) -> str:
     return normalised
 
 
+_DECOMPOSE_SYSTEM_PROMPT = """You are a search-query rewriter for an Australian tax law retrieval system.
+
+Rewrite the question into a more specific, disambiguated search query that will match \
+the RIGHT provision among near-identical SIBLING provisions - e.g. distinguish \
+"concessional" from "non-concessional" contributions, or a specific numbered test from \
+a general one, rather than leaving a term that could match either. Keep every specific \
+term already in the question. Do NOT answer the question. Do NOT add prose, quotes, or \
+explanation - return ONLY the rewritten search query text, 1-2 sentences."""
+
+
+async def decompose_query(question: str) -> str:
+    """Rewrite the question into a more specific search query via ONE cheap
+    LLM call (RAG-quality audit precision follow-up #3), gated by
+    QUERY_DECOMPOSITION_ENABLED (default off).
+
+    Root cause this targets: retrieval repeatedly landed in the right
+    Division but the wrong SIBLING Section (e.g. ITAA 1997 Subdivision 292-C
+    "Excess non-concessional contributions tax" instead of 292-B's
+    concessional cap) - the raw question's wording is sometimes genuinely
+    ambiguous relative to how similarly-phrased sibling provisions are
+    titled, closest to the LegalMALR pattern (multi-agent query
+    understanding before statute retrieval). Scoped deliberately narrow:
+    only rewrites the FULL-TEXT search leg (composed with normalise_query in
+    generate_candidates), not the shared question embedding used across
+    semantic/firm/historical search - full-text search is where an exact
+    lexical distinction like "concessional" vs "non-concessional" actually
+    helps, and this avoids re-plumbing the embedding that's computed once
+    upstream and reused across several call sites. On any failure, returns
+    the ORIGINAL question unchanged so retrieval never breaks over the
+    rewrite - same never-fail contract as the LLM/Cohere rerankers.
+    """
+    if not settings.QUERY_DECOMPOSITION_ENABLED:
+        return question
+    try:
+        response = await providers.get_llm().generate(
+            messages=[{"role": "user", "content": question}],
+            system=_DECOMPOSE_SYSTEM_PROMPT,
+            model=providers.resolve_model("rerank"),
+            max_tokens=150,
+            temperature=0,
+        )
+        rewritten = (response.text or "").strip()
+        return rewritten or question
+    except Exception:  # noqa: BLE001 - never fail retrieval over the rewrite
+        return question
+
+
 # --- Recency tie-breaker (from main) ------------------------------------------
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
 
@@ -405,7 +452,7 @@ async def generate_candidates(
     embedding: list[float] | None = None,
     pool_scale: int = 1,
 ) -> list[dict]:
-    """RRF candidate generation over a widened pool (Task C1). NEVER calls an LLM.
+    """RRF candidate generation over a widened pool (Task C1).
 
     Returns the merged RRF candidates (untruncated, unranked beyond RRF) so a
     caller can merge in other candidates (e.g. firm chunks, Task C4) and re-rank
@@ -416,11 +463,17 @@ async def generate_candidates(
     widened pass passes ``pool_scale=2`` to look broader, WITHOUT mutating the
     global ``RERANK_CANDIDATE_POOL`` setting (so concurrent requests are never
     affected).
+
+    Calls an LLM ONLY when QUERY_DECOMPOSITION_ENABLED is on (default off) -
+    see ``decompose_query``'s docstring. That rewrite affects the full-text
+    search leg only; the embedding (passed in or computed here from the
+    ORIGINAL query) is untouched, since it's shared/reused across several
+    call sites upstream.
     """
     if embedding is None:
         embedding = await embed(query)
 
-    text_query = normalise_query(query)
+    text_query = normalise_query(await decompose_query(query))
     pool = settings.RERANK_CANDIDATE_POOL * pool_scale
     store = providers.get_vector_store()
     semantic, textual = await asyncio.gather(

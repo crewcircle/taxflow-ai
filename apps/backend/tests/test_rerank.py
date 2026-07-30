@@ -186,6 +186,77 @@ def test_normalise_query_disabled_is_identity(monkeypatch):
     assert retrieval.normalise_query("s8-1 CGT") == "s8-1 CGT"
 
 
+# --- query decomposition (RAG-quality audit precision follow-up #3) -----------
+
+
+@pytest.mark.asyncio
+async def test_decompose_query_disabled_is_identity(monkeypatch):
+    monkeypatch.setattr(settings, "QUERY_DECOMPOSITION_ENABLED", False)
+    fake_llm = MagicMock()
+    fake_llm.generate = AsyncMock()
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+    out = await retrieval.decompose_query("What is the concessional cap?")
+    assert out == "What is the concessional cap?"
+    fake_llm.generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_decompose_query_enabled_returns_rewrite(monkeypatch):
+    monkeypatch.setattr(settings, "QUERY_DECOMPOSITION_ENABLED", True)
+    fake_llm = MagicMock()
+    fake_llm.generate = AsyncMock(
+        return_value=MagicMock(text="What is the CONCESSIONAL (not non-concessional) contributions cap?")
+    )
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+    out = await retrieval.decompose_query("What is the concessional cap?")
+    assert "non-concessional" in out
+    fake_llm.generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_decompose_query_falls_back_to_original_on_error(monkeypatch):
+    monkeypatch.setattr(settings, "QUERY_DECOMPOSITION_ENABLED", True)
+    fake_llm = MagicMock()
+    fake_llm.generate = AsyncMock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+    out = await retrieval.decompose_query("original question")
+    assert out == "original question"
+
+
+@pytest.mark.asyncio
+async def test_decompose_query_falls_back_on_empty_response(monkeypatch):
+    monkeypatch.setattr(settings, "QUERY_DECOMPOSITION_ENABLED", True)
+    fake_llm = MagicMock()
+    fake_llm.generate = AsyncMock(return_value=MagicMock(text=""))
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+    out = await retrieval.decompose_query("original question")
+    assert out == "original question"
+
+
+@pytest.mark.asyncio
+async def test_generate_candidates_applies_decomposition_to_text_search_only(monkeypatch):
+    """Decomposition must affect the full-text search query, but NOT the
+    embedding - the embedding is shared/reused across several call sites
+    upstream and is deliberately left untouched."""
+    monkeypatch.setattr(settings, "QUERY_DECOMPOSITION_ENABLED", True)
+    monkeypatch.setattr(settings, "QUERY_NORMALISE_ENABLED", False)
+
+    fake_llm = MagicMock()
+    fake_llm.generate = AsyncMock(return_value=MagicMock(text="rewritten query"))
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+
+    fake_store = MagicMock()
+    fake_store.semantic_search = AsyncMock(return_value=[])
+    fake_store.text_search = AsyncMock(return_value=[])
+    with patch.object(retrieval.providers, "get_vector_store", return_value=fake_store):
+        await retrieval.generate_candidates("original question", embedding=[0.1] * 1536)
+
+    # Embedding path: passed in unchanged, no re-embed call needed either way.
+    fake_store.semantic_search.assert_awaited_once()
+    # Text-search path: received the DECOMPOSED query, not the original.
+    assert fake_store.text_search.await_args.kwargs["query"] == "rewritten query"
+
+
 # --- Task C4: firm + global merged into ONE ranked pool -----------------------
 
 
