@@ -310,6 +310,70 @@ def apply_jurisdiction_boost(candidates: list[dict], jurisdiction_hint: str | No
     return sorted(candidates, key=lambda c: c.get("score", 0.0), reverse=True)
 
 
+_LEAF_TITLE_RE = re.compile(r"\(([^()]+)\)\s*$")
+_TITLE_BOOST_STOPWORDS = {
+    "a", "an", "the", "of", "for", "and", "or", "to", "in", "on", "is", "are",
+    "what", "how", "does", "do", "when", "can", "this", "that", "with", "by",
+    "be", "was", "were", "as", "at", "from", "it", "its",
+}
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {
+        w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if w not in _TITLE_BOOST_STOPWORDS and len(w) > 2
+    }
+
+
+def _leaf_title(heading_path: str | None) -> str | None:
+    """The parenthetical description of a heading_path's LAST breadcrumb
+    segment, e.g. "...> Section 292-105 (CGT cap amount)" -> "CGT cap amount".
+    """
+    if not heading_path:
+        return None
+    last_segment = heading_path.split(">")[-1]
+    m = _LEAF_TITLE_RE.search(last_segment.strip())
+    return m.group(1) if m else None
+
+
+def apply_section_title_boost(candidates: list[dict], question: str) -> list[dict]:
+    """SOFT BOOST candidates whose own section/heading title shares content
+    words with the question (RAG-quality audit precision follow-up #2).
+
+    Root cause: retrieval repeatedly landed in the right Division but the
+    WRONG sibling Section (e.g. ITAA 1997 Subdivision 292-C "Excess non-
+    concessional contributions tax" instead of 292-B's concessional cap, for
+    a question about the CONCESSIONAL contributions cap) - RRF's score is a
+    fusion of whole-chunk relevance and doesn't specifically weigh whether
+    the section's OWN title matches the question's specific terms. This is
+    a cheap, deterministic, no-LLM/no-API complement to the Cohere
+    cross-encoder rerank (RERANK_MODE="cohere") - useful even when that mode
+    is off, since it runs at the RRF-merge stage before any rerank.
+
+    Non-legislation candidates (no heading_path/section title, e.g. rulings)
+    are simply never boosted - never penalised either, since the boost only
+    ever multiplies a matching candidate's score upward.
+    """
+    if settings.SECTION_TITLE_BOOST_WEIGHT <= 0:
+        return candidates
+    q_tokens = _content_tokens(question)
+    if not q_tokens:
+        return candidates
+    for cand in candidates:
+        title = _leaf_title(cand.get("heading_path"))
+        if not title:
+            continue
+        title_tokens = _content_tokens(title)
+        if not title_tokens:
+            continue
+        overlap = len(q_tokens & title_tokens) / len(title_tokens)
+        if overlap > 0:
+            cand["score"] = cand.get("score", 0.0) * (
+                1.0 + settings.SECTION_TITLE_BOOST_WEIGHT * overlap
+            )
+    return sorted(candidates, key=lambda c: c.get("score", 0.0), reverse=True)
+
+
 def cap_per_source_url(candidates: list[dict], max_per_url: int) -> list[dict]:
     """Cap how many candidates from the SAME source_url can occupy the pool,
     preserving overall rank order otherwise.

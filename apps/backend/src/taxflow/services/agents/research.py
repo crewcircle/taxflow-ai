@@ -7,6 +7,7 @@ from taxflow.config import settings
 from taxflow.services.prompt_cache import cacheable_system
 from taxflow.services.knowledge.retrieval import (
     apply_jurisdiction_boost,
+    apply_section_title_boost,
     apply_source_type_boost,
     cap_per_source_url,
     generate_candidates,
@@ -589,6 +590,7 @@ class ResearchAgent:
             global_candidates = apply_source_type_boost(global_candidates, source_type_hint)
         jurisdiction_hint = derive_jurisdiction_hint(question)
         global_candidates = apply_jurisdiction_boost(global_candidates, jurisdiction_hint)
+        global_candidates = apply_section_title_boost(global_candidates, question)
         # Cap BEFORE the pool-size truncation below, so one heavily-chunked
         # document can't monopolize the whole truncation window and starve out
         # a different, more precisely on-point source.

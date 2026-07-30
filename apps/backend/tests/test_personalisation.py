@@ -204,6 +204,62 @@ def test_cap_per_source_url_noop_when_disabled():
     assert retrieval.cap_per_source_url(candidates, max_per_url=0) == candidates
 
 
+# --- section-title soft boost (RAG-quality audit precision follow-up #2) ------
+# Root cause: retrieval repeatedly landed in the right Division but the WRONG
+# sibling Section (e.g. ITAA 1997 Subdivision 292-C "Excess non-concessional
+# contributions tax" instead of 292-B's concessional cap, for a question about
+# the CONCESSIONAL cap).
+
+
+def test_leaf_title_extracts_last_parenthetical():
+    heading = (
+        "Chapter 3 > Part 3-30 (Superannuation) > Division 292 "
+        "(Excess non-concessional contributions) > Section 292-105 (CGT cap amount)"
+    )
+    assert retrieval._leaf_title(heading) == "CGT cap amount"
+
+
+def test_leaf_title_none_when_no_heading_path():
+    assert retrieval._leaf_title(None) is None
+    assert retrieval._leaf_title("") is None
+
+
+def test_section_title_boost_favours_matching_sibling():
+    question = "What is the SMSF concessional contributions cap?"
+    candidates = [
+        {
+            "id": "292-C",
+            "score": 0.50,
+            "heading_path": "... > Subdivision 292-C (Excess non-concessional contributions tax)",
+        },
+        {
+            "id": "292-B",
+            "score": 0.48,
+            "heading_path": "... > Subdivision 292-B (Concessional contributions cap)",
+        },
+    ]
+    out = retrieval.apply_section_title_boost(candidates, question)
+    # 292-B starts slightly behind on raw score but its title shares far more
+    # content words with the question ("concessional", "contributions", "cap")
+    # than 292-C's ("non-concessional", "contributions", "tax") - it must end
+    # up ranked first.
+    assert out[0]["id"] == "292-B"
+
+
+def test_section_title_boost_noop_for_non_legislation_candidates():
+    """A ruling with no heading_path is never boosted - never penalised
+    either, since the boost only ever multiplies a matching candidate up."""
+    candidates = [{"id": "a", "score": 0.5, "heading_path": None}]
+    out = retrieval.apply_section_title_boost(candidates, "some question")
+    assert out[0]["score"] == 0.5
+
+
+def test_section_title_boost_noop_when_weight_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "SECTION_TITLE_BOOST_WEIGHT", 0)
+    candidates = [{"id": "a", "score": 0.5, "heading_path": "... > Section 1 (Concessional cap)"}]
+    assert retrieval.apply_section_title_boost(candidates, "concessional cap") == candidates
+
+
 @pytest.mark.asyncio
 async def test_retrieve_context_soft_mode_does_not_pass_sql_filter():
     """In soft mode (default), the SQL layer receives source_types=None (unfiltered)."""

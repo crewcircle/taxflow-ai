@@ -211,6 +211,15 @@ class Settings(BaseSettings):
     # PRE-rerank global pool slice (0 disables the cap).
     RETRIEVAL_MAX_PER_SOURCE_URL: int = 4
 
+    # --- section-title soft boost (RAG-quality audit precision follow-up #2) --
+    # Boosts a candidate whose OWN section/heading title shares content words
+    # with the question, by (1 + SECTION_TITLE_BOOST_WEIGHT * overlap_ratio).
+    # Targets the "right Division, wrong sibling Section" pattern (e.g. ITAA
+    # 1997 Subdivision 292-C retrieved instead of 292-B for a concessional-
+    # cap question) at the cheap, deterministic RRF-merge stage, complementing
+    # RERANK_MODE="cohere"'s cross-encoder (works even when that's off).
+    SECTION_TITLE_BOOST_WEIGHT: float = 0.3
+
     # --- Session memory (Task D3) ---------------------------------------------
     # When a request carries an explicit session_id, the last N prior queries for
     # that (client_id, session_id) are loaded (question + a truncated answer
