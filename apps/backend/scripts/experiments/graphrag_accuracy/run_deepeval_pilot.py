@@ -37,15 +37,36 @@ import os
 
 from common import RESULTS_DIR, load_questions, load_results
 from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric
+from deepeval.metrics.utils import trimAndLoadJson
 from deepeval.models.base_model import DeepEvalBaseLLM
 from deepeval.test_case import LLMTestCase
 
 JUDGE_MODEL = "openrouter/deepseek/deepseek-v4-flash"
+# Two observed failure modes from the first pilot run, both from the SAME
+# root cause: DeepEval's own JSON-schema prompts don't guarantee the cheap
+# judge actually follows the schema.
+#   1. "invalid JSON" - the response doesn't parse as JSON at all (even
+#      after DeepEval's own tolerant trimAndLoadJson).
+#   2. "missing schema key" (e.g. KeyError('verdicts')) - it parses fine but
+#      is the WRONG shape (model answered with different keys than asked).
+# A schema-validating retry catches both in one place, since #2 only shows
+# up once something tries to read the expected key - validating against the
+# real pydantic schema up front catches it immediately instead.
+JUDGE_MAX_ATTEMPTS = 3
 
 
 class OpenRouterJudge(DeepEvalBaseLLM):
     """Minimal DeepEvalBaseLLM wrapping litellm.acompletion so the judge
-    model is OpenRouter-routed rather than DeepEval's OpenAI default."""
+    model is OpenRouter-routed rather than DeepEval's OpenAI default.
+
+    Overrides a_generate_with_schema (not just a_generate) because DeepEval's
+    default a_generate_with_schema just calls a_generate() and returns the
+    raw string with NO validation - the base class's fallback path only
+    parses/validates the result one level up, in metrics/utils.py, which is
+    exactly where the "invalid JSON" / "missing schema key" failures were
+    raised from. Validating here, with a retry loop, catches both before
+    they ever reach that point.
+    """
 
     def load_model(self):
         import litellm
@@ -58,11 +79,7 @@ class OpenRouterJudge(DeepEvalBaseLLM):
     def generate(self, prompt: str, schema=None) -> str:
         return asyncio.run(self.a_generate(prompt, schema))
 
-    async def a_generate(self, prompt: str, schema=None) -> str:
-        # DeepEval's own prompts ask for a JSON verdict but don't enforce it
-        # on the model side - response_format nudges DeepSeek (via OpenRouter's
-        # OpenAI-compatible endpoint) to actually return valid JSON instead of
-        # prose-wrapped or fenced JSON that DeepEval's strict parser rejects.
+    async def _complete(self, prompt: str, temperature: float) -> str:
         resp = await self.model.acompletion(
             model=JUDGE_MODEL,
             messages=[{"role": "user", "content": prompt}],
@@ -73,10 +90,38 @@ class OpenRouterJudge(DeepEvalBaseLLM):
             # pipeline's answers run 1500-2500+ chars) can extract 15-20+
             # claims, truncating mid-string at a smaller budget.
             max_tokens=4000,
-            temperature=0,
+            temperature=temperature,
             response_format={"type": "json_object"},
         )
         return resp.choices[0].message.content or ""
+
+    async def a_generate(self, prompt: str, schema=None) -> str:
+        return await self._complete(prompt, temperature=0)
+
+    async def a_generate_with_schema(self, prompt: str, schema=None):
+        last_error: Exception | None = None
+        for attempt in range(JUDGE_MAX_ATTEMPTS):
+            # Deliberately temperature=0 on EVERY attempt, not escalating.
+            # Tried bumping temperature on retry first; it made things WORSE -
+            # a case that failed 3x at temp=0.4 succeeded cleanly on the very
+            # next call at temp=0. This cheap judge model's JSON-schema
+            # compliance is apparently *more* reliable at temp=0, and
+            # OpenRouter's own multi-provider routing already introduces
+            # enough call-to-call variance for a retry to plausibly land on a
+            # cleaner completion without needing to add more randomness.
+            text = await self._complete(prompt, temperature=0.0)
+            try:
+                data = trimAndLoadJson(text, None)
+                if schema is not None:
+                    return schema.model_validate(data)
+                return data
+            except Exception as e:  # noqa: BLE001 - any parse/validation failure retries
+                last_error = e
+                print(f"    [judge retry {attempt + 1}/{JUDGE_MAX_ATTEMPTS}] {e!r}")
+        raise last_error
+
+    def generate_with_schema(self, prompt: str, schema=None):
+        return asyncio.run(self.a_generate_with_schema(prompt, schema))
 
 
 def _test_case(question: dict, result: dict) -> LLMTestCase:
