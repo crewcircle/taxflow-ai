@@ -86,6 +86,15 @@ class Settings(BaseSettings):
     #   - "rrf_only" : widen pools, merge by RRF score, take top_k. No LLM. (default)
     #   - "llm"      : ONE batched Haiku relevance-scoring call over the merged
     #                  candidates (RERANK_DEPTH of them), re-order by score.
+    #   - "cohere": one Cohere Rerank call via OpenRouter's hosted /rerank
+    #                endpoint (a cross-encoder, not an LLM). Added to target
+    #                the "right Division, wrong Section" precision gap found
+    #                in the RAG-quality audit - cross-encoders do fine-
+    #                grained joint query/passage scoring that out-discriminates
+    #                RRF and the LLM reranker between near-identical sibling
+    #                provisions. Hosted specifically so this backend never
+    #                takes on a local ML dependency (torch/sentence-transformers)
+    #                on the 2 vCPU / 4GB droplet - see RERANK_OPENROUTER_MODEL.
     # "off"/"rrf_only" MUST NOT call any LLM. We deliberately avoid a local
     # cross-encoder on the 2 vCPU / 4GB droplet. Deploy-time flag.
     RERANK_MODE: str = "rrf_only"
@@ -95,8 +104,20 @@ class Settings(BaseSettings):
     # How many merged candidates the LLM re-ranker scores in its single batched
     # call (only used when RERANK_MODE == "llm"). Kept small to bound cost/latency.
     RERANK_DEPTH: int = 20
+    # OpenRouter-hosted Cohere Rerank (only used when RERANK_MODE == "cohere").
+    # Reuses the same OPENROUTER_API_KEY doppler secret already set up for the
+    # DeepSeek routing experiments - one key, two unrelated uses (chat
+    # completions vs. the dedicated /rerank endpoint).
+    OPENROUTER_API_KEY: str = ""
+    RERANK_OPENROUTER_MODEL: str = "cohere/rerank-4-fast"
     # Lightweight query normalisation (section-number / synonym) before search.
     QUERY_NORMALISE_ENABLED: bool = True
+    # LLM query-rewrite before the full-text search leg only (RAG-quality
+    # audit precision follow-up #3) - disambiguates a question relative to
+    # near-identical sibling provisions (e.g. "concessional" vs
+    # "non-concessional" contributions). One extra cheap LLM call per query
+    # when on; off by default since it adds latency/cost to every request.
+    QUERY_DECOMPOSITION_ENABLED: bool = False
 
     # --- Firm + global merged ranking (Task C4) -------------------------------
     # research._retrieve_context merges global + firm candidates into ONE pool and
@@ -195,6 +216,15 @@ class Settings(BaseSettings):
     # pool. Caps how many candidates from the SAME source_url can occupy the
     # PRE-rerank global pool slice (0 disables the cap).
     RETRIEVAL_MAX_PER_SOURCE_URL: int = 4
+
+    # --- section-title soft boost (RAG-quality audit precision follow-up #2) --
+    # Boosts a candidate whose OWN section/heading title shares content words
+    # with the question, by (1 + SECTION_TITLE_BOOST_WEIGHT * overlap_ratio).
+    # Targets the "right Division, wrong sibling Section" pattern (e.g. ITAA
+    # 1997 Subdivision 292-C retrieved instead of 292-B for a concessional-
+    # cap question) at the cheap, deterministic RRF-merge stage, complementing
+    # RERANK_MODE="cohere"'s cross-encoder (works even when that's off).
+    SECTION_TITLE_BOOST_WEIGHT: float = 0.3
 
     # --- Session memory (Task D3) ---------------------------------------------
     # When a request carries an explicit session_id, the last N prior queries for

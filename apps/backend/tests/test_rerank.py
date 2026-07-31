@@ -76,6 +76,96 @@ async def test_llm_rerank_falls_back_to_input_order_on_error(monkeypatch):
     assert out == cands
 
 
+# --- RERANK_MODE == "cohere" (RAG-quality audit precision follow-up) ---------
+
+
+def _fake_httpx_client(json_body=None, status_error=None):
+    """A minimal fake httpx.AsyncClient context manager returning a canned
+    /rerank response, so the real network is never touched in tests."""
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            if status_error:
+                raise status_error
+
+        def json(self):
+            return json_body
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            self.post = AsyncMock(return_value=_FakeResponse())
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    return _FakeClient
+
+
+@pytest.mark.asyncio
+async def test_rerank_cohere_mode_calls_cohere_rerank(monkeypatch):
+    monkeypatch.setattr(settings, "RERANK_MODE", "cohere")
+    with patch.object(retrieval, "_cohere_rerank", new=AsyncMock(return_value=_cands(3))) as mock_cohere:
+        await retrieval.rerank_candidates("q", _cands(3))
+    mock_cohere.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cohere_rerank_reorders_by_relevance_score(monkeypatch):
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setattr(settings, "RERANK_DEPTH", 3)
+    import httpx
+
+    fake_client_cls = _fake_httpx_client(
+        json_body={
+            "results": [
+                {"index": 0, "relevance_score": 0.1},
+                {"index": 1, "relevance_score": 0.9},
+                {"index": 2, "relevance_score": 0.5},
+            ]
+        }
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", fake_client_cls)
+
+    out = await retrieval._cohere_rerank("q", _cands(3))
+    assert [c["id"] for c in out[:3]] == ["1", "2", "0"]
+
+
+@pytest.mark.asyncio
+async def test_cohere_rerank_noop_without_api_key(monkeypatch):
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "")
+    cands = _cands(3)
+    out = await retrieval._cohere_rerank("q", cands)
+    assert out == cands
+
+
+@pytest.mark.asyncio
+async def test_cohere_rerank_falls_back_to_input_order_on_error(monkeypatch):
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-test")
+    import httpx
+
+    class _FailingClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **kw):
+            raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FailingClient)
+
+    cands = _cands(3)
+    out = await retrieval._cohere_rerank("q", cands)
+    assert out == cands
+
+
 def test_extract_scores_accepts_wrapped_and_bare():
     """The fallback prompt asks for {"scores": {...}}; _extract_scores must parse
     that AND the bare {index: score} form to the same mapping."""
@@ -94,6 +184,77 @@ def test_normalise_query_section_and_synonym(monkeypatch):
 def test_normalise_query_disabled_is_identity(monkeypatch):
     monkeypatch.setattr(settings, "QUERY_NORMALISE_ENABLED", False)
     assert retrieval.normalise_query("s8-1 CGT") == "s8-1 CGT"
+
+
+# --- query decomposition (RAG-quality audit precision follow-up #3) -----------
+
+
+@pytest.mark.asyncio
+async def test_decompose_query_disabled_is_identity(monkeypatch):
+    monkeypatch.setattr(settings, "QUERY_DECOMPOSITION_ENABLED", False)
+    fake_llm = MagicMock()
+    fake_llm.generate = AsyncMock()
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+    out = await retrieval.decompose_query("What is the concessional cap?")
+    assert out == "What is the concessional cap?"
+    fake_llm.generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_decompose_query_enabled_returns_rewrite(monkeypatch):
+    monkeypatch.setattr(settings, "QUERY_DECOMPOSITION_ENABLED", True)
+    fake_llm = MagicMock()
+    fake_llm.generate = AsyncMock(
+        return_value=MagicMock(text="What is the CONCESSIONAL (not non-concessional) contributions cap?")
+    )
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+    out = await retrieval.decompose_query("What is the concessional cap?")
+    assert "non-concessional" in out
+    fake_llm.generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_decompose_query_falls_back_to_original_on_error(monkeypatch):
+    monkeypatch.setattr(settings, "QUERY_DECOMPOSITION_ENABLED", True)
+    fake_llm = MagicMock()
+    fake_llm.generate = AsyncMock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+    out = await retrieval.decompose_query("original question")
+    assert out == "original question"
+
+
+@pytest.mark.asyncio
+async def test_decompose_query_falls_back_on_empty_response(monkeypatch):
+    monkeypatch.setattr(settings, "QUERY_DECOMPOSITION_ENABLED", True)
+    fake_llm = MagicMock()
+    fake_llm.generate = AsyncMock(return_value=MagicMock(text=""))
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+    out = await retrieval.decompose_query("original question")
+    assert out == "original question"
+
+
+@pytest.mark.asyncio
+async def test_generate_candidates_applies_decomposition_to_text_search_only(monkeypatch):
+    """Decomposition must affect the full-text search query, but NOT the
+    embedding - the embedding is shared/reused across several call sites
+    upstream and is deliberately left untouched."""
+    monkeypatch.setattr(settings, "QUERY_DECOMPOSITION_ENABLED", True)
+    monkeypatch.setattr(settings, "QUERY_NORMALISE_ENABLED", False)
+
+    fake_llm = MagicMock()
+    fake_llm.generate = AsyncMock(return_value=MagicMock(text="rewritten query"))
+    monkeypatch.setattr("taxflow.providers.get_llm", lambda: fake_llm)
+
+    fake_store = MagicMock()
+    fake_store.semantic_search = AsyncMock(return_value=[])
+    fake_store.text_search = AsyncMock(return_value=[])
+    with patch.object(retrieval.providers, "get_vector_store", return_value=fake_store):
+        await retrieval.generate_candidates("original question", embedding=[0.1] * 1536)
+
+    # Embedding path: passed in unchanged, no re-embed call needed either way.
+    fake_store.semantic_search.assert_awaited_once()
+    # Text-search path: received the DECOMPOSED query, not the original.
+    assert fake_store.text_search.await_args.kwargs["query"] == "rewritten query"
 
 
 # --- Task C4: firm + global merged into ONE ranked pool -----------------------

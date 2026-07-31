@@ -59,6 +59,35 @@ def test_short_section_token_not_loosely_matched():
     assert s["cit_ratio"] == 0.0
 
 
+def test_section_style_topic_credited_for_natural_phrasing():
+    """Regression guard: q17 asked about "s.100A" as an expected_topic (not
+    just a citation). The answer correctly discussed "section 100A" at
+    length, but the literal "s.100a" string never matched - the same
+    natural-phrasing brittleness as expected_citations, just applied to a
+    topic string that happens to be a section reference."""
+    result = {
+        "answer": "A trustee can find that section 100A applies where a reimbursement agreement exists.",
+        "citations": [],
+    }
+    s = score_answer(_question(["s.100A"], []), result)
+    assert s["topic_ratio"] == 1.0
+
+
+def test_section_style_topic_wrong_number_not_credited():
+    result = {"answer": "Section 99A applies to trustee assessments.", "citations": []}
+    s = score_answer(_question(["s.100A"], []), result)
+    assert s["topic_ratio"] == 0.0
+
+
+def test_plain_phrase_topic_still_requires_literal_match():
+    """A non-section-style topic (e.g. "family trust") gets no loosening -
+    this is a genuine remaining gap only a semantic/LLM-judged scorer can
+    close, not something a regex can safely generalize further."""
+    result = {"answer": "The trustee holds income for the beneficiaries of the trust.", "citations": []}
+    s = score_answer(_question(["family trust"], []), result)
+    assert s["topic_ratio"] == 0.0
+
+
 def test_natural_phrasing_of_correct_division_now_scores_credit():
     """Same brittleness as the section-number case but for "Act Div N" style
     expected citations - found via q14 of the RAG-quality experiment:

@@ -51,8 +51,30 @@ def score_answer(question: dict, result: dict) -> dict:
     # could never see.
     sections = [(c.get("section") or "").lower() for c in result.get("citations", [])]
 
+    def _section_token(text: str) -> str | None:
+        """Extract the bare section/division number from a "s.N"/"Div N"
+        style string (e.g. "s.100A" -> "100a"), or None if it has neither."""
+        for pattern in (_SECTION_TOKEN_RE, _DIVISION_TOKEN_RE):
+            m = pattern.search(text)
+            if m and len(m.group(1)) >= 2:
+                return m.group(1)
+        return None
+
     expected_topics = [t.lower() for t in question.get("expected_topics", [])]
-    topics_covered = sum(1 for t in expected_topics if t in answer)
+
+    def _topic_covered(t: str) -> bool:
+        if t in answer:
+            return True
+        # A "topic" that's really a section/division reference (e.g.
+        # "s.100A") has the exact same natural-phrasing problem as an
+        # expected_citation: the model writes "section 100A", not "s.100A".
+        # Found via q17 - the answer is precisely on point (cites s.100A
+        # correctly, cit_ratio=1.0) but scored low purely because this
+        # literal topic string was never going to match natural prose.
+        token = _section_token(t)
+        return bool(token and token in answer)
+
+    topics_covered = sum(1 for t in expected_topics if _topic_covered(t))
     topic_ratio = topics_covered / max(len(expected_topics), 1)
 
     expected_cits = [c.lower() for c in question.get("expected_citations", [])]
@@ -67,16 +89,13 @@ def score_answer(question: dict, result: dict) -> dict:
         # isn't scored as a miss when the actual citation is right. Checked
         # against the answer text, the citation label, AND the section
         # breadcrumb (see `sections` above).
-        for pattern in (_SECTION_TOKEN_RE, _DIVISION_TOKEN_RE):
-            m = pattern.search(ec)
-            if m:
-                token = m.group(1)
-                if len(token) >= 2 and (
-                    token in answer
-                    or any(token in c for c in citations)
-                    or any(token in s for s in sections)
-                ):
-                    return True
+        token = _section_token(ec)
+        if token and (
+            token in answer
+            or any(token in c for c in citations)
+            or any(token in s for s in sections)
+        ):
+            return True
         return False
 
     cits_found = sum(1 for ec in expected_cits if _cited(ec))

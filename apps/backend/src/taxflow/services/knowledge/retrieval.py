@@ -36,6 +36,53 @@ def normalise_query(query: str) -> str:
     return normalised
 
 
+_DECOMPOSE_SYSTEM_PROMPT = """You are a search-query rewriter for an Australian tax law retrieval system.
+
+Rewrite the question into a more specific, disambiguated search query that will match \
+the RIGHT provision among near-identical SIBLING provisions - e.g. distinguish \
+"concessional" from "non-concessional" contributions, or a specific numbered test from \
+a general one, rather than leaving a term that could match either. Keep every specific \
+term already in the question. Do NOT answer the question. Do NOT add prose, quotes, or \
+explanation - return ONLY the rewritten search query text, 1-2 sentences."""
+
+
+async def decompose_query(question: str) -> str:
+    """Rewrite the question into a more specific search query via ONE cheap
+    LLM call (RAG-quality audit precision follow-up #3), gated by
+    QUERY_DECOMPOSITION_ENABLED (default off).
+
+    Root cause this targets: retrieval repeatedly landed in the right
+    Division but the wrong SIBLING Section (e.g. ITAA 1997 Subdivision 292-C
+    "Excess non-concessional contributions tax" instead of 292-B's
+    concessional cap) - the raw question's wording is sometimes genuinely
+    ambiguous relative to how similarly-phrased sibling provisions are
+    titled, closest to the LegalMALR pattern (multi-agent query
+    understanding before statute retrieval). Scoped deliberately narrow:
+    only rewrites the FULL-TEXT search leg (composed with normalise_query in
+    generate_candidates), not the shared question embedding used across
+    semantic/firm/historical search - full-text search is where an exact
+    lexical distinction like "concessional" vs "non-concessional" actually
+    helps, and this avoids re-plumbing the embedding that's computed once
+    upstream and reused across several call sites. On any failure, returns
+    the ORIGINAL question unchanged so retrieval never breaks over the
+    rewrite - same never-fail contract as the LLM/Cohere rerankers.
+    """
+    if not settings.QUERY_DECOMPOSITION_ENABLED:
+        return question
+    try:
+        response = await providers.get_llm().generate(
+            messages=[{"role": "user", "content": question}],
+            system=_DECOMPOSE_SYSTEM_PROMPT,
+            model=providers.resolve_model("rerank"),
+            max_tokens=150,
+            temperature=0,
+        )
+        rewritten = (response.text or "").strip()
+        return rewritten or question
+    except Exception:  # noqa: BLE001 - never fail retrieval over the rewrite
+        return question
+
+
 # --- Recency tie-breaker (from main) ------------------------------------------
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
 
@@ -213,6 +260,58 @@ def _extract_scores(text: str, depth: int) -> dict[int, float]:
     return out
 
 
+async def _cohere_rerank(query: str, candidates: list[dict], pool_scale: int = 1) -> list[dict]:
+    """Re-order candidates with ONE Cohere Rerank call via OpenRouter's hosted
+    /rerank endpoint (Task: RAG-quality audit precision follow-up).
+
+    Only invoked when RERANK_MODE == "cohere". A cross-encoder does fine-
+    grained joint query/passage scoring, which is specifically better than
+    RRF (a bag-of-words-ish fusion score) or the LLM reranker's coarse 0-1
+    judgment at discriminating between structurally-similar sibling
+    provisions (e.g. ITAA 1997 Subdivision 292-B vs 292-C) - the exact
+    "right Division, wrong Section" failure pattern the audit found. Hosted
+    via OpenRouter rather than a local cross-encoder model, since this
+    backend deliberately carries no ML/torch dependency (see RERANK_MODE's
+    docstring - 2 vCPU / 4GB droplet). On any failure we fall back to the
+    input order so retrieval never breaks over the re-rank, same contract
+    as ``_llm_rerank``.
+    """
+    import httpx
+
+    depth = min(len(candidates), settings.RERANK_DEPTH * pool_scale)
+    if depth == 0 or not settings.OPENROUTER_API_KEY:
+        return candidates
+    batch = candidates[:depth]
+    documents = [
+        f"{c['citation']} (jurisdiction: {c.get('jurisdiction') or 'federal'}): {c['content']}"
+        for c in batch
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://openrouter.ai/api/v1/rerank",
+                headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                json={
+                    "model": settings.RERANK_OPENROUTER_MODEL,
+                    "query": query,
+                    "documents": documents,
+                },
+            )
+            resp.raise_for_status()
+            results = resp.json()["results"]
+    except Exception:  # noqa: BLE001 - never fail retrieval over the re-rank
+        return candidates
+
+    for r in results:
+        idx = r.get("index")
+        if idx is not None and 0 <= idx < len(batch):
+            batch[idx]["rerank_score"] = r.get("relevance_score", 0.0)
+    reranked = sorted(batch, key=lambda c: c.get("rerank_score", 0.0), reverse=True)
+    # Candidates beyond the re-rank depth keep their RRF order, appended after.
+    return reranked + candidates[depth:]
+
+
 def apply_source_type_boost(candidates: list[dict], boost_types: list[str] | None) -> list[dict]:
     """SOFT BOOST matching source_types (Task D2). Never excludes anything.
 
@@ -258,6 +357,70 @@ def apply_jurisdiction_boost(candidates: list[dict], jurisdiction_hint: str | No
     return sorted(candidates, key=lambda c: c.get("score", 0.0), reverse=True)
 
 
+_LEAF_TITLE_RE = re.compile(r"\(([^()]+)\)\s*$")
+_TITLE_BOOST_STOPWORDS = {
+    "a", "an", "the", "of", "for", "and", "or", "to", "in", "on", "is", "are",
+    "what", "how", "does", "do", "when", "can", "this", "that", "with", "by",
+    "be", "was", "were", "as", "at", "from", "it", "its",
+}
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {
+        w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if w not in _TITLE_BOOST_STOPWORDS and len(w) > 2
+    }
+
+
+def _leaf_title(heading_path: str | None) -> str | None:
+    """The parenthetical description of a heading_path's LAST breadcrumb
+    segment, e.g. "...> Section 292-105 (CGT cap amount)" -> "CGT cap amount".
+    """
+    if not heading_path:
+        return None
+    last_segment = heading_path.split(">")[-1]
+    m = _LEAF_TITLE_RE.search(last_segment.strip())
+    return m.group(1) if m else None
+
+
+def apply_section_title_boost(candidates: list[dict], question: str) -> list[dict]:
+    """SOFT BOOST candidates whose own section/heading title shares content
+    words with the question (RAG-quality audit precision follow-up #2).
+
+    Root cause: retrieval repeatedly landed in the right Division but the
+    WRONG sibling Section (e.g. ITAA 1997 Subdivision 292-C "Excess non-
+    concessional contributions tax" instead of 292-B's concessional cap, for
+    a question about the CONCESSIONAL contributions cap) - RRF's score is a
+    fusion of whole-chunk relevance and doesn't specifically weigh whether
+    the section's OWN title matches the question's specific terms. This is
+    a cheap, deterministic, no-LLM/no-API complement to the Cohere
+    cross-encoder rerank (RERANK_MODE="cohere") - useful even when that mode
+    is off, since it runs at the RRF-merge stage before any rerank.
+
+    Non-legislation candidates (no heading_path/section title, e.g. rulings)
+    are simply never boosted - never penalised either, since the boost only
+    ever multiplies a matching candidate's score upward.
+    """
+    if settings.SECTION_TITLE_BOOST_WEIGHT <= 0:
+        return candidates
+    q_tokens = _content_tokens(question)
+    if not q_tokens:
+        return candidates
+    for cand in candidates:
+        title = _leaf_title(cand.get("heading_path"))
+        if not title:
+            continue
+        title_tokens = _content_tokens(title)
+        if not title_tokens:
+            continue
+        overlap = len(q_tokens & title_tokens) / len(title_tokens)
+        if overlap > 0:
+            cand["score"] = cand.get("score", 0.0) * (
+                1.0 + settings.SECTION_TITLE_BOOST_WEIGHT * overlap
+            )
+    return sorted(candidates, key=lambda c: c.get("score", 0.0), reverse=True)
+
+
 def cap_per_source_url(candidates: list[dict], max_per_url: int) -> list[dict]:
     """Cap how many candidates from the SAME source_url can occupy the pool,
     preserving overall rank order otherwise.
@@ -289,7 +452,7 @@ async def generate_candidates(
     embedding: list[float] | None = None,
     pool_scale: int = 1,
 ) -> list[dict]:
-    """RRF candidate generation over a widened pool (Task C1). NEVER calls an LLM.
+    """RRF candidate generation over a widened pool (Task C1).
 
     Returns the merged RRF candidates (untruncated, unranked beyond RRF) so a
     caller can merge in other candidates (e.g. firm chunks, Task C4) and re-rank
@@ -300,11 +463,17 @@ async def generate_candidates(
     widened pass passes ``pool_scale=2`` to look broader, WITHOUT mutating the
     global ``RERANK_CANDIDATE_POOL`` setting (so concurrent requests are never
     affected).
+
+    Calls an LLM ONLY when QUERY_DECOMPOSITION_ENABLED is on (default off) -
+    see ``decompose_query``'s docstring. That rewrite affects the full-text
+    search leg only; the embedding (passed in or computed here from the
+    ORIGINAL query) is untouched, since it's shared/reused across several
+    call sites upstream.
     """
     if embedding is None:
         embedding = await embed(query)
 
-    text_query = normalise_query(query)
+    text_query = normalise_query(await decompose_query(query))
     pool = settings.RERANK_CANDIDATE_POOL * pool_scale
     store = providers.get_vector_store()
     semantic, textual = await asyncio.gather(
@@ -356,11 +525,15 @@ async def rerank_candidates(
     """Apply RERANK_MODE to an already-merged candidate list (Task C1).
 
     "off"/"rrf_only" return the candidates unchanged (NO LLM call). "llm" runs a
-    single batched Haiku relevance-scoring call and re-orders by score.
-    ``pool_scale`` (Task C3) widens the re-rank depth for this one call only.
+    single batched Haiku relevance-scoring call and re-orders by score. "cohere"
+    runs one Cohere Rerank API call (a cross-encoder, not an LLM) - see
+    ``_cohere_rerank`` for why this exists. ``pool_scale`` (Task C3) widens the
+    re-rank depth for this one call only.
     """
     if settings.RERANK_MODE == "llm":
         return await _llm_rerank(query, candidates, pool_scale=pool_scale)
+    if settings.RERANK_MODE == "cohere":
+        return await _cohere_rerank(query, candidates, pool_scale=pool_scale)
     return candidates
 
 
