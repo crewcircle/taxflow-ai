@@ -34,6 +34,9 @@ DEEPSEEK_MODEL = "openrouter/deepseek/deepseek-v4-flash"
 # Fixed placeholder UUID (real column type) rather than a bare string, so the
 # firm-knowledge search's client_id lookup doesn't fail on every question.
 EXPERIMENT_CLIENT_ID = "00000000-0000-0000-0000-000000000000"
+# Distinct results filename per RERANK_MODE run, so an A/B comparison run
+# never silently overwrites the prior baseline's results.
+RESULTS_NAME = "baseline_deepseek_graph_cohere_rerank" if os.environ.get("USE_COHERE_RERANK") else "baseline_deepseek_graph"
 
 
 async def main() -> None:
@@ -51,6 +54,15 @@ async def main() -> None:
     settings.LLM_API_KEY = os.environ["OPENROUTER_API_KEY"]
     settings.LLM_API_BASE = "https://openrouter.ai/api/v1"
     print(f"Overrode MODEL_TIER_MAP -> {DEEPSEEK_MODEL}, LLM_API_KEY/LLM_API_BASE -> OpenRouter (this process only)")
+    # RERANK_MODE="cohere" (RAG-quality audit precision follow-up #1), opt-in
+    # via USE_COHERE_RERANK=1 so this script stays usable for both an A/B
+    # baseline run and a reranked run. Reads settings.OPENROUTER_API_KEY
+    # directly - a separate field from the LLM_API_KEY override above (that
+    # one's for chat completions; the reranker hits a different endpoint).
+    if os.environ.get("USE_COHERE_RERANK"):
+        settings.RERANK_MODE = "cohere"
+        settings.OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
+        print("RERANK_MODE -> cohere")
 
     from taxflow.services.agents.graph import research_graph
 
@@ -82,7 +94,7 @@ async def main() -> None:
             elapsed_ms = (time.monotonic() - start) * 1000
             print(f"  -> FAILED after {elapsed_ms:.0f}ms: {e!r}")
             results.append({"id": q["id"], "answer": "", "citations": [], "wall_ms": round(elapsed_ms), "error": repr(e)})
-            save_results("baseline_deepseek_graph", results)
+            save_results(RESULTS_NAME, results)
             continue
         elapsed_ms = (time.monotonic() - start) * 1000
         verification = final.get("verification")
@@ -103,7 +115,7 @@ async def main() -> None:
             f"  -> {elapsed_ms:.0f}ms, {len(final.get('citations', []))} citations, "
             f"verify_ran={verification is not None}, status={(verification or {}).get('overall_status')}"
         )
-        save_results("baseline_deepseek_graph", results)
+        save_results(RESULTS_NAME, results)
 
 
 if __name__ == "__main__":
