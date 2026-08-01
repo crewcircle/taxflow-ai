@@ -38,12 +38,17 @@ def normalise_query(query: str) -> str:
 
 _DECOMPOSE_SYSTEM_PROMPT = """You are a search-query rewriter for an Australian tax law retrieval system.
 
-Rewrite the question into a more specific, disambiguated search query that will match \
-the RIGHT provision among near-identical SIBLING provisions - e.g. distinguish \
-"concessional" from "non-concessional" contributions, or a specific numbered test from \
-a general one, rather than leaving a term that could match either. Keep every specific \
-term already in the question. Do NOT answer the question. Do NOT add prose, quotes, or \
-explanation - return ONLY the rewritten search query text, 1-2 sentences."""
+Your default answer is to return the question EXACTLY AS WRITTEN, unchanged, word for word.
+
+Only touch it if the question could plausibly match the WRONG one of two near-identical \
+SIBLING provisions - e.g. "concessional" vs "non-concessional" contributions, or a specific \
+numbered test vs a general one - and even then, APPEND a short clarifying phrase; \
+never delete, shorten, reword, or compress anything already in the question. Do not \
+strip question words ("what", "how", "is"), do not turn it into a bare keyword fragment, \
+and do not drop any part of a multi-part question. If in doubt, change nothing.
+
+Do NOT answer the question. Do NOT add prose, quotes, or explanation - return ONLY the \
+final search query text."""
 
 
 async def decompose_query(question: str) -> str:

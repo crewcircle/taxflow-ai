@@ -22,3 +22,4 @@ apps/backend/scripts/experiments/graphrag_accuracy/cognee_storage/
 apps/backend/scripts/experiments/graphrag_accuracy/results/
 apps/backend/scripts/experiments/graphrag_accuracy/manifest.json
 .deepeval/
+.ua/
