@@ -34,9 +34,14 @@ DEEPSEEK_MODEL = "openrouter/deepseek/deepseek-v4-flash"
 # Fixed placeholder UUID (real column type) rather than a bare string, so the
 # firm-knowledge search's client_id lookup doesn't fail on every question.
 EXPERIMENT_CLIENT_ID = "00000000-0000-0000-0000-000000000000"
-# Distinct results filename per RERANK_MODE run, so an A/B comparison run
-# never silently overwrites the prior baseline's results.
-RESULTS_NAME = "baseline_deepseek_graph_cohere_rerank" if os.environ.get("USE_COHERE_RERANK") else "baseline_deepseek_graph"
+# Distinct results filename per flag combination, so an A/B comparison run
+# never silently overwrites a prior run's results.
+_NAME_PARTS = ["baseline_deepseek_graph"]
+if os.environ.get("USE_COHERE_RERANK"):
+    _NAME_PARTS.append("cohere_rerank")
+if os.environ.get("USE_QUERY_DECOMPOSITION"):
+    _NAME_PARTS.append("query_decomp")
+RESULTS_NAME = "_".join(_NAME_PARTS)
 
 
 async def main() -> None:
@@ -63,6 +68,14 @@ async def main() -> None:
         settings.RERANK_MODE = "cohere"
         settings.OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
         print("RERANK_MODE -> cohere")
+    # QUERY_DECOMPOSITION_ENABLED (RAG-quality audit precision follow-up #3),
+    # opt-in via USE_QUERY_DECOMPOSITION=1. decompose_query() resolves its
+    # model via providers.resolve_model("rerank") - already overridden to
+    # DeepSeek above, so this uses DeepSeek/OpenRouter automatically, not
+    # Anthropic (whose credits are exhausted this session).
+    if os.environ.get("USE_QUERY_DECOMPOSITION"):
+        settings.QUERY_DECOMPOSITION_ENABLED = True
+        print("QUERY_DECOMPOSITION_ENABLED -> True (via DeepSeek/OpenRouter)")
 
     from taxflow.services.agents.graph import research_graph
 
