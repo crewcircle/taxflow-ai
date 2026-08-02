@@ -4,6 +4,7 @@ import { Logo } from "@/components/Logo";
 const FOOTER_LINKS = {
   product: [
     { label: "Features", href: "/features" },
+    { label: "How it works", href: "/how-it-works" },
     { label: "Pricing", href: "/pricing" },
     { label: "Resources", href: "/resources" },
   ],
