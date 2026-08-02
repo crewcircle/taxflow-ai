@@ -130,7 +130,10 @@ export default async function Home() {
               <span className="mb-3 block text-xs font-semibold uppercase tracking-widest text-accent">
                 How it works
               </span>
-              <h2 className="text-3xl font-bold text-foreground md:text-4xl">Three steps, no training required</h2>
+              <h2 className="mb-4 text-3xl font-bold text-foreground md:text-4xl">Three steps, no training required</h2>
+              <Link href="/how-it-works" className="text-sm font-medium text-accent hover:underline">
+                Read the full mechanics - retrieval, routing, and verification →
+              </Link>
             </div>
 
             <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
