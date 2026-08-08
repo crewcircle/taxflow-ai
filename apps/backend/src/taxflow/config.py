@@ -286,17 +286,40 @@ class Settings(BaseSettings):
     # abstract tier names ("haiku"/"sonnet"); resolve_model(tier) maps a tier to
     # a LiteLLM model string (provider/model). Falls back to the legacy
     # ANTHROPIC_*_MODEL fields when a tier is absent from the map.
+    # Routes the answering path through DeepSeek V4 Flash via OpenRouter
+    # instead of Anthropic Claude (RAG-quality audit): "haiku"/"sonnet" cover
+    # draft/verify/rerank/classify/clarify via resolve_model()'s _TIER_ALIAS
+    # fallback (providers.py) - a single cheap model for the tiers that
+    # answer a question or do routine routing/classification. Requires
+    # settings.LLM_API_KEY/LLM_API_BASE to actually point at OpenRouter -
+    # get_llm() otherwise still authenticates with ANTHROPIC_API_KEY
+    # regardless of what this map says, which fails against OpenRouter's
+    # endpoint ("Missing Authentication header"). Validated on the
+    # 30-question accuracy benchmark across this whole audit before this
+    # default was flipped: DeepSeek + the retrieval fixes shipped alongside
+    # it scored comparably to (and on several individual questions better
+    # than) the prior Anthropic-only baseline, at a fraction of the token
+    # cost ($0.09/$0.18 per 1M vs Haiku's $1.00/$5.00).
+    #
+    # "verify_strong" is a DELIBERATE exception, kept off the alias cascade:
+    # it's VerifyAgent's escalation tier for the MOST severely-flagged draft
+    # answers, and collapsing it onto the same cheap model as the draft it's
+    # reviewing would remove the actual capability gap that escalation
+    # exists for. Set to GPT-5.1 (via OpenRouter, not Anthropic) rather than
+    # keeping Sonnet: an independent model family is arguably a BETTER
+    # second opinion than staying in-family (less likely to share the same
+    # blind spots as whatever generated the draft), OpenAI's structured-
+    # output/JSON-mode reliability has a stronger track record than
+    # DeepSeek's (~15-20% schema-compliance failures were found testing
+    # DeepSeek as an LLM judge earlier in this audit - see
+    # docs/rag-quality-audit.md), and it's still meaningfully cheaper than
+    # Anthropic Sonnet ($1.25/$10 per 1M vs Sonnet's ~$3/$15) while being
+    # unambiguously frontier-tier. Rarely invoked (only the worst-flagged
+    # answers reach it), so this barely dents the overall cost savings.
     MODEL_TIER_MAP: dict[str, str] = {
-        "haiku": "anthropic/claude-haiku-4-5",
-        "sonnet": "anthropic/claude-sonnet-4-6",
-        # Named per-agent tiers (all Anthropic today; concrete OpenCode IDs are
-        # set per-deployment in Doppler). resolve_model() also falls back through
-        # _TIER_ALIAS so an agent tier still resolves when omitted here.
-        "draft": "anthropic/claude-haiku-4-5",
-        "verify": "anthropic/claude-haiku-4-5",
-        "rerank": "anthropic/claude-haiku-4-5",
-        "classify": "anthropic/claude-haiku-4-5",
-        "verify_strong": "anthropic/claude-sonnet-4-6",
+        "haiku": "openrouter/deepseek/deepseek-v4-flash",
+        "sonnet": "openrouter/deepseek/deepseek-v4-flash",
+        "verify_strong": "openrouter/openai/gpt-5.1",
     }
 
     # Tokenizer used for chunk sizing (was hard-coded tiktoken cl100k_base).

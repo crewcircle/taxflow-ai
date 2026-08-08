@@ -2,9 +2,17 @@
 
 Every generation call in the backend resolves its model through
 `providers.resolve_model(tier)` — no service or router code hardcodes a model
-ID. Adding a new provider (e.g. OpenCode) is a **config-only** change: no code
-edits, no redeploy of new logic. Anthropic is the default; embeddings are out of
-scope and stay on OpenAI (1536-dim).
+ID. Switching providers is a **config-only** change: no code edits, no
+redeploy of new logic. Embeddings are out of scope and stay on OpenAI
+(1536-dim).
+
+**As of the RAG-quality audit (see `docs/rag-quality-audit.md`), the default
+is DeepSeek V4 Flash via OpenRouter for the answering path, with GPT-5.1 (also
+via OpenRouter) as a deliberate exception for VerifyAgent's escalation tier.**
+Requires `LLM_API_KEY`/`LLM_API_BASE` set to OpenRouter in Doppler — see
+"Current production routing" below. This replaced an all-Anthropic default;
+Anthropic remains fully supported as an override (see "Switching back to
+Anthropic").
 
 ## Tier system
 
@@ -13,13 +21,21 @@ plus named per-agent tiers:
 
 | Tier | Used by | Default model |
 |---|---|---|
-| `haiku` | base cheap/fast tier | `anthropic/claude-haiku-4-5` |
-| `sonnet` | base strong tier + research corrective pass | `anthropic/claude-sonnet-4-6` |
-| `draft` | `DraftAgent`, `document_graph`, ATO `drafter` | `anthropic/claude-haiku-4-5` |
-| `verify` | `VerifyAgent` default | `anthropic/claude-haiku-4-5` |
-| `verify_strong` | `VerifyAgent` on severe/flagged answers | `anthropic/claude-sonnet-4-6` |
-| `rerank` | LLM re-ranker (`knowledge/retrieval.py`) | `anthropic/claude-haiku-4-5` |
-| `classify` | ATO letter `classifier` | `anthropic/claude-haiku-4-5` |
+| `haiku` | base cheap/fast tier | `openrouter/deepseek/deepseek-v4-flash` |
+| `sonnet` | base strong tier + research corrective pass | `openrouter/deepseek/deepseek-v4-flash` |
+| `draft` | `DraftAgent`, `document_graph`, ATO `drafter` | via alias → `haiku` |
+| `verify` | `VerifyAgent` default | via alias → `haiku` |
+| `verify_strong` | `VerifyAgent` on severe/flagged answers | `openrouter/openai/gpt-5.1` (**explicit**, not aliased) |
+| `rerank` | LLM re-ranker (`knowledge/retrieval.py`) | via alias → `haiku` |
+| `classify` | ATO letter `classifier` | via alias → `haiku` |
+
+`verify_strong` is deliberately kept OUT of the alias cascade: it's the model
+VerifyAgent escalates to for the *most severely flagged* draft answers, and
+collapsing it onto the same cheap model as the draft it's reviewing would
+remove the actual capability gap that escalation exists for. See
+`docs/rag-quality-audit.md` §2.6-2.7 for why GPT-5.1 specifically (an
+independent model family, not just a different Anthropic tier) rather than
+keeping Sonnet.
 
 `research.run()` still routes between `haiku`/`sonnet` from retrieval signals via
 `route_model()`; `resolve_model(routed)` maps the decision to a concrete model.
@@ -41,10 +57,10 @@ plus named per-agent tiers:
 
 ## Key-resolution precedence
 
-`get_llm()` picks the API key **conditionally on `LLM_API_BASE`** so the OpenCode
+`get_llm()` picks the API key **conditionally on `LLM_API_BASE`** so a gateway
 key can never be sent to Anthropic:
 
-- **`LLM_API_BASE` set (OpenCode / gateway on):**
+- **`LLM_API_BASE` set (OpenRouter / OpenCode / any gateway on):**
   `LLM_API_KEY` > `OPENCODE_API_KEY` > `ANTHROPIC_API_KEY`.
 - **`LLM_API_BASE` empty (Anthropic default):**
   `LLM_API_KEY` > `ANTHROPIC_API_KEY`. **`OPENCODE_API_KEY` is ignored** — if it
@@ -53,11 +69,45 @@ key can never be sent to Anthropic:
 
 `LLM_API_KEY` is the generic override that always wins when set. The adapter is
 constructed as `LiteLLMAdapter(api_key=<resolved>, api_base=settings.LLM_API_BASE
-or None)`; a `None` `api_base` preserves today's exact Anthropic behaviour.
+or None)`; a `None` `api_base` preserves the plain-Anthropic behaviour.
+
+**This is why `LLM_API_KEY`/`LLM_API_BASE` must both be set for the OpenRouter
+default below to actually take effect** — the `MODEL_TIER_MAP` model strings
+alone are not enough; without `LLM_API_BASE` pointed at OpenRouter, `get_llm()`
+still sends whatever key it resolves to Anthropic's endpoint, which fails
+against an `openrouter/...` model ID.
+
+## Current production routing (OpenRouter — default since the RAG-quality audit)
+
+Required Doppler secrets (`prd` and any config you want this to apply to):
+
+```
+LLM_API_KEY=<openrouter key>
+LLM_API_BASE=https://openrouter.ai/api/v1
+```
+
+Set only via `doppler secrets set LLM_API_KEY --project taxflow --config prd`
+(and `LLM_API_BASE` the same way) — never hardcoded, and not something this
+assistant sets on your behalf. As of this writing `prd` has `OPENROUTER_API_KEY`
+set but **not** `LLM_API_KEY`/`LLM_API_BASE`, so the new `MODEL_TIER_MAP`
+default below has no effect until both are set.
+
+With those two secrets set, `MODEL_TIER_MAP`'s code default routes:
+
+- `haiku` / `sonnet` (and everything that aliases to them —
+  `draft`/`verify`/`rerank`/`classify`) → `openrouter/deepseek/deepseek-v4-flash`
+- `verify_strong` → `openrouter/openai/gpt-5.1` (explicit, not aliased)
+
+This was validated against a 30-question benchmark across the whole
+retrieval+generation path during the RAG-quality audit (see
+`docs/rag-quality-audit.md`) — Cohere rerank (+4/30) and section-title boost
+were tuned against this same DeepSeek generation path, so switching the
+generation model without re-validating retrieval tuning is not recommended.
 
 ## Switching to OpenCode (Doppler env)
 
-OpenCode is opt-in and requires only environment changes:
+OpenCode is an alternative OpenAI-compatible gateway, documented here for
+reference — it is not the current default. Same environment-only pattern:
 
 ```
 LLM_API_BASE=https://opencode.ai/zen/go/v1
@@ -68,14 +118,6 @@ MODEL_TIER_MAP={"haiku":"openai/<deepseek-v4-flash>","sonnet":"openai/<deepseek-
 `MODEL_TIER_MAP` is JSON; each tier points at an `openai/<model>` route (LiteLLM
 speaks the OpenAI-compatible protocol against `LLM_API_BASE`). The key comes from
 Doppler/secrets — **never hardcode it**.
-
-**Chosen defaults (user-confirmed):** Anthropic stays the default provider
-(`LLM_API_BASE` empty ⇒ everything on the current Anthropic map). The documented
-OpenCode example maps the **strong** tier (`sonnet`/`verify_strong`) to
-**DeepSeek V4 Pro** and the **cheap/fast** tier
-(`haiku`/`draft`/`verify`/`rerank`/`classify`) to **DeepSeek V4 Flash** — supply
-the exact `openai/<deepseek-v4-*>` model IDs from the OpenCode catalog when
-enabling.
 
 ## Overriding one agent's model
 
@@ -94,14 +136,23 @@ partial maps are safe.
 
 1. **Prompt-cache discount off Anthropic.** `cacheable_system()` emits
    `cache_control` breakpoints; LiteLLM forwards them to Anthropic and no-ops them
-   elsewhere. Switching the provider is not a correctness risk but forfeits the
-   ~90% cached-input discount. Cost consideration only.
+   elsewhere — including the current OpenRouter default. Not a correctness risk,
+   but the ~90% cached-input discount that Anthropic prompt caching gave us is
+   gone under the current default; DeepSeek/OpenRouter pricing is still far
+   cheaper per-token than Anthropic even without it. Cost consideration only.
 2. **Structured-output support varies.** `RerankScores`, `VerificationResult` and
-   `LetterClassification` use `generate_structured` (`response_format`). OpenCode
-   models may honour it weakly, but each call-site already wraps it in a
-   `StructuredParseError` → plain-generation + tolerant-parse fallback, so a weak
-   response just costs one retry. Tiers used for structured output must still
-   return usable JSON.
+   `LetterClassification` use `generate_structured` (`response_format`).
+   OpenRouter/OpenCode models may honour it weakly, but each call-site already
+   wraps it in a `StructuredParseError` → plain-generation + tolerant-parse
+   fallback, so a weak response just costs one retry. The DeepEval judge pilot
+   (`docs/rag-quality-audit.md` §3) found DeepSeek V4 Flash has a real ~15-20%
+   JSON-schema-compliance failure rate on complex schemas even with retries —
+   this is the same underlying provider now used in the answering path, so
+   watch structured-output tiers (`rerank`, `classify`) for elevated retry rates.
 3. **Embeddings stay OpenAI.** `get_embedder()` / `EMBEDDING_PROVIDER` /
    `OPENAI_API_KEY` are untouched (DB vector columns are 1536-dim). Model routing
    covers generation only.
+4. **Switching back to Anthropic.** Leave `LLM_API_KEY`/`LLM_API_BASE` unset in
+   Doppler (or explicitly blank `LLM_API_BASE`) and set
+   `MODEL_TIER_MAP={"haiku":"anthropic/claude-haiku-4-5","sonnet":"anthropic/claude-sonnet-4-6","verify_strong":"anthropic/claude-sonnet-4-6"}`
+   — the alias cascade still applies, so this is a 3-key map, not 7.
