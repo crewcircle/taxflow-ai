@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import {
   CircleDollarSign,
   Info,
@@ -74,6 +75,7 @@ export default function AnalyticsPage() {
       .catch((err: unknown) => {
         if (!active || (err instanceof DOMException && err.name === "AbortError")) return;
         setError("Could not load analytics - please try again.");
+        toast.error("Could not load analytics - please try again.");
         setStats(null);
       })
       .finally(() => {

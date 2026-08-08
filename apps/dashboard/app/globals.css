@@ -22,6 +22,19 @@
   --accent-foreground: #ffffff;
   --destructive: #dc2626;
   --destructive-foreground: #ffffff;
+  /* Semantic status colors - a fixed, deliberate palette for meaning (verified/
+     approved, superseded/needs-attention, informational note), separate from
+     --accent (brand) and --destructive (severe/error). Badges and highlight
+     boxes across the app should use these tokens instead of reaching for raw
+     Tailwind palette classes (bg-emerald-50, text-amber-700, etc.) directly -
+     the raw classes don't repaint for dark mode unless someone remembers to
+     add a matching `dark:` override by hand for every single usage. */
+  --success: #16a34a;
+  --success-foreground: #ffffff;
+  --warning: #b45309;
+  --warning-foreground: #ffffff;
+  --info: #2563eb;
+  --info-foreground: #ffffff;
   --border: #e5e7eb;
   --input: #e2e8f0;
   --ring: #0f172a;
@@ -56,6 +69,12 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -121,6 +140,12 @@ body {
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.72 0.17 145);
+  --success-foreground: oklch(0.145 0 0);
+  --warning: oklch(0.78 0.15 70);
+  --warning-foreground: oklch(0.145 0 0);
+  --info: oklch(0.7 0.14 250);
+  --info-foreground: oklch(0.145 0 0);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);

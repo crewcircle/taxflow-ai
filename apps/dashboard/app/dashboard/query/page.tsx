@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import {
   BookOpen,
   CheckCircle2,
@@ -44,6 +45,7 @@ import { MarkdownDocument } from "@/components/MarkdownDocument";
 import { AnnotatableMarkdown, type AnnotatableMarkdownHandle } from "@/components/AnnotatableMarkdown";
 import { DocumentTemplatesPanel } from "@/components/DocumentTemplatesPanel";
 import { NOTIFICATIONS_UPDATED_EVENT } from "@/lib/useNotifications";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface DocumentTemplate {
   type: string;
@@ -126,6 +128,7 @@ function FirmKnowledgeSuggestion({ repeatCount, defaultTitle, content }: FirmKno
       setSaved(true);
     } catch {
       setError("Could not save to Firm Knowledge - please try again");
+      toast.error("Could not save to Firm Knowledge - please try again");
     } finally {
       setSaving(false);
     }
@@ -388,6 +391,7 @@ function AnswerActionsBar({
       setEditDocContent(doc.content_md);
     } catch {
       setEditDocError("Could not load this document - please try again");
+      toast.error("Could not load this document - please try again");
     } finally {
       setEditDocLoading(false);
     }
@@ -405,8 +409,10 @@ function AnswerActionsBar({
       });
       if (!res.ok) throw new Error("save failed");
       setEditDocOpen(false);
+      toast.success("Document updated");
     } catch {
       setEditDocError("Could not save your changes - please try again");
+      toast.error("Could not save your changes - please try again");
     } finally {
       setEditDocSaving(false);
     }
@@ -438,6 +444,7 @@ function AnswerActionsBar({
       }
     } catch {
       setFeedbackError("Could not record your feedback - please try again");
+      toast.error("Could not record your feedback - please try again");
     } finally {
       setSubmitting(false);
     }
@@ -460,7 +467,7 @@ function AnswerActionsBar({
       </span>
     ) : outcome === "recorded" ? (
       <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
-        <CheckCircle2 className="size-4 text-green-600" />
+        <CheckCircle2 className="size-4 text-success" />
         Thanks for the feedback
       </span>
     ) : (
@@ -658,7 +665,10 @@ function AnswerActionsBar({
             <SheetTitle>Edit saved document</SheetTitle>
           </SheetHeader>
           {editDocLoading ? (
-            <p className="text-sm text-muted-foreground">Loading...</p>
+            <div className="space-y-3">
+              <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-40 w-full" />
+            </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
               <div className="space-y-1.5">
@@ -731,7 +741,7 @@ function AnswerInfoBar({
         </Badge>
       )}
       {!verifying && clean && (
-        <span className="flex items-center gap-1.5 text-green-700">
+        <span className="flex items-center gap-1.5 text-success">
           <CheckCircle2 className="size-4" />
           Verified against sources
         </span>
@@ -744,9 +754,9 @@ function AnswerInfoBar({
                 <button
                   type="button"
                   onClick={() => onFocusFlag("critical")}
-                  className="flex items-center gap-1.5 text-red-600 hover:underline"
+                  className="flex items-center gap-1.5 text-destructive hover:underline"
                 >
-                  <span className="size-2 rounded-full bg-red-600" />
+                  <span className="size-2 rounded-full bg-destructive" />
                   {critical.length} claim{critical.length === 1 ? "" : "s"} need review
                 </button>
               </TooltipTrigger>
@@ -759,9 +769,9 @@ function AnswerInfoBar({
                 <button
                   type="button"
                   onClick={() => onFocusFlag("warning")}
-                  className="flex items-center gap-1.5 text-amber-600 hover:underline"
+                  className="flex items-center gap-1.5 text-warning hover:underline"
                 >
-                  <span className="size-2 rounded-full bg-amber-600" />
+                  <span className="size-2 rounded-full bg-warning" />
                   {warning.length} worth a second look
                 </button>
               </TooltipTrigger>
@@ -1077,6 +1087,7 @@ export default function QueryPage() {
       }
     } catch {
       setError("Could not load this question");
+      toast.error("Could not load this question");
     }
   }
 
@@ -1204,8 +1215,10 @@ export default function QueryPage() {
       setTrace((prev) => (prev ? { ...prev, verification: { ran: false } } : prev));
       setEditingAnswer(false);
       loadHistory();
+      toast.success("Answer updated");
     } catch {
       setError("Could not save your edit - please try again");
+      toast.error("Could not save your edit - please try again");
     } finally {
       setSavingAnswer(false);
     }
@@ -1346,6 +1359,7 @@ export default function QueryPage() {
       });
     } catch {
       setError("Query failed - please try again");
+      toast.error("Query failed - please try again");
     } finally {
       setLoading(false);
     }
@@ -1372,6 +1386,7 @@ export default function QueryPage() {
       setPromoteState("saved");
     } catch {
       setPromoteState("error");
+      toast.error("Could not send for approval - please try again");
     }
   }
 
@@ -1401,8 +1416,10 @@ export default function QueryPage() {
       if (!response.ok) throw new Error("Failed");
       const doc = await response.json();
       setSavedDocId(doc.id);
+      toast.success("Saved as a document");
     } catch {
       setError("Could not save as a document - please try again");
+      toast.error("Could not save as a document - please try again");
     } finally {
       setSavingDoc(false);
     }

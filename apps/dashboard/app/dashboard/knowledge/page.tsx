@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { ChevronDown, ChevronUp, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Select,
@@ -61,7 +63,7 @@ function reasonLabel(reason: string | null): string {
 }
 
 export default function KnowledgePage() {
-  const [items, setItems] = useState<KnowledgeRow[]>([]);
+  const [items, setItems] = useState<KnowledgeRow[] | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -81,6 +83,11 @@ export default function KnowledgePage() {
   const [owners, setOwners] = useState<StaffMember[]>([]);
 
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeRow | null>(null);
+  // Rejecting a suggestion is just as final as deleting a precedent (no undo
+  // in the UI either way) but used to fire straight from the onClick - one
+  // misclick discarded a colleague's promoted answer with no chance to back
+  // out. Confirmed the same way delete already is.
+  const [rejectTarget, setRejectTarget] = useState<Suggestion | null>(null);
   const [editTarget, setEditTarget] = useState<
     { id: string; title: string; content_md: string } | null
   >(null);
@@ -88,9 +95,12 @@ export default function KnowledgePage() {
 
   function load() {
     fetch("/api/firm-knowledge")
-      .then((r) => (r.ok ? r.json() : []))
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then(setItems)
-      .catch(() => {});
+      .catch(() => {
+        setItems([]);
+        toast.error("Could not load your firm's precedents");
+      });
   }
 
   function loadSuggestions() {
@@ -121,11 +131,19 @@ export default function KnowledgePage() {
       const response = await fetch(`/api/firm-knowledge/suggestions/${id}/${action}`, {
         method: "POST",
       });
-      if (!response.ok) return;
+      if (!response.ok) {
+        toast.error(
+          action === "approve"
+            ? "Could not approve this suggestion - please try again"
+            : "Could not reject this suggestion - please try again"
+        );
+        return;
+      }
       // Approved suggestions become firm knowledge items; refresh both lists so
       // the approved note shows up above and drops out of the pending list.
       loadSuggestions();
       if (action === "approve") load();
+      toast.success(action === "approve" ? "Added to Firm Knowledge" : "Suggestion rejected");
     } finally {
       setDecidingId(null);
     }
@@ -139,7 +157,10 @@ export default function KnowledgePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: userId }),
       });
-      if (!response.ok) return;
+      if (!response.ok) {
+        toast.error("Could not update the assignee - please try again");
+        return;
+      }
       const updated = await response.json();
       setSuggestions((prev) => prev.map((s) => (s.id === id ? { ...s, assigned_to: updated.assigned_to } : s)));
     } finally {
@@ -177,8 +198,10 @@ export default function KnowledgePage() {
       if (!response.ok) throw new Error("Upload failed");
       if (fileInput.current) fileInput.current.value = "";
       load();
+      toast.success("File uploaded");
     } catch {
       setError("Could not upload this file - supported types are PDF, DOCX, TXT");
+      toast.error("Could not upload this file - supported types are PDF, DOCX, TXT");
     } finally {
       setUploading(false);
     }
@@ -197,6 +220,7 @@ export default function KnowledgePage() {
       });
     } catch {
       setError("Could not open this document for editing");
+      toast.error("Could not open this document for editing");
     }
   }
 
@@ -323,7 +347,7 @@ export default function KnowledgePage() {
                                 size="sm"
                                 className="text-destructive"
                                 disabled={decidingId === suggestion.id}
-                                onClick={() => decideSuggestion(suggestion.id, "reject")}
+                                onClick={() => setRejectTarget(suggestion)}
                               >
                                 Reject
                               </Button>
@@ -352,7 +376,16 @@ export default function KnowledgePage() {
         </div>
       )}
 
-      {items.length === 0 ? (
+      {items === null ? (
+        <div className="divide-y divide-border rounded-lg border border-border">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-3 px-4 py-2.5">
+              <Skeleton className="h-4 w-48" />
+              <Skeleton className="ml-auto h-4 w-24" />
+            </div>
+          ))}
+        </div>
+      ) : items.length === 0 ? (
         <p className="text-sm text-muted-foreground">No documents uploaded yet.</p>
       ) : (
         <ul className="divide-y divide-border rounded-lg border border-border text-sm">
@@ -394,7 +427,11 @@ export default function KnowledgePage() {
               {expandedId === item.id && (
                 <div className="border-t border-border bg-muted/30 px-4 py-3">
                   {detailLoading ? (
-                    <p className="text-xs text-muted-foreground">Loading...</p>
+                    <div className="space-y-1.5">
+                      <Skeleton className="h-3.5 w-full" />
+                      <Skeleton className="h-3.5 w-11/12" />
+                      <Skeleton className="h-3.5 w-3/5" />
+                    </div>
                   ) : (
                     <p className="max-h-80 overflow-y-auto whitespace-pre-wrap text-sm text-foreground">
                       {detail?.content ?? "Could not load this document."}
@@ -432,6 +469,27 @@ export default function KnowledgePage() {
               setDetail(null);
             }
           }
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!rejectTarget}
+        onOpenChange={(open) => {
+          if (!open) setRejectTarget(null);
+        }}
+        title="Reject this suggestion?"
+        description={
+          rejectTarget
+            ? `"${rejectTarget.title}" will be dismissed without being added to Firm Knowledge. This cannot be undone.`
+            : undefined
+        }
+        confirmLabel="Reject"
+        destructive
+        pending={decidingId === rejectTarget?.id}
+        onConfirm={async () => {
+          if (!rejectTarget) return;
+          await decideSuggestion(rejectTarget.id, "reject");
+          setRejectTarget(null);
         }}
       />
 

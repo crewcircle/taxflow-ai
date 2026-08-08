@@ -73,7 +73,7 @@ export function buildMarkdownComponents(citations?: SourceCitation[]): Component
       // solid fill (it's the firm's own note, not a published authority) -
       // both distinguishable at a glance, not just on hover.
       const badgeStyle = citation?.is_historical
-        ? cn(color.bg, color.text, "ring-2 ring-amber-500")
+        ? cn(color.bg, color.text, "ring-2 ring-warning")
         : citation?.is_engagement_memo
           ? cn("border border-dashed bg-transparent", color.text, color.border)
           : cn(color.bg, color.text);
@@ -95,6 +95,13 @@ export function buildMarkdownComponents(citations?: SourceCitation[]): Component
             </a>
           </TooltipTrigger>
           <TooltipContent className="max-w-xs">
+            {/* text-amber-300 here is deliberate, not a leftover raw color -
+                TooltipContent is bg-foreground/text-background, which INVERTS
+                relative to the page's own theme, so the page's --warning
+                token (tuned for the page's normal, non-inverted background)
+                would read low-contrast here. A fixed light amber stays
+                legible against the tooltip's always-dark-appearing chip in
+                both light and dark page themes. */}
             {citation ? (
               <>
                 <span className="block font-semibold">{citationReference(citation)}</span>

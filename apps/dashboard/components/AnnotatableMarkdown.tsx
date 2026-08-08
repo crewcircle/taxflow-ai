@@ -462,7 +462,7 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
               </div>
 
               {thread.stale && (
-                <div className="mb-2 flex items-center gap-1 text-[11px] text-amber-700">
+                <div className="mb-2 flex items-center gap-1 text-[11px] text-warning">
                   <AlertTriangle className="size-3" />
                   Source changed — may no longer be highlighted inline
                 </div>
@@ -557,7 +557,7 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
                   </button>
                   <button
                     type="button"
-                    className="inline-flex items-center gap-1 text-green-700 hover:text-green-800"
+                    className="inline-flex items-center gap-1 text-success hover:opacity-80"
                     onClick={() =>
                       void patchAnnotation(thread.root.id, {
                         resolved: thread.root.resolved_at == null,
@@ -766,7 +766,7 @@ function VerifyDetailPopup({ issue, onDone }: { issue: VerificationFlag; onDone:
     <div className="w-80 space-y-2.5 rounded-lg border border-border bg-popover p-3 text-sm text-popover-foreground shadow-xl">
       <div className="flex items-center gap-2">
         <AlertTriangle
-          className={cn("size-4 shrink-0", issue.severity === "critical" ? "text-destructive" : "text-amber-600")}
+          className={cn("size-4 shrink-0", issue.severity === "critical" ? "text-destructive" : "text-warning")}
         />
         <span className="text-xs font-semibold">
           {issue.severity === "critical"

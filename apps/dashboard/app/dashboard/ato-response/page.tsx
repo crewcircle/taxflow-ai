@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { EngagementPicker, type EngagementSelection } from "@/components/EngagementPicker";
 import { ResourceRowActions } from "@/components/resource-actions/ResourceRowActions";
 import { ConfirmDialog } from "@/components/resource-actions/ConfirmDialog";
@@ -98,6 +100,7 @@ export default function AtoResponsePage() {
       setDetail(await response.json());
     } catch {
       setError("Could not load this response");
+      toast.error("Could not load this response");
     } finally {
       setDetailLoading(false);
     }
@@ -111,8 +114,10 @@ export default function AtoResponsePage() {
       if (!response.ok) throw new Error("Failed");
       setDetail({ ...detail, status: "approved" });
       loadHistory();
+      toast.success("Response approved");
     } catch {
       setError("Could not approve this response - please try again");
+      toast.error("Could not approve this response - please try again");
     } finally {
       setApproving(false);
     }
@@ -140,6 +145,7 @@ export default function AtoResponsePage() {
       setResult(await response.json());
     } catch {
       setError("Could not process this letter - please try again");
+      toast.error("Could not process this letter - please try again");
     } finally {
       setUploading(false);
     }
@@ -219,7 +225,16 @@ export default function AtoResponsePage() {
         </Card>
       )}
 
-      {detailLoading && <p className="text-sm text-muted-foreground">Loading...</p>}
+      {detailLoading && (
+        <Card>
+          <CardContent className="space-y-3">
+            <Skeleton className="h-5 w-32" />
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-5/6" />
+            <Skeleton className="h-24 w-full" />
+          </CardContent>
+        </Card>
+      )}
 
       {detail && (
         <Card>

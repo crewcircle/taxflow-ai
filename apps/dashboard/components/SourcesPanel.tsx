@@ -229,7 +229,7 @@ export function SourcesPanel({ citations, onHide }: SourcesPanelProps) {
                           {occ.isHistorical && (
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <span className="rounded-full border border-amber-400 bg-amber-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-700">
+                                <span className="rounded-full border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-warning">
                                   Superseded
                                 </span>
                               </TooltipTrigger>

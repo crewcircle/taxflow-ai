@@ -26,6 +26,7 @@ export function CollapsedPanelRail({
         <button
           type="button"
           onClick={onShow}
+          aria-label={label}
           className={`flex h-full w-8 shrink-0 flex-col items-center justify-center gap-2 text-muted-foreground hover:bg-muted hover:text-foreground ${
             side === "left" ? "border-r border-border" : "border-l border-border"
           }`}
