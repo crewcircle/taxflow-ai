@@ -646,6 +646,41 @@ function RecogitoLayer({
     return map;
   }, [verifyAnchors]);
 
+  // Recogito recalculates each highlight's on-screen position on window
+  // resize (it listens for the event itself) and via its own ResizeObserver
+  // on this container - but a layout shift caused by something OUTSIDE this
+  // component (the Sources/History rail toggling open, a citation's source
+  // Dialog opening and releasing the page's scrollbar on close) doesn't
+  // always reach either of those, and once a highlight's cached position
+  // goes stale it stays stale - clicking the underlined text again does
+  // nothing, because Recogito already believes it knows where the highlight
+  // is and there's no user-facing "refresh" action. A ResizeObserver on the
+  // container's own parent (catches real width/height changes) plus a
+  // MutationObserver on <body> (catches DOM changes that don't necessarily
+  // resize this container, e.g. a Dialog's portal mounting) both nudge
+  // Recogito down its own already-correct, already-tested recovery path by
+  // dispatching a real `resize` event - the same thing an actual window
+  // resize would do - rather than reaching into its internal recalculation
+  // function directly.
+  useEffect(() => {
+    const container = document.querySelector<HTMLElement>(`.${RECOGITO_CONTAINER_CLASS}`);
+    if (!container) return;
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    const nudge = () => {
+      if (pending) clearTimeout(pending);
+      pending = setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+    };
+    const resizeObserver = new ResizeObserver(nudge);
+    resizeObserver.observe(container.parentElement ?? container);
+    const mutationObserver = new MutationObserver(nudge);
+    mutationObserver.observe(document.body, { attributes: true, childList: true, subtree: true });
+    return () => {
+      if (pending) clearTimeout(pending);
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+    };
+  }, []);
+
   // Push the current set of spans to highlight into Recogito. `replace: true`
   // so toggling Open/Resolved (which changes `threads`) actually removes
   // highlights that should no longer show, not just adds new ones.
@@ -694,6 +729,64 @@ function RecogitoLayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
+  // Tracked in a ref (not read straight off `selected`) because onClose fires
+  // from an effect inside the library itself, whose timing relative to our
+  // own `selected` state updating isn't something to rely on - the ref always
+  // holds whatever was selected most recently, synchronously.
+  const lastSelectedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    lastSelectedIdRef.current = selected[0]?.annotation.id ?? null;
+  }, [selected]);
+
+  // Drag-selecting text to open the compose form creates a REAL annotation in
+  // Recogito's local store immediately (that's what the popup is anchored
+  // to) - it isn't a UI-only "pending" state. `anno.cancelSelected()` only
+  // clears which annotation is selected (so the popup closes); it does NOT
+  // remove that annotation from the store, so the highlight it drew was
+  // staying behind forever - still visibly "selected" even after Cancel,
+  // exactly as if nothing had been dismissed at all. The fix is to actually
+  // delete it, but ONLY when it's a throwaway draft: a real comment/question
+  // thread or a verify-flag annotation must never be deleted just because its
+  // detail popup was closed, so both maps are checked before removing
+  // anything. One shared function backs every dismissal path (the composer's
+  // own Cancel button, the verify popup's Close button, and clicking/tabbing
+  // away without pressing either) so they can't drift out of sync with each
+  // other.
+  const cancelCurrentSelection = useCallback(() => {
+    const id = lastSelectedIdRef.current;
+    if (id && !threadByRootId.has(id) && !verifyIssueById.has(id)) {
+      anno?.removeAnnotation(id);
+    }
+    anno?.cancelSelected();
+    // Recogito clears its own selection state above, but the native browser
+    // text selection (blue highlight) that triggered this popup in the first
+    // place can survive that - clear it too so cancelling actually reverts to
+    // plain, unhighlighted text instead of leaving it looking selected.
+    window.getSelection()?.removeAllRanges();
+  }, [anno, threadByRootId, verifyIssueById]);
+
+  // TextAnnotationPopup positions itself via a virtual floating-ui reference
+  // element whose getBoundingClientRect() reads a value that
+  // @recogito/react-text-annotator computes asynchronously (debounced ~250ms
+  // inside a requestAnimationFrame) - floating-ui calls it SYNCHRONOUSLY on
+  // the popup's first render, so the very first position it gets is whatever
+  // that value held from BEFORE this selection (or an empty, zeroed rect the
+  // first time any popup opens this session), landing the popup in the wrong
+  // place - typically vertically centered in the container, overlapping the
+  // underlined text it's meant to explain. Nothing in floating-ui's own
+  // auto-update machinery re-checks a virtual reference on a timer, only on
+  // an actual window scroll/resize, so once the library's internal value
+  // finally settles to the correct rect, a synthetic resize event - the same
+  // thing a real window resize would fire - is what makes floating-ui ask for
+  // the position again and reposition correctly. Confirmed against 4.2.5 (the
+  // current latest release) by reading its bundled source; not something
+  // fixable from the props this component exposes.
+  useEffect(() => {
+    if (selected.length === 0) return;
+    const t = setTimeout(() => window.dispatchEvent(new Event("resize")), 320);
+    return () => clearTimeout(t);
+  }, [selected]);
+
   const style = useCallback(
     (annotation: TextAnnotation): HighlightStyle | undefined => {
       const id = annotation.id;
@@ -725,14 +818,11 @@ function RecogitoLayer({
     <TextAnnotator className={RECOGITO_CONTAINER_CLASS} style={style}>
       <MarkdownDocument text={sourceMarkdown} citations={citations} />
       <TextAnnotationPopup
-        // Dismissing any other way (click outside, etc.) must clear both
-        // Recogito's selection AND the native browser text selection - same
-        // reasoning as ComposerPopup's own onDone below, just for the paths
-        // that don't go through that callback.
-        onClose={() => {
-          anno?.cancelSelected();
-          window.getSelection()?.removeAllRanges();
-        }}
+        // Dismissing any other way (click outside, escape, tab away) goes
+        // through the same cleanup as the explicit Cancel/Close buttons -
+        // see cancelCurrentSelection above for why a plain cancelSelected()
+        // isn't enough on its own.
+        onClose={cancelCurrentSelection}
         popup={({ annotation }) => {
           // A click on an existing thread highlight is already routed to the
           // gutter and cancelled by the effect above before this would ever
@@ -740,7 +830,7 @@ function RecogitoLayer({
           if (threadByRootId.has(annotation.id)) return null;
           const verifyIssue = verifyIssueById.get(annotation.id);
           if (verifyIssue) {
-            return <VerifyDetailPopup issue={verifyIssue} onDone={() => anno?.cancelSelected()} />;
+            return <VerifyDetailPopup issue={verifyIssue} onDone={cancelCurrentSelection} />;
           }
           const sel = annotation.target?.selector?.[0];
           const quote = sel?.quote?.trim();
@@ -749,15 +839,7 @@ function RecogitoLayer({
             <ComposerPopup
               anchor={{ startOffset: sel.start, endOffset: sel.end, quotedText: quote }}
               onCreateAnnotation={onCreateAnnotation}
-              onDone={() => {
-                anno?.cancelSelected();
-                // Recogito clears its own selection state above, but the
-                // native browser text selection (blue highlight) that
-                // triggered this popup in the first place can survive that -
-                // clear it too so cancelling actually reverts to plain,
-                // unhighlighted text instead of leaving it looking selected.
-                window.getSelection()?.removeAllRanges();
-              }}
+              onDone={cancelCurrentSelection}
             />
           );
         }}
@@ -831,13 +913,11 @@ function ComposerPopup({
   }
 
   return (
+    // No repeat of the selected text here - it's already highlighted inline
+    // (the blue/orange marker on the text itself), so quoting it back again
+    // was redundant, not clarifying. Question/comment toggle, one field,
+    // Cancel/Add - that's the whole form.
     <div className="w-80 space-y-2 rounded-lg border border-border bg-popover p-3 text-sm text-popover-foreground shadow-xl">
-      <div className="rounded-lg bg-accent/10 px-2.5 py-1.5 text-xs text-foreground">
-        <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-accent">
-          Selected text
-        </span>
-        &ldquo;{anchor.quotedText}&rdquo;
-      </div>
       <div className="inline-flex overflow-hidden rounded-lg border border-border">
         <button
           type="button"
