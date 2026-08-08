@@ -205,6 +205,62 @@ def test_parse_citations_ignores_non_numeric_bracket_content(agent):
     assert [c["citation"] for c in citations] == ["ITAA 1997"]
 
 
+# --- citation renumbering (accountant audit round three, #3) ------------------
+# The model is free to cite [1], [2], then skip straight to [4] - nothing
+# requires every rendered source to be referenced. Two accountants
+# independently hit exactly this: a visible source list that skips a number.
+# _renumber_citations closes the gap so what's on screen is always 1..N.
+def test_renumber_citations_closes_gap_in_answer_text(agent):
+    chunks = [
+        _child("TR 2024/1", "http://a", "first"),
+        _child("TR 2024/2", "http://b", "second"),
+        _child("TR 2024/3", "http://c", "third"),
+        _child("TR 2024/4", "http://d", "fourth"),
+    ]
+    _, citation_map = agent._build_context_string(chunks)
+    answer, citations = agent._renumber_citations(
+        "First point [1]. Second point [2]. Fourth point [4].", citation_map
+    )
+    assert answer == "First point [1]. Second point [2]. Fourth point [3]."
+    assert [c["citation"] for c in citations] == ["TR 2024/1", "TR 2024/2", "TR 2024/4"]
+
+
+def test_renumber_citations_orders_by_first_appearance_not_raw_number(agent):
+    chunks = [
+        _child("TR 2024/1", "http://a", "first"),
+        _child("TR 2024/2", "http://b", "second"),
+        _child("TR 2024/3", "http://c", "third"),
+    ]
+    _, citation_map = agent._build_context_string(chunks)
+    answer, citations = agent._renumber_citations(
+        "Cites the third source first [3], then the first [1].", citation_map
+    )
+    assert answer == "Cites the third source first [1], then the first [2]."
+    assert [c["citation"] for c in citations] == ["TR 2024/3", "TR 2024/1"]
+
+
+def test_renumber_citations_handles_multi_number_bracket(agent):
+    chunks = [
+        _child("TR 2024/1", "http://a", "first"),
+        _child("TR 2024/2", "http://b", "second"),
+        _child("TR 2024/3", "http://c", "third"),
+    ]
+    _, citation_map = agent._build_context_string(chunks)
+    answer, citations = agent._renumber_citations(
+        "First point [1]. Third point [3]. Both again [1, 3].", citation_map
+    )
+    assert answer == "First point [1]. Third point [2]. Both again [1, 2]."
+    assert [c["citation"] for c in citations] == ["TR 2024/1", "TR 2024/3"]
+
+
+def test_renumber_citations_no_citations_is_a_noop(agent):
+    chunks = [_child("TR 2024/1", "http://a", "first")]
+    _, citation_map = agent._build_context_string(chunks)
+    answer, citations = agent._renumber_citations("No sources cited here.", citation_map)
+    assert answer == "No sources cited here."
+    assert citations == []
+
+
 # --- reliance posture flags (business audit P1) -------------------------------
 def test_parse_citations_flags_historical_and_engagement_memo(agent):
     """Historical/superseded and engagement-memo citations must carry their own

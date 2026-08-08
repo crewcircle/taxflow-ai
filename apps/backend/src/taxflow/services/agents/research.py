@@ -1053,6 +1053,51 @@ class ResearchAgent:
             trace["session"] = session
         return trace
 
+    def _renumber_citations(self, answer: str, citation_map: list[dict]) -> tuple[str, list[dict]]:
+        """Remap the answer's ``[N]`` markers to a contiguous 1..M sequence in
+        first-appearance order, instead of preserving the model's own raw
+        numbering.
+
+        The model is free to cite ``[1]``, ``[2]``, then jump straight to
+        ``[4]`` without ever citing ``[3]`` - nothing about ``citation_map``
+        requires every rendered source to be referenced. Left alone, that
+        produces exactly the bug two accountants independently hit in the
+        round-three audit: a visible source list that skips a number (e.g.
+        ``[1][2][4][5]``), which reads as broken even though the underlying
+        citations are fine. This closes the gap in both the rendered markdown
+        and the returned citations array so ``[1]`` in the text always lines
+        up with the first entry in ``citations``, ``[2]`` the second, etc.
+        """
+        first_seen: list[int] = []
+        seen = set()
+        for group in CITATION_PATTERN.findall(answer):
+            for n_str in group.split(","):
+                n = int(n_str.strip())
+                if 1 <= n <= len(citation_map) and n not in seen:
+                    seen.add(n)
+                    first_seen.append(n)
+
+        if not first_seen:
+            return answer, []
+
+        remap = {old: new for new, old in enumerate(first_seen, start=1)}
+
+        def _replace(match: re.Match) -> str:
+            new_numbers = [
+                remap[n]
+                for n_str in match.group(1).split(",")
+                if (n := int(n_str.strip())) in remap
+            ]
+            return f"[{', '.join(str(n) for n in new_numbers)}]" if new_numbers else ""
+
+        renumbered_answer = CITATION_PATTERN.sub(_replace, answer)
+        # Build citation entries from `first_seen` (the OLD numbers, in
+        # first-appearance order) against the ORIGINAL citation_map - not by
+        # re-parsing renumbered_answer, which now reads [1][2][3] and would
+        # double-remap back onto citation_map's own first entries.
+        citations = self._citation_entries(first_seen, citation_map)
+        return renumbered_answer, citations
+
     def _parse_citations(self, answer: str, citation_map: list[dict]) -> list[dict]:
         """Resolve the answer's ``[N]`` markers against the ``citation_map``
         returned by ``_build_context_string`` (one entry per rendered block, in
@@ -1069,8 +1114,14 @@ class ResearchAgent:
             for group in CITATION_PATTERN.findall(answer)
             for n in group.split(",")
         }
+        return self._citation_entries(sorted(cited_numbers), citation_map)
+
+    def _citation_entries(self, numbers: list[int], citation_map: list[dict]) -> list[dict]:
+        """Build one citation dict per (valid) number in ``numbers``, in the
+        order given - the shared core of ``_parse_citations`` (ascending raw
+        order) and ``_renumber_citations`` (first-appearance order)."""
         citations = []
-        for n in sorted(cited_numbers):
+        for n in numbers:
             if 1 <= n <= len(citation_map):
                 entry = citation_map[n - 1]
                 chunk = entry["chunks"][0]
@@ -1394,7 +1445,7 @@ class ResearchAgent:
         model = self._model_for(routed)
 
         answer, stats = await self._generate(question, context, model, steering=steering)
-        citations = self._parse_citations(answer, citation_map)
+        answer, citations = self._renumber_citations(answer, citation_map)
         confidence = self._estimate_confidence(answer, chunks, citations)
 
         # Task C5: bump usage_count for the CITED firm chunks (best-effort) and
@@ -1490,7 +1541,7 @@ class ResearchAgent:
             question, corrective_context, corrective_model, steering=steering,
             max_tokens=CORRECTIVE_MAX_TOKENS,
         )
-        citations = self._parse_citations(answer, citation_map)
+        answer, citations = self._renumber_citations(answer, citation_map)
         confidence = self._estimate_confidence(answer, chunks, citations)
         re_retrieval = (
             {"fired": True, "reason": "reviewer_flag"} if widened else {"fired": False}
