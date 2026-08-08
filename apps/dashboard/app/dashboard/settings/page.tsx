@@ -216,7 +216,7 @@ export default function SettingsPage() {
               rows={3}
               value={settings.voice_sample ?? ""}
               onChange={(e) => setSettings({ ...settings, voice_sample: e.target.value })}
-              placeholder="Used to calibrate the tone of drafted advice memos and letters."
+              placeholder="Used to calibrate the tone of research answers, drafted advice memos, and letters."
             />
           </div>
 

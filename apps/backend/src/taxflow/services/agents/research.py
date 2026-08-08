@@ -289,6 +289,31 @@ def build_client_profile(client: dict | None) -> str:
     )
 
 
+def build_voice_steering(client: dict | None) -> str:
+    """Per-firm tone instruction from ``clients.voice_sample`` — the same
+    ``voice_sample`` field a firm sets once in Settings and that already
+    calibrates DraftAgent/document_graph's drafted memos and letters
+    (identical instruction wording, deliberately, for one consistent voice
+    across the whole product).
+
+    Before this, a research answer's tone came only from the bare
+    ``business_type`` word in ``build_client_profile`` (e.g. "hospitality"
+    vs "dental") - an emergent side effect of word choice, not a deliberate
+    per-firm calibration, and it only fired for firms whose business_type
+    happened to nudge the model toward plainer language. Wiring the firm's
+    own explicit voice sample into the SAME conversational path documents
+    already use closes that gap (accountant audit round three, #13 - a
+    real, deliberate mechanism, applied inconsistently, not "maybe
+    accidental").
+    """
+    if not client:
+        return ""
+    voice_sample = client.get("voice_sample")
+    if not voice_sample:
+        return ""
+    return f'The firm describes its own voice like this - match this tone:\n"{voice_sample}"'
+
+
 # source_type enum (003_knowledge_chunks.sql):
 #   ato_ruling, ato_determination, ato_pbr, legislation, court_decision,
 #   ato_guide, ato_news.
@@ -433,8 +458,9 @@ def _firm_profile_summary(client: dict) -> str | None:
     """A short, business-readable summary of the firm profile applied to the
     answer (Task C6) — surfaced on ``trace.firm.profile_summary`` so the "why
     this answer?" UI can say, in one line, how the firm's profile steered the
-    result. Built from the same ``clients`` fields ``build_client_profile`` uses
-    (business_type, state, firm_style). Returns None when there's nothing to say.
+    result. Built from the same ``clients`` fields ``build_client_profile``/
+    ``build_voice_steering`` use (business_type, state, firm_style,
+    voice_sample). Returns None when there's nothing to say.
     """
     parts: list[str] = []
     business_type = client.get("business_type")
@@ -451,6 +477,9 @@ def _firm_profile_summary(client: dict) -> str | None:
         keys = list(firm_style.keys())[:3]
         parts.append("firm style: " + ", ".join(str(k) for k in keys))
 
+    if client.get("voice_sample"):
+        parts.append("firm voice sample applied")
+
     return ". ".join(parts) or None
 
 
@@ -461,7 +490,9 @@ def build_firm_profile_fragment(client: dict | None) -> dict:
     ``profile_applied`` mirrors whether ``build_client_profile`` produced any
     advisory profile block (so it also respects PROFILE_INJECTION_ENABLED);
     ``voice_applied`` is true when the client carries a non-empty ``firm_style``
-    jsonb (the firm-voice highlights folded into the profile block). Returns an
+    jsonb OR a non-empty ``voice_sample`` (accountant audit round three, #13 -
+    voice_sample already calibrates drafted documents; this fragment now
+    reflects that it calibrates the conversational answer too). Returns an
     EMPTY dict when neither applies (or there is no client), so ``trace.firm``
     stays absent unless there is real firm content — this fragment is MERGED
     with B's ``firm_items``/``firm_items_used`` fragment (disjoint keys) before
@@ -472,7 +503,7 @@ def build_firm_profile_fragment(client: dict | None) -> dict:
         return {}
     profile_applied = bool(build_client_profile(client))
     firm_style = client.get("firm_style")
-    voice_applied = isinstance(firm_style, dict) and bool(firm_style)
+    voice_applied = (isinstance(firm_style, dict) and bool(firm_style)) or bool(client.get("voice_sample"))
     if not (profile_applied or voice_applied):
         return {}
     return {
@@ -1348,11 +1379,12 @@ class ResearchAgent:
         UI can show how much conversational context steered the answer.
         """
         profile = build_client_profile(client)
+        voice = build_voice_steering(client)
         history: list[dict] = []
         if settings.SESSION_MEMORY_ENABLED and session_id:
             history = await self._load_session_history(client_id, session_id)
         session_block = build_session_block(history)
-        steering = "\n\n".join(part for part in (profile, session_block) if part)
+        steering = "\n\n".join(part for part in (profile, voice, session_block) if part)
 
         active_modules = client.get("active_modules") if client else None
         source_type_hint = derive_source_type_hint(question, active_modules)
