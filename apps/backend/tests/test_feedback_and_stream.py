@@ -1,6 +1,8 @@
 """Tests for the feedback endpoint (Task C5) and stream-path metric persistence."""
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import litellm
 import pytest
 
 
@@ -154,6 +156,88 @@ async def test_stream_persists_metrics():
     assert types.count("final") == 1
     assert types == ["token", "token", "final", "verification", "trace", "repeat_count", None]
     assert chunks[-1] == "data: [DONE]\n\n"
+
+
+# --- accountant audit round three, #4: a stream failure gets a real event,
+# not a silently-dropped connection --------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_provider_error_emits_transient_error_event():
+    """A litellm/openai APIError (rate limit, timeout, provider 5xx) - the class
+    of failure litellm normalises every provider's transient errors onto - must
+    surface as a typed, retryable `error` event, not crash the generator."""
+    import taxflow.routers.query as q
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au"}
+
+    captured_update = {}
+    mock_db = MagicMock()
+    mock_db.queries.insert.return_value = {"id": "query-1"}
+    mock_db.queries.update.side_effect = lambda cid, qid, payload: captured_update.update(payload)
+
+    async def fake_astream(initial_state, stream_mode=None):
+        yield ("custom", {"token": "Partial answer before it broke"})
+        raise litellm.exceptions.RateLimitError(
+            message="rate limited", llm_provider="openrouter", model="deepseek"
+        )
+        yield  # pragma: no cover - unreachable, makes this a generator
+
+    with patch.object(
+        q, "embed", new=AsyncMock(return_value=[0.0] * 1536)
+    ), patch.object(q, "increment_usage", new=AsyncMock()), patch.object(
+        q.research_graph, "astream", new=fake_astream
+    ), patch.object(
+        q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=None)
+    ):
+        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client, db=mock_db)
+        chunks = [c async for c in response.body_iterator]
+
+    types = [_event_type(c) for c in chunks]
+    assert types == ["token", "error", None]
+    assert chunks[-1] == "data: [DONE]\n\n"
+
+    error_payload = json.loads(chunks[1].removeprefix("data: ").strip())
+    assert error_payload["transient"] is True
+    assert "capacity" in error_payload["message"].lower()
+
+    # The already-partially-processed query row is marked failed, not left
+    # stuck in "processing" forever.
+    assert captured_update["status"] == "failed"
+    assert "rate limited" in captured_update["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_stream_unexpected_error_emits_non_transient_error_event():
+    """A non-provider exception (e.g. a bug in graph code) must still surface
+    as a typed error event, but marked non-transient - retrying the identical
+    question is not expected to help the way it might for a capacity error."""
+    import taxflow.routers.query as q
+
+    fake_client = {"id": "client-1", "email": "a@b.com.au"}
+    mock_db = MagicMock()
+    mock_db.queries.insert.return_value = {"id": "query-1"}
+    mock_db.queries.update.return_value = None
+
+    async def fake_astream(initial_state, stream_mode=None):
+        raise ValueError("something in the graph broke")
+        yield  # pragma: no cover - unreachable, makes this a generator
+
+    with patch.object(
+        q, "embed", new=AsyncMock(return_value=[0.0] * 1536)
+    ), patch.object(q, "increment_usage", new=AsyncMock()), patch.object(
+        q.research_graph, "astream", new=fake_astream
+    ), patch.object(
+        q.answer_cache, "get_cached_answer", new=AsyncMock(return_value=None)
+    ):
+        response = await q.stream_query(question="q", client=fake_client, _trial=fake_client, db=mock_db)
+        chunks = [c async for c in response.body_iterator]
+
+    types = [_event_type(c) for c in chunks]
+    assert types == ["error", None]
+    error_payload = json.loads(chunks[0].removeprefix("data: ").strip())
+    assert error_payload["transient"] is False
+    assert "capacity" not in error_payload["message"].lower()
 
 
 @pytest.mark.asyncio

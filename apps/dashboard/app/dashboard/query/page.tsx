@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   BookOpen,
   CheckCircle2,
   Copy,
@@ -14,6 +15,7 @@ import {
   MessageSquare,
   MessagesSquare,
   Pencil,
+  RotateCw,
   ThumbsUp,
   ThumbsDown,
 } from "lucide-react";
@@ -869,6 +871,17 @@ export default function QueryPage() {
   const [sessionId, setSessionId] = useState<string>(() => crypto.randomUUID());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Accountant audit round three (#4): a real generation failure now gets its
+  // own typed state - message + whether retrying is likely to help + the
+  // exact question that failed - instead of collapsing into the generic
+  // `error` string every other unrelated save/edit/promote flow also uses.
+  // Lets the answer pane render an actual "Try again" action instead of a
+  // one-line red toast with no next step.
+  const [generationError, setGenerationError] = useState<{
+    message: string;
+    transient: boolean;
+    question: string;
+  } | null>(null);
   const [result, setResult] = useState<QueryResult | null>(null);
   // True only once the answer is authoritative: a live stream has emitted
   // [DONE] (after any correction/regeneration), or a persisted conversation was
@@ -1023,6 +1036,7 @@ export default function QueryPage() {
     setSavedDocId(null);
     setDocType("advice_memo");
     setError(null);
+    setGenerationError(null);
     // Phase 4: clear any prior clarify card / follow-up chips.
     setClarifyQuestions(null);
     setClarifyAskedQuestion("");
@@ -1289,6 +1303,8 @@ export default function QueryPage() {
             session?: AnswerTrace["session"];
             re_retrieval?: AnswerTrace["re_retrieval"];
             passes?: AnswerTrace["passes"];
+            message?: string;
+            transient?: boolean;
           } = JSON.parse(event.data);
 
           if (parsed.type === "token" && parsed.text) {
@@ -1350,6 +1366,18 @@ export default function QueryPage() {
               re_retrieval: parsed.re_retrieval ?? null,
               passes: parsed.passes ?? null,
             });
+          } else if (parsed.type === "error") {
+            // A real, typed failure from the backend (provider capacity,
+            // timeout, or an actual bug) - not a dropped connection. The
+            // backend still sends [DONE] right after this, so the promise
+            // below resolves normally instead of hitting the generic
+            // onerror/catch path.
+            setVerifying(false);
+            setGenerationError({
+              message: parsed.message ?? "Something went wrong generating this answer.",
+              transient: parsed.transient ?? false,
+              question: askedQuestion,
+            });
           }
         };
         source.onerror = () => {
@@ -1358,8 +1386,14 @@ export default function QueryPage() {
         };
       });
     } catch {
-      setError("Query failed - please try again");
-      toast.error("Query failed - please try again");
+      // The connection itself dropped before the backend could send a typed
+      // `error` event (e.g. a network blip) - still give a real retry action,
+      // not just a toast with nowhere to go.
+      setGenerationError({
+        message: "The connection dropped before this finished.",
+        transient: true,
+        question: askedQuestion,
+      });
     } finally {
       setLoading(false);
     }
@@ -1654,6 +1688,28 @@ export default function QueryPage() {
             </div>
           )}
 
+          {generationError && (
+            <div className="flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <p className="text-sm text-foreground">{generationError.message}</p>
+                <p className="text-xs text-muted-foreground">
+                  {generationError.transient
+                    ? "This is usually a brief provider issue, not something wrong with your question."
+                    : "If this keeps happening on the same question, let us know."}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={loading}
+                  onClick={() => handleSubmit({ questionOverride: generationError.question })}
+                >
+                  <RotateCw className="size-3.5" />
+                  Try again
+                </Button>
+              </div>
+            </div>
+          )}
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
 

@@ -7,6 +7,7 @@ import json
 import logging
 import time
 
+import openai
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -758,16 +759,45 @@ async def stream_query(
             # effective_question above); None on a first turn.
             "clarifications": parsed_clarifications,
         }
-        async for mode, chunk in research_graph.astream(
-            initial_state, stream_mode=["custom", "values"]
-        ):
-            if mode == "custom":
-                text = chunk["token"]
-                yield f"data: {json.dumps({'type': 'token', 'text': text})}\n\n"
-            elif mode == "values":
-                latest_values = chunk
-                if not first_pass_snapshot and chunk.get("answer"):
-                    first_pass_snapshot = chunk
+        # Accountant audit round three (#4): an unhandled exception here used to
+        # just crash the async generator - FastAPI closes the SSE connection
+        # with no event, EventSource fires a bare onerror, and the dashboard
+        # showed a generic "Query failed - please try again" with no
+        # explanation and no distinction between "the AI provider is briefly
+        # at capacity" (worth retrying) and a real bug (worth reporting). Any
+        # tokens already streamed stay visible; this only replaces the silent
+        # connection-drop with a real, typed event.
+        try:
+            async for mode, chunk in research_graph.astream(
+                initial_state, stream_mode=["custom", "values"]
+            ):
+                if mode == "custom":
+                    text = chunk["token"]
+                    yield f"data: {json.dumps({'type': 'token', 'text': text})}\n\n"
+                elif mode == "values":
+                    latest_values = chunk
+                    if not first_pass_snapshot and chunk.get("answer"):
+                        first_pass_snapshot = chunk
+        except Exception as e:
+            logger.warning("research graph stream failed", exc_info=True)
+            await asyncio.to_thread(
+                db.queries.update, client["id"], query_id, {"status": "failed", "error_message": str(e)}
+            )
+            # litellm normalises every provider's transient failures (rate
+            # limits, timeouts, connection drops, 5xx) onto openai's exception
+            # hierarchy (litellm.exceptions.RateLimitError subclasses
+            # openai.RateLimitError, etc.) - a real, checkable signal for
+            # "worth retrying" vs "something is actually broken" without
+            # guessing from the message text.
+            transient = isinstance(e, openai.APIError)
+            message = (
+                "The AI provider is briefly at capacity - this usually clears within a minute."
+                if transient
+                else "Something went wrong generating this answer."
+            )
+            yield f"data: {json.dumps({'type': 'error', 'transient': transient, 'message': message})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
 
         final = latest_values
 
