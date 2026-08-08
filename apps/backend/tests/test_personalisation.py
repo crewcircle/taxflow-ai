@@ -16,7 +16,9 @@ from taxflow.config import settings
 from taxflow.services.agents.research import (
     ResearchAgent,
     build_client_profile,
+    build_firm_profile_fragment,
     build_session_block,
+    build_voice_steering,
     derive_jurisdiction_hint,
     derive_source_type_hint,
 )
@@ -51,6 +53,45 @@ def test_profile_string_empty_for_no_client():
     assert build_client_profile({}) == ""
 
 
+# --- accountant audit round three, #13: voice_sample now steers research too --
+
+
+def test_voice_steering_includes_firm_voice_sample():
+    client = {"voice_sample": "We talk to café owners like people, not accountants."}
+    voice = build_voice_steering(client)
+    assert "We talk to café owners like people, not accountants." in voice
+    assert "match this tone" in voice.lower()
+
+
+def test_voice_steering_empty_when_no_sample():
+    assert build_voice_steering({"business_type": "dental"}) == ""
+    assert build_voice_steering(None) == ""
+    assert build_voice_steering({}) == ""
+
+
+def test_voice_steering_matches_draft_agent_wording():
+    """Same firm, same voice, same literal instruction across both the
+    research answer and the drafted-document path (draft.py's
+    voice_instruction) - not two independently-tuned steering strings."""
+    client = {"voice_sample": "Plain English, no jargon."}
+    voice = build_voice_steering(client)
+    assert voice == 'The firm describes its own voice like this - match this tone:\n"Plain English, no jargon."'
+
+
+def test_firm_profile_fragment_voice_applied_from_voice_sample_alone():
+    """voice_applied must reflect voice_sample even with no firm_style set -
+    firm_style is empty for every real seeded persona today, so voice_sample
+    is the actual signal that per-firm tone calibration is happening."""
+    client = {"voice_sample": "Talk to my clients like real people."}
+    fragment = build_firm_profile_fragment(client)
+    assert fragment["voice_applied"] is True
+    assert "firm voice sample applied" in fragment["profile_summary"]
+
+
+def test_firm_profile_fragment_no_voice_when_neither_set():
+    assert build_firm_profile_fragment({"business_type": "dental"})["voice_applied"] is False
+
+
 @pytest.mark.asyncio
 async def test_profile_appears_in_generation_prompt():
     """The advisory profile must reach the actual user message sent to the model."""
@@ -82,6 +123,37 @@ async def test_profile_appears_in_generation_prompt():
     content = agent._user_content("q", "ctx", captured["steering"])
     assert "dental" in content
     assert content.index("dental") < content.index("Question:")
+
+
+@pytest.mark.asyncio
+async def test_voice_sample_reaches_generation_prompt():
+    """A firm's voice_sample must reach the actual generation call for a
+    research answer, not just a drafted document (accountant audit round
+    three, #13)."""
+    agent = ResearchAgent()
+    client = {"voice_sample": "Talk to my clients like real people, not other accountants."}
+
+    captured = {}
+
+    async def fake_generate(question, context, model, steering=""):
+        captured["steering"] = steering
+        return "Answer [1]", {
+            "input_tokens": 1, "output_tokens": 1,
+            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+        }
+
+    strong_chunks = [
+        {"id": str(i), "citation": f"c{i}", "content": "x", "source_url": "", "score": 0.5}
+        for i in range(6)
+    ]
+    with patch.object(
+        agent, "_retrieve_context",
+        new=AsyncMock(return_value=(strong_chunks, {"num_chunks": 6, "top_score": 0.5, "insufficient": False})),
+    ), patch.object(agent, "_generate", new=fake_generate):
+        await agent.run(question="q", client_id="cid", client=client)
+
+    assert "Talk to my clients like real people, not other accountants." in captured["steering"]
+    assert "match this tone" in captured["steering"].lower()
 
 
 # --- Task D2: source_types SOFT boost, not a hard filter -----------------------
