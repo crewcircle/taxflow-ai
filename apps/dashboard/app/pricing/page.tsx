@@ -23,7 +23,11 @@ const FAQS = [
   },
   {
     q: "Is my clients' data kept private?",
-    a: "Yes. Each firm's data is isolated at the database level, and firm-uploaded knowledge is never used to answer another firm's questions.",
+    a: "Yes. Your practice data is hosted in Australia and isolated per firm at the database level - firm-uploaded knowledge is never used to answer another firm's questions. To generate an answer, your question text is sent to our AI providers under their standard API terms, same as any AI product in this category. Nothing becomes firm work product without a human - Owner or Reviewer - explicitly signing off first. Full detail on where your data lives is on our About page.",
+  },
+  {
+    q: "What happens to my data if I cancel?",
+    a: "Cancelling doesn't delete anything - your question history, documents, and firm knowledge stay in your account, we just don't take payment. If you need it exported to take elsewhere, contact us and we'll get it to you.",
   },
 ];
 

@@ -70,29 +70,35 @@ export function OnboardingTour({
   const router = useRouter();
   const pathname = usePathname();
   const storageKey = `taxflow_tour_seen:${businessName}`;
+  // Demo personas rotate within one sitting, so the tour re-offers itself
+  // once per persona per browser session (sessionStorage). A real account
+  // only needs this once ever, not once per login, so it uses localStorage
+  // instead - same key shape, different persistence.
+  const storage = isDemo ? "sessionStorage" : "localStorage";
 
   const [open, setOpen] = useState(false);
   const [forceOpenRequested, setForceOpenRequested] = useState(false);
   const [step, setStep] = useState(0);
   const { load, issueExample, firstIssue, distinctCitations } = useLastQueryWalkthrough();
 
-  // Auto-open once per persona per session. This reacts to `pathname` rather
-  // than only checking it at mount, because the demo-login flow does a
-  // client-side router.push("/dashboard") that then server-redirects to
-  // /dashboard/query - pathname isn't settled to its final value until after
-  // this component has already mounted, so a mount-only check (e.g. a
-  // useState lazy initializer) misses the redirect and never opens.
+  // Auto-open once per persona per session (demo) or once ever (real
+  // account). Reacts to `pathname` rather than only checking it at mount,
+  // because the demo-login flow does a client-side router.push("/dashboard")
+  // that then server-redirects to /dashboard/query - pathname isn't settled
+  // to its final value until after this component has already mounted, so a
+  // mount-only check (e.g. a useState lazy initializer) misses the redirect
+  // and never opens.
   useEffect(() => {
-    if (!(isDemo && businessName && pathname === QUERY_PATH && !window.sessionStorage.getItem(storageKey))) return;
+    if (!(businessName && pathname === QUERY_PATH && !window[storage].getItem(storageKey))) return;
     const t = setTimeout(() => {
-      window.sessionStorage.setItem(storageKey, "1");
+      window[storage].setItem(storageKey, "1");
       setStep(0);
       setOpen(true);
       load();
     }, 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDemo, businessName, pathname, storageKey]);
+  }, [businessName, pathname, storageKey, storage]);
 
   // "Take the tour" clicked from a page other than the query page: navigate
   // there first, then open once we've actually landed (same reasoning as above).
@@ -109,19 +115,31 @@ export function OnboardingTour({
   }, [forceOpenRequested, pathname]);
 
   const steps = [
-    {
-      selector: '[data-tour="identity-strip"]',
-      title: "Who you're looking at",
-      body: (
-        <>
-          <p>
-            You&apos;re viewing a live demo as <strong>{businessName}</strong> ({humanizeType(businessType)}).
-          </p>
-          {demoDescription && <p className="text-muted-foreground">{demoDescription}</p>}
-          {demoTagline && <p className="font-medium text-foreground">{demoTagline}</p>}
-        </>
-      ),
-    },
+    isDemo
+      ? {
+          selector: '[data-tour="identity-strip"]',
+          title: "Who you're looking at",
+          body: (
+            <>
+              <p>
+                You&apos;re viewing a live demo as <strong>{businessName}</strong> ({humanizeType(businessType)}).
+              </p>
+              {demoDescription && <p className="text-muted-foreground">{demoDescription}</p>}
+              {demoTagline && <p className="font-medium text-foreground">{demoTagline}</p>}
+            </>
+          ),
+        }
+      : {
+          selector: null,
+          title: "Welcome to TaxFlow",
+          body: (
+            <p className="text-muted-foreground">
+              Ask a real Australian tax question and TaxFlow retrieves the actual sources, drafts an
+              answer, and independently verifies every claim against them before you see it. The next
+              few steps show you exactly where that happens.
+            </p>
+          ),
+        },
     {
       selector: '[data-tour="sources-panel"]',
       title: "Where sources appear",
@@ -225,7 +243,7 @@ export function OnboardingTour({
     document.querySelector<HTMLTextAreaElement>('[data-tour="question-textarea"]')?.focus();
   }
 
-  if (!isDemo) return null;
+  if (!businessName) return null;
 
   // Card position: below the target if it fits, else above; clamped horizontally.
   const CARD_WIDTH = 340;

@@ -78,6 +78,19 @@ export function DashboardHeader({
             <DemoPersonaSwitcher currentType={businessType} currentRole={role} />
           </div>
         )}
+
+        {/* Real accounts get the same tour, minus the demo-only identity
+            strip it would otherwise anchor its first step to - OnboardingTour
+            swaps in a generic welcome step when isDemo is false. */}
+        {businessName && !isDemo && (
+          <OnboardingTour
+            businessName={businessName}
+            businessType={businessType}
+            demoTagline={null}
+            demoDescription={null}
+            isDemo={false}
+          />
+        )}
       </div>
 
       <nav className="flex items-center gap-1" data-tour="nav-sidebar">
