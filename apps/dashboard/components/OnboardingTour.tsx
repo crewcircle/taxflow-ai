@@ -147,7 +147,7 @@ export function OnboardingTour({
           <p className="text-xs text-muted-foreground">
             On: &ldquo;{issueExample.question}&rdquo;
           </p>
-          <div className="space-y-1.5 rounded bg-amber-50 p-3 text-xs">
+          <div className="space-y-1.5 rounded bg-warning/10 p-3 text-xs">
             <p>
               <span className="font-semibold">Draft said: </span>
               {firstIssue.claim}

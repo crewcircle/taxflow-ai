@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { toast } from "sonner";
 import { ArrowDown, ArrowUp, ArrowUpDown, ExternalLink, LayoutGrid, Network } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 // react-force-graph-2d renders to a <canvas> via the DOM and has no SSR
@@ -133,7 +135,10 @@ export default function KnowledgeBasePage() {
     fetch("/api/knowledge/graph")
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("failed"))))
       .then((data) => setDocuments(data.documents))
-      .catch(() => setError("Could not load the knowledge base - please try again"));
+      .catch(() => {
+        setError("Could not load the knowledge base - please try again");
+        toast.error("Could not load the knowledge base - please try again");
+      });
   }, []);
 
   useEffect(() => {
@@ -316,7 +321,17 @@ export default function KnowledgeBasePage() {
       </div>
 
       {error && <p className="p-4 text-sm text-destructive">{error}</p>}
-      {!error && !documents && <p className="p-4 text-sm text-muted-foreground">Loading the knowledge base...</p>}
+      {!error && !documents && (
+        <div className="space-y-2 p-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-4">
+              <Skeleton className="h-4 w-56" />
+              <Skeleton className="h-4 w-20" />
+              <Skeleton className="ml-auto h-4 w-16" />
+            </div>
+          ))}
+        </div>
+      )}
 
       {documents && view === "table" && (
         <div className="flex-1 overflow-auto">
@@ -376,16 +391,16 @@ export default function KnowledgeBasePage() {
                     </TableCell>
                     <TableCell>
                       {doc.is_current ? (
-                        <Badge variant="outline" className="border-green-600/30 text-green-700">
+                        <Badge variant="outline" className="border-success/30 text-success">
                           Current
                         </Badge>
                       ) : (
-                        <Badge variant="outline" className="border-amber-600/30 bg-amber-50 text-amber-800">
+                        <Badge variant="outline" className="border-warning/30 bg-warning/10 text-warning">
                           Superseded
                         </Badge>
                       )}
                     </TableCell>
-                    <TableCell className={cn("text-xs", stale ? "text-amber-700" : "text-muted-foreground")}>
+                    <TableCell className={cn("text-xs", stale ? "text-warning" : "text-muted-foreground")}>
                       {doc.last_scraped_at ? formatDate(doc.last_scraped_at) : "—"}
                       {stale && " (stale)"}
                     </TableCell>

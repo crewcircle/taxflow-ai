@@ -153,7 +153,7 @@ export function DocumentTemplatesPanel({ initialKey }: { initialKey?: string }) 
               {resetting ? "Resetting..." : "Reset to default"}
             </Button>
             <div className="flex items-center gap-3">
-              {saved && <span className="text-xs text-green-700">Saved</span>}
+              {saved && <span className="text-xs text-success">Saved</span>}
               {error && <span className="text-xs text-destructive">{error}</span>}
               <Button onClick={handleSave} disabled={saving || !body.trim()}>
                 {saving ? "Saving..." : "Save template"}

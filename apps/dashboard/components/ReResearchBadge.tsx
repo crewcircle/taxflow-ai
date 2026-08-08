@@ -28,7 +28,7 @@ export function ReResearchBadge({
     return (
       <Badge
         variant="outline"
-        className={cn("gap-1 border-emerald-500/40 text-emerald-600 dark:text-emerald-400 text-[10px]", className)}
+        className={cn("gap-1 border-success/40 text-success text-[10px]", className)}
       >
         <Sparkles className="size-3" />
         Answer improved

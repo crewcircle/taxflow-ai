@@ -2,9 +2,12 @@
 
 import { use as usePromise, useEffect, useState } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import { AlertTriangle, ArrowLeft, Download } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { AnnotatableMarkdown } from "@/components/AnnotatableMarkdown";
+import { DOCUMENT_STATUS_VARIANT } from "@/lib/documents";
 
 interface DocumentDetail {
   id: string;
@@ -20,13 +23,6 @@ interface DocumentDetail {
   stale_since?: string | null;
 }
 
-const STATUS_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
-  draft: "outline",
-  approved: "secondary",
-  sent: "default",
-  archived: "outline",
-};
-
 export default function DocumentViewerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = usePromise(params);
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
@@ -36,7 +32,11 @@ export default function DocumentViewerPage({ params }: { params: Promise<{ id: s
     fetch(`/api/documents/${id}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then(setDoc)
-      .catch((e) => setError(e.message === "404" ? "Document not found" : "Could not load document"));
+      .catch((e) => {
+        const message = e.message === "404" ? "Document not found" : "Could not load document";
+        setError(message);
+        toast.error(message);
+      });
   }, [id]);
 
   if (error) {
@@ -51,7 +51,22 @@ export default function DocumentViewerPage({ params }: { params: Promise<{ id: s
   }
 
   if (!doc) {
-    return <p className="text-sm text-muted-foreground">Loading…</p>;
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-4 w-32" />
+        <div className="space-y-2">
+          <Skeleton className="h-7 w-2/3" />
+          <Skeleton className="h-4 w-1/3" />
+        </div>
+        <div className="space-y-3 rounded-xl border border-border p-6">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-11/12" />
+          <Skeleton className="h-4 w-4/5" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -67,7 +82,7 @@ export default function DocumentViewerPage({ params }: { params: Promise<{ id: s
           <h1 className="text-xl font-semibold">{doc.title}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <Badge variant="outline">{doc.document_type}</Badge>
-            <Badge variant={STATUS_VARIANT[doc.status] ?? "outline"}>{doc.status}</Badge>
+            <Badge variant={DOCUMENT_STATUS_VARIANT[doc.status] ?? "outline"}>{doc.status}</Badge>
             {doc.client_ref && <span>· {doc.client_ref}</span>}
             <span>· Created {new Date(doc.created_at).toLocaleDateString("en-AU")}</span>
           </div>
@@ -89,7 +104,7 @@ export default function DocumentViewerPage({ params }: { params: Promise<{ id: s
       </div>
 
       {doc.stale && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+        <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5 text-sm text-warning">
           <AlertTriangle className="mt-0.5 size-4 shrink-0" />
           <span>
             <span className="block font-medium">The underlying research answer has changed since this was generated</span>

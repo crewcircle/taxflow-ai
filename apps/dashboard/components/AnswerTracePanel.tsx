@@ -95,10 +95,10 @@ export interface AnswerTrace {
 // secondary parenthetical next to this sentence.
 function relianceBand(confidence: number): { label: string; className: string } {
   if (confidence >= 0.75) {
-    return { label: "Safe to rely on as drafted", className: "text-green-700" };
+    return { label: "Safe to rely on as drafted", className: "text-success" };
   }
   if (confidence >= 0.5) {
-    return { label: "Spot-check before relying on it", className: "text-amber-700" };
+    return { label: "Spot-check before relying on it", className: "text-warning" };
   }
   return { label: "Needs review before relying on it", className: "text-destructive" };
 }
@@ -247,19 +247,19 @@ export function AnswerTracePanel({
                 </Badge>
               )}
               {reRan && (
-                <Badge variant="outline" className="border-amber-600/30 bg-amber-50 text-amber-800">
+                <Badge variant="outline" className="border-warning/30 bg-warning/10 text-warning">
                   <RotateCcw className="size-3" />
                   Search re-run once
                 </Badge>
               )}
               {verified && (
-                <Badge variant="outline" className="border-green-600/30 bg-green-50 text-green-700">
+                <Badge variant="outline" className="border-success/30 bg-success/10 text-success">
                   <Check className="size-3" />
                   Verified against sources
                 </Badge>
               )}
               {flagged && (
-                <Badge variant="outline" className="border-amber-600/30 bg-amber-50 text-amber-800">
+                <Badge variant="outline" className="border-warning/30 bg-warning/10 text-warning">
                   Flagged for review
                 </Badge>
               )}
@@ -399,7 +399,7 @@ export function AnswerTracePanel({
                     .
                   </p>
                   {re_retrieval?.fired && (
-                    <div className="mt-2 rounded-md border border-amber-600/30 bg-amber-50 px-2.5 py-2 text-[11.5px] leading-normal text-amber-800">
+                    <div className="mt-2 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-[11.5px] leading-normal text-warning">
                       <span className="font-semibold">Search was widened and re-run.</span>{" "}
                       {reRetrievalReason(re_retrieval.reason)}, so we broadened the search and ran it
                       again.
@@ -436,7 +436,7 @@ export function AnswerTracePanel({
                               {(c.is_superseded || c.is_historical) && (
                                 <Badge
                                   variant="outline"
-                                  className="h-[18px] border-amber-600/30 bg-amber-50 px-1.5 text-[10px] text-amber-800"
+                                  className="h-[18px] border-warning/30 bg-warning/10 px-1.5 text-[10px] text-warning"
                                 >
                                   <RotateCcw className="size-2.5" />
                                   superseded
@@ -562,11 +562,11 @@ export function AnswerTracePanel({
                       ? ` · ${Math.round(passes.first_pass.confidence * 100)}%`
                       : ""}
                   </div>
-                  <div className="flex-1 rounded-md border border-green-600/30 bg-green-50 px-2.5 py-1.5 text-[11px] text-muted-foreground">
-                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-green-700">
+                  <div className="flex-1 rounded-md border border-success/30 bg-success/10 px-2.5 py-1.5 text-[11px] text-muted-foreground">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-success">
                       Corrected answer
                     </span>
-                    <strong className="font-semibold text-green-700">
+                    <strong className="font-semibold text-success">
                       {passes.corrected?.model ?? "corrected"}
                     </strong>
                     {typeof passes.corrected?.confidence === "number"
@@ -590,7 +590,7 @@ export function AnswerTracePanel({
               {state === "saved" ? (
                 <Badge
                   variant="outline"
-                  className="ml-auto border-green-600/30 bg-green-50 text-green-700"
+                  className="ml-auto border-success/30 bg-success/10 text-success"
                 >
                   <Check className="size-3" />
                   Sent for approval
@@ -646,8 +646,8 @@ function TimelineStep({
         className={cn(
           "absolute left-0 top-0.5 flex size-5 items-center justify-center rounded-full border-[1.5px] bg-card",
           tone === "firm" && "border-accent/30 bg-accent/5 text-accent",
-          tone === "ok" && "border-green-600/30 bg-green-50 text-green-700",
-          tone === "warn" && "border-amber-600/30 bg-amber-50 text-amber-800",
+          tone === "ok" && "border-success/30 bg-success/10 text-success",
+          tone === "warn" && "border-warning/30 bg-warning/10 text-warning",
           tone === "default" && "border-border text-muted-foreground"
         )}
       >

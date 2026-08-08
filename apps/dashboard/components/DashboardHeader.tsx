@@ -7,6 +7,7 @@ import { OnboardingTour } from "@/components/OnboardingTour";
 import { DemoPersonaSwitcher } from "@/components/DemoPersonaSwitcher";
 import { NotificationBell } from "@/components/NotificationBell";
 import { GlobalSearch } from "@/components/GlobalSearch";
+import { MobileNav } from "@/components/MobileNav";
 
 interface NavItem {
   href: string;
@@ -41,15 +42,18 @@ export function DashboardHeader({
   email,
 }: DashboardHeaderProps) {
   return (
-    // A 3-column grid, not absolute-positioned nav over a flex row - the nav
-    // previously stayed mathematically centered regardless of how wide its
-    // siblings got, so a wide demo cluster could visually overlap it as the
-    // viewport narrowed. Grid tracks can't overlap: the left and right
+    // A 3-column grid on desktop, not absolute-positioned nav over a flex row
+    // - the nav previously stayed mathematically centered regardless of how
+    // wide its siblings got, so a wide demo cluster could visually overlap it
+    // as the viewport narrowed. Grid tracks can't overlap: the left and right
     // columns each get an equal share (1fr) of whatever space the center
     // column's actual content doesn't use, so growing/shrinking content on
     // either side can now only push into ITS OWN column, never the nav's.
-    <header className="grid h-14 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b border-border px-4">
+    // Below `md` there's no room for 3 columns at all - the header is a plain
+    // flex row and the nav collapses into MobileNav's hamburger drawer.
+    <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-4 md:grid md:grid-cols-[1fr_auto_1fr]">
       <div className="flex min-w-0 items-center gap-2">
+        <MobileNav navLinks={navLinks} />
         <Logo href="/dashboard" />
 
         {/* Everything demo-only lives in one clearly-marked cluster right
@@ -80,7 +84,7 @@ export function DashboardHeader({
         )}
       </div>
 
-      <nav className="flex items-center gap-1" data-tour="nav-sidebar">
+      <nav className="hidden items-center gap-1 md:flex" data-tour="nav-sidebar">
         {navLinks.map((link) => (
           <HeaderNavLink key={link.href} href={link.href} icon={link.icon}>
             {link.label}

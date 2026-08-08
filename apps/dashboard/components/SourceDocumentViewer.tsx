@@ -111,7 +111,7 @@ export function SourceDocumentViewer({
               const width = item.width * viewport.scale;
               const highlight = document.createElement("div");
               highlight.className =
-                "pointer-events-none absolute rounded-sm bg-amber-300/50 ring-2 ring-amber-400";
+                "pointer-events-none absolute rounded-sm bg-warning/30 ring-2 ring-warning/60";
               highlight.style.left = `${tx[4]}px`;
               highlight.style.top = `${tx[5] - height}px`;
               highlight.style.width = `${width}px`;
@@ -138,7 +138,7 @@ export function SourceDocumentViewer({
           // so centering the wrapper can leave the actual highlighted line
           // off-screen when it sits low on the page.
           const pageEl = container.querySelector(`[data-page="${foundPage}"]`);
-          const highlightEl = pageEl?.querySelector(".bg-amber-300\\/50");
+          const highlightEl = pageEl?.querySelector(".bg-warning\\/30");
           (highlightEl ?? pageEl)?.scrollIntoView({ behavior: "smooth", block: "center" });
         }
 

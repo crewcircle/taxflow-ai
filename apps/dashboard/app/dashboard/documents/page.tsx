@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   Table,
   TableBody,
@@ -23,6 +24,8 @@ import { ResourceRowActions } from "@/components/resource-actions/ResourceRowAct
 import { ConfirmDialog } from "@/components/resource-actions/ConfirmDialog";
 import { ResourceEditDialog } from "@/components/resource-actions/ResourceEditDialog";
 import { useResourceMutation } from "@/components/resource-actions/useResourceMutation";
+import { Skeleton } from "@/components/ui/skeleton";
+import { DOCUMENT_STATUS_VARIANT } from "@/lib/documents";
 
 interface AtoUploadResult {
   document_id: string;
@@ -65,13 +68,6 @@ interface StaffMember {
   name: string;
   role: string;
 }
-
-const STATUS_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
-  draft: "outline",
-  approved: "secondary",
-  sent: "default",
-  archived: "outline",
-};
 
 // Internal working paper vs. what actually leaves the firm vs. what goes to
 // the ATO - three different audiences, not one flat document list. Matches
@@ -149,6 +145,7 @@ export default function DocumentsPage() {
       loadDocuments();
     } catch {
       setAtoError("Could not process this letter - please try again");
+      toast.error("Could not process this letter - please try again");
     } finally {
       setAtoUploading(false);
     }
@@ -168,7 +165,10 @@ export default function DocumentsPage() {
     fetch("/api/documents")
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then(setDocuments)
-      .catch(() => setError("Could not load documents"));
+      .catch(() => {
+        setError("Could not load documents");
+        toast.error("Could not load documents");
+      });
   }
 
   useEffect(loadDocuments, []);
@@ -199,8 +199,10 @@ export default function DocumentsPage() {
       setApprovingId(null);
       setApprovingAs("");
       loadDocuments();
+      toast.success("Document approved");
     } catch {
       setError("Could not approve this document - please try again");
+      toast.error("Could not approve this document - please try again");
     }
   }
 
@@ -217,6 +219,7 @@ export default function DocumentsPage() {
       });
     } catch {
       setError("Could not open this document for editing");
+      toast.error("Could not open this document for editing");
     }
   }
 
@@ -239,8 +242,10 @@ export default function DocumentsPage() {
       setEngagement(null);
       setCreating(false);
       loadDocuments();
+      toast.success("Document created");
     } catch {
       setError("Could not create this document - please try again");
+      toast.error("Could not create this document - please try again");
     } finally {
       setSaving(false);
     }
@@ -431,7 +436,20 @@ export default function DocumentsPage() {
       )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {!documents && !error && <p className="text-sm text-muted-foreground">Loading...</p>}
+      {!documents && !error && (
+        <div className="overflow-hidden rounded-lg border border-border">
+          <div className="divide-y divide-border">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4 px-4 py-3">
+                <Skeleton className="h-4 w-40" />
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-4 w-20" />
+                <Skeleton className="ml-auto h-4 w-16" />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {documents && documents.length === 0 && (
         <p className="text-sm text-muted-foreground">
           No documents yet - generate one from a research answer or ATO correspondence.
@@ -478,7 +496,7 @@ export default function DocumentsPage() {
                     </TableCell>
                     <TableCell className="text-muted-foreground">{doc.document_type}</TableCell>
                     <TableCell>
-                      <Badge variant={STATUS_VARIANT[doc.status] ?? "outline"}>{doc.status}</Badge>
+                      <Badge variant={DOCUMENT_STATUS_VARIANT[doc.status] ?? "outline"}>{doc.status}</Badge>
                       {doc.approved_by && doc.approved_at && (
                         <span className="mt-1 block text-[11px] text-muted-foreground">
                           Reviewed and approved by {doc.approved_by} ·{" "}
@@ -488,7 +506,7 @@ export default function DocumentsPage() {
                       {doc.stale && (
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <span className="mt-1 flex items-center gap-1 text-[11px] font-medium text-amber-700">
+                            <span className="mt-1 flex items-center gap-1 text-[11px] font-medium text-warning">
                               <AlertTriangle className="size-3 shrink-0" />
                               Answer updated since
                             </span>

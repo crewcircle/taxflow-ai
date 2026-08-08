@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
+import { MarketingMobileNav } from "@/components/MarketingMobileNav";
 
 const NAV_LINKS = [
   { href: "/features", label: "Features" },
@@ -30,12 +31,15 @@ export function MarketingHeader() {
         </nav>
 
         <div className="flex items-center gap-2">
-          <Button asChild variant="outline" size="sm">
+          {/* Login moves into the drawer on mobile - Login + Start free trial
+              + a hamburger no longer fit next to the logo below `sm`. */}
+          <Button asChild variant="outline" size="sm" className="hidden sm:inline-flex">
             <Link href="/login">Login</Link>
           </Button>
           <Button asChild size="sm" className="bg-accent text-accent-foreground hover:opacity-90">
             <Link href="/signup">Start free trial</Link>
           </Button>
+          <MarketingMobileNav navLinks={[...NAV_LINKS]} />
         </div>
       </div>
     </header>

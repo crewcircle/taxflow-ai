@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import { ArrowLeft, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { canManageStaff, type Role } from "@/lib/rbac";
 
@@ -44,7 +46,10 @@ export default function StaffPage() {
     fetch("/api/staff")
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then(setRoster)
-      .catch(() => setError("Could not load the team roster"));
+      .catch(() => {
+        setError("Could not load the team roster");
+        toast.error("Could not load the team roster");
+      });
   }
 
   useEffect(() => {
@@ -73,8 +78,10 @@ export default function StaffPage() {
       setInviteEmail("");
       setInviteRole("staff");
       loadRoster();
+      toast.success("Invite sent");
     } catch {
       setInviteError("Could not send the invite - please try again");
+      toast.error("Could not send the invite - please try again");
     } finally {
       setInviting(false);
     }
@@ -87,27 +94,31 @@ export default function StaffPage() {
       body: JSON.stringify({ role }),
     });
     if (!response.ok) {
-      setError(
+      const message =
         response.status === 409
           ? "Can't demote the firm's last remaining Owner"
-          : "Could not update this member's role"
-      );
+          : "Could not update this member's role";
+      setError(message);
+      toast.error(message);
       return;
     }
     loadRoster();
+    toast.success("Role updated");
   }
 
   async function handleRemove(member: StaffRow) {
     const response = await fetch(`/api/staff/${member.id}`, { method: "DELETE" });
     if (!response.ok) {
-      setError(
+      const message =
         response.status === 409
           ? "Can't remove the firm's last remaining Owner"
-          : "Could not remove this member"
-      );
+          : "Could not remove this member";
+      setError(message);
+      toast.error(message);
       return;
     }
     loadRoster();
+    toast.success("Team member removed");
   }
 
   const canManage = canManageStaff(myRole);
@@ -132,7 +143,18 @@ export default function StaffPage() {
       <Card>
         <CardContent className="space-y-3">
           {roster === null ? (
-            <p className="text-sm text-muted-foreground">{error ?? "Loading..."}</p>
+            error ? (
+              <p className="text-sm text-destructive">{error}</p>
+            ) : (
+              <div className="space-y-2">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-3">
+                    <Skeleton className="h-4 w-40" />
+                    <Skeleton className="ml-auto h-5 w-16" />
+                  </div>
+                ))}
+              </div>
+            )
           ) : roster.length === 0 ? (
             <p className="text-sm text-muted-foreground">No team members yet.</p>
           ) : (

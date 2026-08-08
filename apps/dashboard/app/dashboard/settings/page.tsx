@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import { ChevronRight, Trash2, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { createClient } from "@/lib/supabase/client";
@@ -56,7 +58,10 @@ export default function SettingsPage() {
     fetch("/api/settings")
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => setSettings(d.client))
-      .catch(() => setError("Could not load settings"));
+      .catch(() => {
+        setError("Could not load settings");
+        toast.error("Could not load settings");
+      });
   }, []);
 
   async function handleSetPassword() {
@@ -80,7 +85,9 @@ export default function SettingsPage() {
       setPasswordSaved(true);
       setTimeout(() => setPasswordSaved(false), 2000);
     } catch (err) {
-      setPasswordError(err instanceof Error ? err.message : "Could not set password - please try again");
+      const message = err instanceof Error ? err.message : "Could not set password - please try again";
+      setPasswordError(message);
+      toast.error(message);
     } finally {
       setPasswordSaving(false);
     }
@@ -105,8 +112,10 @@ export default function SettingsPage() {
       if (!response.ok) throw new Error("Save failed");
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      toast.success("Settings saved");
     } catch {
       setError("Could not save changes - please try again");
+      toast.error("Could not save changes - please try again");
     } finally {
       setSaving(false);
     }
@@ -130,7 +139,21 @@ export default function SettingsPage() {
   }
 
   if (!settings) {
-    return <p className="text-sm text-muted-foreground">{error ?? "Loading..."}</p>;
+    if (error) return <p className="text-sm text-destructive">{error}</p>;
+    return (
+      <div className="max-w-lg space-y-6">
+        <div className="space-y-2">
+          <Skeleton className="h-6 w-40" />
+          <Skeleton className="h-4 w-72" />
+        </div>
+        <div className="space-y-4 rounded-xl border border-border p-6">
+          <Skeleton className="h-9 w-full" />
+          <Skeleton className="h-9 w-full" />
+          <Skeleton className="h-9 w-full" />
+          <Skeleton className="h-20 w-full" />
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -260,7 +283,7 @@ export default function SettingsPage() {
               {settings.subscription_status}
             </div>
             <div className="flex items-center gap-3">
-              {saved && <span className="text-xs text-green-700">Saved</span>}
+              {saved && <span className="text-xs text-success">Saved</span>}
               {error && <span className="text-xs text-destructive">{error}</span>}
               <Button onClick={handleSave} disabled={saving}>
                 {saving ? "Saving..." : "Save changes"}
@@ -302,7 +325,7 @@ export default function SettingsPage() {
           </div>
 
           <div className="flex items-center justify-end gap-3">
-            {passwordSaved && <span className="text-xs text-green-700">Password set</span>}
+            {passwordSaved && <span className="text-xs text-success">Password set</span>}
             {passwordError && <span className="text-xs text-destructive">{passwordError}</span>}
             <Button
               onClick={handleSetPassword}
