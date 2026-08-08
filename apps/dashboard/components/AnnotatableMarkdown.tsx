@@ -263,8 +263,20 @@ export const AnnotatableMarkdown = forwardRef<AnnotatableMarkdownHandle, {
     }));
   }, [annotations, serverHash]);
 
-  const visibleThreads = threads.filter((t) =>
-    showResolved ? t.root.resolved_at != null : t.root.resolved_at == null
+  // Memoized deliberately (not a plain .filter()): RecogitoLayer's
+  // setAnnotations effect keys off this array's identity (deps
+  // [anno, threads, verifyAnchors]) and calls Recogito with `replace: true`,
+  // which tears down and rebuilds the ENTIRE highlight layer. An unmemoized
+  // filter here produces a new array reference on every AnnotatableMarkdown
+  // render, so that effect - and the full highlight rebuild - fired far more
+  // often than `threads`/`showResolved` actually changed, including renders
+  // that happen to land mid-click. A rebuild racing the click's own
+  // select-and-open-popup sequence is what made clicking a flagged claim
+  // clear its underline instead of opening the detail popup (accountant
+  // audit round three, #1).
+  const visibleThreads = useMemo(
+    () => threads.filter((t) => (showResolved ? t.root.resolved_at != null : t.root.resolved_at == null)),
+    [threads, showResolved]
   );
   const openCount = threads.filter((t) => t.root.resolved_at == null).length;
   const resolvedCount = threads.length - openCount;
